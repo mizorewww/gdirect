@@ -80,7 +80,7 @@ fn http() -> Result<reqwest::blocking::Client> {
 fn post_token(endpoint: &str, form: &[(&str, &str)]) -> Result<(StatusCode, Value)> {
     let response = http()?.post(endpoint).form(form).send().map_err(|e| {
         anyhow::anyhow!(
-            "cannot reach Google's token endpoint ({}); check access to oauth2.googleapis.com",
+            "cannot reach Google's token endpoint ({}); check system HTTP/HTTPS proxy settings or HTTPS_PROXY and access to oauth2.googleapis.com",
             e.without_url()
         )
     })?;
@@ -320,6 +320,14 @@ pub fn export_credentials(credentials: &Credentials, path: &Path) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn token_exchange_uses_proxy() {
+        crate::test_network::assert_route("auth::tests::token_exchange_uses_proxy", true, |url| {
+            let (status, data) = post_token(url, &[("grant_type", "refresh_token")])?;
+            ensure!(status.is_success(), "fixture token request failed");
+            Ok(data)
+        });
+    }
     #[test]
     fn token_responses_keep_google_error_codes() {
         let token = refreshed(

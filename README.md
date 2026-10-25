@@ -9,15 +9,26 @@ gdirect browses, downloads, uploads and mounts your Google Drive from the termin
 | Traffic | Route |
 | --- | --- |
 | Drive API, downloads, uploads (`browse`, `ls`, `download`, `upload`) | A scanned Google IP. The hostname and certificate check stay the same; the TLS SNI can be changed with `--sni` / `--no-sni` |
-| Sign-in and token refresh (`oauth2.googleapis.com`) | Your normal system network (DNS, proxy) |
+| Sign-in, account verification and token refresh (`accounts.google.com`, `oauth2.googleapis.com`, `www.googleapis.com`) | Your normal system network (DNS, proxy) |
 | `mount` (rclone) | Your normal system network |
 
 The first transfer command scans candidate IPs automatically and keeps the fastest working one for 24 hours. `login` and `mount` do not scan.
 
 Network requirements:
 
-- Sign-in and token refresh must reach `oauth2.googleapis.com` through your system network. If Google is blocked, you still need a proxy or VPN for this.
+- Sign-in needs browser access to `accounts.google.com` and application access to `oauth2.googleapis.com` and `www.googleapis.com`. Token refresh needs `oauth2.googleapis.com`. If Google is blocked, keep a proxy available for these requests, including during transfers.
 - If you use a TUN-mode proxy or VPN (for example Clash/Mihomo TUN), route the scanned Google IPs **DIRECT** and turn off fake-ip for them. Otherwise gdirect's traffic is captured again and the scan finds nothing. `gdirect scan --list` shows the IPs.
+
+### System proxy without TUN
+
+- On macOS and Windows, sign-in, account verification and token refresh use the manual HTTP/HTTPS system proxy. A proxy client in rule mode with TUN off is enough: proxy `accounts.google.com`, `oauth2.googleapis.com` and `www.googleapis.com`. No DIRECT rules are needed; scans, Drive API requests, uploads and downloads still connect to the scanned IP directly.
+- If you turn TUN on with domain sniffing, a `www.googleapis.com` proxy rule also catches those transfers. Exclude the scanned IPs from sniffing.
+- On Linux, or with PAC, set `HTTPS_PROXY` for each command (your client's HTTP or mixed port). `HTTP_PROXY` / `HTTPS_PROXY` take precedence over system settings, and `mount` passes them on to rclone. `NO_PROXY` must not exclude the Google endpoints above.
+
+```sh
+HTTPS_PROXY=http://127.0.0.1:7890 gdirect login --client-secret ~/Downloads/client_secret.json
+HTTPS_PROXY=http://127.0.0.1:7890 gdirect mount
+```
 
 ## Install
 

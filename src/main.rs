@@ -5,6 +5,8 @@ mod drive;
 mod mount;
 mod scan;
 mod store;
+#[cfg(test)]
+mod test_network;
 mod tui;
 mod upload;
 use anyhow::{Context, Result};

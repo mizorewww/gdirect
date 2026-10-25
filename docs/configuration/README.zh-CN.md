@@ -53,7 +53,7 @@ gdirect browse
 | `redirect_uri_mismatch` | 这个 JSON 不是 **Desktop app** 客户端，按[第 4 步](google-cloud.zh-CN.md#4-创建桌面客户端并下载-json)重新创建 |
 | `Drive API 403 … insufficient permission` | 在客户端所在的**同一个项目**中启用 Drive API（[第 1 步](google-cloud.zh-CN.md#1-新建项目并启用-drive-api)），并保存 Drive 权限范围（[第 3 步](google-cloud.zh-CN.md#3-添加-drive-权限范围)）；然后执行 `gdirect login --reauth` 并允许访问云端硬盘 |
 | `refresh credential expired or revoked` | 执行 `gdirect login --reauth`。如果每 7 天出现一次，说明应用仍处于测试状态（见[第 5 步](google-cloud.zh-CN.md#5-允许你的账号登录)） |
-| 登录超时或报网络错误 | 系统网络需要能访问 `oauth2.googleapis.com` 和 `accounts.google.com`，见[工作原理](../../README.zh-CN.md#工作原理) |
+| 登录超时或报网络错误 | 登录需要访问 `accounts.google.com`、`oauth2.googleapis.com` 和 `www.googleapis.com`，见[只开系统代理，不开 TUN](../../README.zh-CN.md#只开系统代理不开-tun) |
 | 登错账号或需要切换账号 | 执行 `gdirect login --reauth`，选择另一个账号 |
 
 - **挂载与新凭据：** 正在运行的挂载会继续使用旧凭据。执行 `--reauth` 后，请先卸载再重新挂载。

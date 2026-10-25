@@ -53,7 +53,7 @@ gdirect browse
 | `redirect_uri_mismatch` | The JSON is not a **Desktop app** client. Create one as in [step 4](google-cloud.md#4-create-a-desktop-client-and-download-its-json) |
 | `Drive API 403 … insufficient permission` | Enable the Drive API in the **same** project as the client ([step 1](google-cloud.md#1-create-a-project-and-enable-the-drive-api)) and save the Drive scope ([step 3](google-cloud.md#3-add-the-drive-scope)). Then run `gdirect login --reauth` and allow Drive access |
 | `refresh credential expired or revoked` | Run `gdirect login --reauth`. If this happens every 7 days, the app is still in Testing ([step 5](google-cloud.md#5-allow-your-account-to-sign-in)) |
-| Sign-in times out or shows a network error | Your system network must reach `oauth2.googleapis.com` and `accounts.google.com`; see [How it works](../../README.md#how-it-works) |
+| Sign-in times out or shows a network error | Sign-in needs access to `accounts.google.com`, `oauth2.googleapis.com` and `www.googleapis.com`; see [System proxy without TUN](../../README.md#system-proxy-without-tun) |
 | Wrong account, or switching accounts | `gdirect login --reauth`, then choose the other account |
 
 - **Mounts and new credentials:** a running mount keeps its old credentials. After `--reauth`, unmount and mount again.

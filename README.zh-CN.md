@@ -9,15 +9,26 @@ gdirect 是一个在终端里浏览、下载、上传和挂载 Google 云盘的�
 | 流量 | 走向 |
 | --- | --- |
 | Drive API、下载、上传（`browse`、`ls`、`download`、`upload`） | 扫描到的 Google IP。主机名和证书校验不变，可用 `--sni` / `--no-sni` 改写或去掉 TLS SNI |
-| 登录与刷新令牌（`oauth2.googleapis.com`） | 系统网络（系统 DNS、代理） |
+| 登录、账号验证与刷新令牌（`accounts.google.com`、`oauth2.googleapis.com`、`www.googleapis.com`） | 系统网络（系统 DNS、代理） |
 | `mount`（rclone） | 系统网络 |
 
 第一次运行传输类命令时会自动扫描候选 IP，并在 24 小时内沿用最快的可用 IP。`login` 和 `mount` 不扫描。
 
 网络要求：
 
-- 登录和刷新令牌必须能通过系统网络访问 `oauth2.googleapis.com`。如果 Google 被屏蔽，这一步仍然需要代理或 VPN。
+- 登录时，浏览器需要访问 `accounts.google.com`，程序需要访问 `oauth2.googleapis.com` 和 `www.googleapis.com`；刷新令牌需要访问 `oauth2.googleapis.com`。如果 Google 被屏蔽，请保持代理可用，传输期间刷新令牌也会使用它。
 - 如果开着 TUN 模式的代理或 VPN（例如 Clash/Mihomo TUN），要把扫描到的 Google IP 设为 **DIRECT 直连**，并对它们关闭 fake-ip。否则 gdirect 的流量会被重新接管，扫描结果为空。`gdirect scan --list` 可以查看这些 IP。
+
+### 只开系统代理，不开 TUN
+
+- 在 macOS 和 Windows 上，登录、账号验证与刷新令牌会使用系统中手动配置的 HTTP/HTTPS 代理。代理客户端保持规则模式、关闭 TUN 即可：让 `accounts.google.com`、`oauth2.googleapis.com` 和 `www.googleapis.com` 走代理。无需添加 DIRECT 规则；扫描、Drive API 请求、上传和下载仍直连扫描到的 IP。
+- 如果开启 TUN 并启用了域名嗅探，`www.googleapis.com` 的代理规则也会命中这些传输，请对扫描到的 IP 关闭嗅探。
+- 在 Linux 上或使用 PAC 时，请为每条命令设置 `HTTPS_PROXY`（客户端的 HTTP 或 mixed 端口）。`HTTP_PROXY` / `HTTPS_PROXY` 优先于系统设置，`mount` 也会把它们传给 rclone。`NO_PROXY` 不能排除上述 Google 端点。
+
+```sh
+HTTPS_PROXY=http://127.0.0.1:7890 gdirect login --client-secret ~/Downloads/client_secret.json
+HTTPS_PROXY=http://127.0.0.1:7890 gdirect mount
+```
 
 ## 安装
 

@@ -13,7 +13,7 @@ url = "2"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm_0_29", "layout-cache"] }
 crossterm = "0.29"
 rusqlite = { version = "0.37", features = ["bundled"] }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "system-proxy"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "6"
