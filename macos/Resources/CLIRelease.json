@@ -1,0 +1,15 @@
+{
+  "version": "0.8.0",
+  "release_url": "https://github.com/mizorewww/gdirect/releases/download/v0.8.0",
+  "checksums_url": "https://github.com/mizorewww/gdirect/releases/download/v0.8.0/SHA256SUMS",
+  "archives": {
+    "arm64": {
+      "asset": "gdirect-0.8.0-aarch64-apple-darwin.tar.gz",
+      "sha256": "8d54fc6f48e71ca89ed0f8331e2f086dbbdc10e5ea7da5e450440462eca408dd"
+    },
+    "x86_64": {
+      "asset": "gdirect-0.8.0-x86_64-apple-darwin.tar.gz",
+      "sha256": "692e8eed32fcc37f26aa960dc2846e026cebbb9bfbf4b3bde89374261c3fbe5b"
+    }
+  }
+}
