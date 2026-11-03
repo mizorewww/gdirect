@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Recursive folder upload: `gdirect upload DIR --recursive` mirrors a local folder tree under a new Drive folder, including empty folders. An interrupted run resumes with the same command — folders already created are reused and finished files are skipped — and `--restart` starts over with a new Drive folder. Symbolic links and special files inside the folder are skipped. In `browse`, `u` now accepts a folder path and shows live upload progress in the status bar.
+
 ## 0.9.0
 
 ### Changed

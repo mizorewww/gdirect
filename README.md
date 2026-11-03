@@ -83,6 +83,8 @@ gdirect download FILE_ID -o file.zip
 gdirect download DOC_ID --export application/pdf -o doc.pdf
 gdirect upload ./file.zip
 gdirect upload ./file.zip --parent FOLDER_ID --name backup.zip
+gdirect upload ./photos -r                       # folder tree, resumes if interrupted
+gdirect upload ./photos -r --parent FOLDER_ID --name "Photos backup"
 ```
 
 `browse` shows the parent folder, the current folder and a preview side by side, like [yazi](https://github.com/sxyazi/yazi). Press `?` for every key.
@@ -104,7 +106,7 @@ gdirect upload ./file.zip --parent FOLDER_ID --name backup.zip
 | `y` / `x` | Copy / cut the marked items, or the selected one |
 | `p` | Paste into the current folder. Cut items are moved; copied files are duplicated (Drive cannot copy folders) |
 | `D`, Delete | Move the marked items, or the selected one, to the Drive trash (asks first) |
-| `u` | Upload a local file into the current folder |
+| `u` | Upload a local file or folder into the current folder. Folders are uploaded recursively |
 | `d` | Queue the marked items, or the selected one. A folder is downloaded with all its subfolders into `<output>/<folder name>/`. Google Docs/Sheets/Slides are exported as PDF |
 | `+/-` | Connections for the next download (1–16), saved as your default |
 | `c` | Cancel the current download and keep the partial data |
@@ -113,10 +115,13 @@ gdirect upload ./file.zip --parent FOLDER_ID --name backup.zip
 | `q` | Quit |
 
 - **Queue:** downloads run one at a time. The file list shows each file's state (◦ queued, ↓ downloading, ✓ saved, ✗ failed), and the Downloads panel shows overall progress. Select a failed file to see the full error. Files with the same name in one session are saved as `name (2).ext`.
-- **Resume:** if a download or upload is interrupted, run the same command again.
+- **Resume:** if a download or upload is interrupted, run the same command again. A folder upload reuses the folders it already created and skips files that finished.
 - **Downloads** that already finished are recognised by their checksum and reported as already downloaded. Files are checked against Drive's MD5 after the download.
 - **Uploads** always create a new file. They never overwrite a file with the same name.
+- **Folder uploads:** `gdirect upload DIR -r` mirrors the local tree under a new Drive folder, including empty folders; symbolic links and special files are skipped. If the run is interrupted, the same command resumes. `--restart` starts over with a new Drive folder.
 - **Connections:** `-j N` sets the number of connections for one command only. The saved default (8 at first) changes only with `+/-` in `browse`.
+
+In `browse`, `u` accepts a local file or folder path. A folder is uploaded recursively and its progress is shown in the status bar.
 
 Advanced route options (`download` and `browse` take all of them; `ls` and `upload` accept `--ip` and `--sni`):
 

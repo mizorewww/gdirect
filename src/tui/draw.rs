@@ -645,7 +645,10 @@ fn draw_input(frame: &mut Frame, input: &Input) {
     let (title, hint) = match &input.prompt {
         Prompt::Create => (" Create ", "name/ creates a folder"),
         Prompt::Rename(_) => (" Rename ", "Enter renames · Esc cancels"),
-        Prompt::Upload => (" Upload to this folder ", "local file path · Enter uploads"),
+        Prompt::Upload => (
+            " Upload to this folder ",
+            "local file or folder path · Enter uploads",
+        ),
         Prompt::Filter => (" Filter ", "Enter keeps · Esc clears"),
         Prompt::Trash(_) => unreachable!(),
     };
@@ -697,7 +700,7 @@ const KEYS: &[(&str, &[(&str, &str)])] = &[
             ("y / x", "Copy / cut"),
             ("p", "Paste here"),
             ("D Del", "Move to the trash"),
-            ("u", "Upload a local file here"),
+            ("u", "Upload a file or folder here"),
         ],
     ),
     (

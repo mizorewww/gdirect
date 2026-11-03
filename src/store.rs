@@ -183,6 +183,22 @@ impl Store {
             .execute("DELETE FROM settings WHERE key=?", [key])?;
         Ok(())
     }
+    /// Settings whose keys start with `prefix`, in key order.
+    pub fn settings_with_prefix(&self, prefix: &str) -> Result<Vec<(String, String)>> {
+        let mut query = self.conn.prepare(
+            "SELECT key,value FROM settings WHERE substr(key,1,length(?1))=?1 ORDER BY key",
+        )?;
+        Ok(query
+            .query_map([prefix], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+    /// Removes every setting whose key starts with `prefix`.
+    pub fn remove_settings_with_prefix(&self, prefix: &str) -> Result<usize> {
+        Ok(self.conn.execute(
+            "DELETE FROM settings WHERE substr(key,1,length(?1))=?1",
+            [prefix],
+        )?)
+    }
     /// Signed-in accounts, in sign-in order.
     pub fn accounts(&self) -> Result<Vec<String>> {
         let mut query = self
@@ -478,6 +494,10 @@ mod tests {
             .unwrap();
         db.set(&Store::upload_key("b@example.com", "x"), "{}")
             .unwrap();
+        db.set(&Store::upload_key("a@example.com", "tree:abc\ndir:"), "{}")
+            .unwrap();
+        db.set(&Store::upload_key("b@example.com", "tree:abc\ndir:"), "{}")
+            .unwrap();
         db.set("connections", "4").unwrap();
         db.cache("a@example.com", "root", "[1]").unwrap();
         db.cache("b@example.com", "root", "[2]").unwrap();
@@ -498,8 +518,18 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+        assert!(
+            db.setting(&Store::upload_key("a@example.com", "tree:abc\ndir:"))
+                .unwrap()
+                .is_none()
+        );
         assert!(db.setting("oauth_client").unwrap().is_some());
         assert!(db.remove_account("b@example.com").unwrap());
+        assert!(
+            db.setting(&Store::upload_key("b@example.com", "tree:abc\ndir:"))
+                .unwrap()
+                .is_none()
+        );
         assert!(db.setting("oauth_client").unwrap().is_none());
         assert_eq!(db.setting("connections").unwrap().as_deref(), Some("4"));
         assert!(db.best_route().unwrap().is_some());
@@ -548,6 +578,40 @@ mod tests {
             db.default_account().unwrap().as_deref(),
             Some("work@corp.com")
         );
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+    #[test]
+    fn settings_prefixes_are_isolated() {
+        let path = temp("prefix");
+        let db = Store::open(&path).unwrap();
+        let a = "upload:a@example.com\ntree:abc\n";
+        let b = "upload:b@example.com\ntree:abc\n";
+        db.set(&format!("{a}dir:"), "root-id").unwrap();
+        db.set(&format!("{a}file:one/two.txt"), "{}").unwrap();
+        db.set(&format!("{b}dir:"), "other-id").unwrap();
+        db.set("upload:a@example.com\ntree:other\ndir:", "third")
+            .unwrap();
+        assert_eq!(
+            db.settings_with_prefix(a).unwrap(),
+            [
+                (format!("{a}dir:"), "root-id".into()),
+                (format!("{a}file:one/two.txt"), "{}".into()),
+            ]
+        );
+        assert_eq!(
+            db.settings_with_prefix(&format!("{a}file:")).unwrap().len(),
+            1
+        );
+        assert_eq!(db.remove_settings_with_prefix(a).unwrap(), 2);
+        assert!(db.settings_with_prefix(a).unwrap().is_empty());
+        assert_eq!(db.settings_with_prefix(b).unwrap().len(), 1);
+        assert!(
+            db.setting("upload:a@example.com\ntree:other\ndir:")
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(db.remove_settings_with_prefix(b).unwrap(), 1);
         drop(db);
         let _ = std::fs::remove_file(path);
     }

@@ -4,8 +4,9 @@ use crate::{
     api::{Api, File},
     download::{self, Stats},
     store::Store,
+    upload::{self, TreeProgress},
 };
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::widgets::ListState;
 use std::{
@@ -40,6 +41,8 @@ enum Message {
     Listed(String, Result<Vec<(File, PathBuf)>, String>),
     /// A file operation finished: its status line and the file to select afterwards.
     Operated(Result<(String, Option<String>), String>),
+    /// Live progress of an upload, shown in the status line.
+    Uploading(String),
 }
 #[derive(Clone, Debug, PartialEq)]
 enum State {
@@ -499,6 +502,18 @@ fn local_path(text: &str) -> PathBuf {
         None => PathBuf::from(text),
     }
 }
+fn upload_status(progress: &TreeProgress) -> String {
+    // A folder of empty files has no byte total; count files instead.
+    let percent = if progress.bytes_total > 0 {
+        upload::percent(progress.bytes_done, progress.bytes_total)
+    } else {
+        upload::percent(progress.files_done as u64, progress.files_total as u64)
+    };
+    format!(
+        "Uploading {} · {}/{} files · {percent}%",
+        progress.path, progress.files_done, progress.files_total
+    )
+}
 fn fetch(api: &Api, tx: &Sender<Message>, id: String, preview: bool) {
     let api = api.clone();
     let tx = tx.clone();
@@ -517,10 +532,18 @@ fn operate(
     tx: &Sender<Message>,
     work: impl FnOnce(&Api) -> Result<(String, Option<String>)> + Send + 'static,
 ) {
+    operate_with(api, tx, move |api, _| work(api));
+}
+/// `operate` for work that reports progress through the message channel.
+fn operate_with(
+    api: &Api,
+    tx: &Sender<Message>,
+    work: impl FnOnce(&Api, Sender<Message>) -> Result<(String, Option<String>)> + Send + 'static,
+) {
     let api = api.clone();
     let tx = tx.clone();
     thread::spawn(move || {
-        let result = work(&api).map_err(|e| format!("{e:#}"));
+        let result = work(&api, tx.clone()).map_err(|e| format!("{e:#}"));
         let _ = tx.send(Message::Operated(result));
     });
 }
@@ -717,9 +740,29 @@ fn prompt_key(view: &mut View, api: &Api, tx: &Sender<Message>, key: KeyEvent) {
                     let path = local_path(&text);
                     view.busy += 1;
                     view.status = format!("Uploading {}…", path.display());
-                    operate(api, tx, move |api| {
-                        let file = api.upload(&path, &folder, None)?;
-                        Ok((format!("Uploaded {}", file.name), Some(file.id)))
+                    operate_with(api, tx, move |api, tx| {
+                        let metadata = std::fs::metadata(&path)
+                            .with_context(|| format!("cannot open {}", path.display()))?;
+                        if metadata.is_dir() {
+                            let result =
+                                api.upload_dir(&path, &folder, None, false, |progress| {
+                                    let _ = tx.send(Message::Uploading(upload_status(&progress)));
+                                })?;
+                            Ok((result.summary(), Some(result.id)))
+                        } else {
+                            let label = path
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| path.display().to_string());
+                            let file = api.upload_with(&path, &folder, None, |done, total| {
+                                let percent = upload::percent(done, total);
+                                let _ = tx.send(Message::Uploading(format!(
+                                    "Uploading {label} · {percent}%"
+                                )));
+                            })?;
+                            Ok((format!("Uploaded {}", file.name), Some(file.id)))
+                        }
                     });
                 }
                 Prompt::Trash(_) => unreachable!(),
@@ -839,6 +882,7 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, api: Api, options: Option
                             Err(e) => format!("Could not list {name}: {e}"),
                         };
                     }
+                    Message::Uploading(text) => view.status = text,
                     Message::Operated(result) => {
                         view.busy -= 1;
                         view.status = match result {
@@ -1097,6 +1141,40 @@ mod tests {
         view.help = true;
         let rows = render(&mut view, 100, 30);
         assert!(rows.iter().any(|s| s.contains("Move to the trash")));
+        assert!(rows.iter().any(|s| s.contains("Upload a file or folder")));
+    }
+    #[test]
+    fn upload_prompt_accepts_files_and_folders() {
+        let mut view = View::new(("root".into(), "My Drive".into()), vec![], 8);
+        view.input = Some(Input::new(Prompt::Upload, String::new()));
+        let rows = render(&mut view, 100, 30);
+        assert!(rows.iter().any(|s| s.contains("local file or folder path")));
+    }
+    #[test]
+    fn upload_progress_reports_files() {
+        let progress = TreeProgress {
+            path: "a/b.txt".into(),
+            files_done: 2,
+            files_total: 10,
+            bytes_done: 3,
+            bytes_total: 9,
+            file_done: 1,
+            file_total: 4,
+        };
+        let status = upload_status(&progress);
+        assert!(status.contains("a/b.txt"));
+        assert!(status.contains("2/10 files"));
+        assert!(status.contains("33%"));
+        let empty = TreeProgress {
+            path: "empty".into(),
+            files_done: 1,
+            files_total: 1,
+            bytes_done: 0,
+            bytes_total: 0,
+            file_done: 0,
+            file_total: 0,
+        };
+        assert!(upload_status(&empty).contains("100%"));
     }
     #[test]
     fn marked_files_are_queued_together() {

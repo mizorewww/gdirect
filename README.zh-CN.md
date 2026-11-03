@@ -93,6 +93,8 @@ gdirect download FILE_ID -o file.zip
 gdirect download DOC_ID --export application/pdf -o doc.pdf
 gdirect upload ./file.zip
 gdirect upload ./file.zip --parent FOLDER_ID --name backup.zip
+gdirect upload ./photos -r                       # 递归上传文件夹，可续传
+gdirect upload ./photos -r --parent FOLDER_ID --name "照片备份"
 ```
 
 `browse` 仿照 [yazi](https://github.com/sxyazi/yazi)，并排显示上级文件夹、当前文件夹和预览。按 `?` 查看全部按键。
@@ -114,7 +116,7 @@ gdirect upload ./file.zip --parent FOLDER_ID --name backup.zip
 | `y` / `x` | 复制 / 剪切已标记的项目（没有标记时为当前选中的项目） |
 | `p` | 粘贴到当前文件夹。剪切的项目会被移动，复制的文件会生成副本（Drive 不支持复制文件夹） |
 | `D`、Delete | 把已标记的项目（没有标记时为当前选中的项目）移到 Drive 回收站（会先确认） |
-| `u` | 上传本地文件到当前文件夹 |
+| `u` | 上传本地文件或文件夹到当前文件夹。文件夹会递归上传 |
 | `d` | 把已标记的项目（没有标记时为当前选中的项目）加入下载队列。文件夹会连同所有子文件夹一起下载到 `<下载目录>/<文件夹名>/`；Google 文档、表格、幻灯片导出为 PDF |
 | `+/-` | 调整下一个下载的连接数（1–16），并保存为默认值 |
 | `c` | 取消当前下载并保留已下载部分 |
@@ -123,10 +125,13 @@ gdirect upload ./file.zip --parent FOLDER_ID --name backup.zip
 | `q` | 退出 |
 
 - **队列：** 下载逐个进行。文件列表会显示每个文件的状态（◦ 排队、↓ 下载中、✓ 已保存、✗ 失败），下载面板显示整体进度。选中失败的文件可以看到完整错误。同一会话中同名的文件会保存为 `name (2).ext`。
-- **续传：** 下载或上传中断后，重新执行同一条命令即可接着传。
+- **续传：** 下载或上传中断后，重新执行同一条命令即可接着传。文件夹上传会复用已经创建的文件夹，并跳过已经传完的文件。
 - **下载：** 已经下载完成的文件会按校验和识别出来，提示已下载。每次下载完成后都会与 Drive 记录的 MD5 比对。
 - **上传：** 总是新建文件，不会覆盖云端的同名文件。
+- **文件夹上传：** `gdirect upload DIR -r` 会按本地目录结构在新云端文件夹下创建同样的文件夹，空文件夹也会创建；符号链接和特殊文件会跳过。中断后重新执行同一条命令即可续传，`--restart` 会从头开始并新建一个云端文件夹。
 - **连接数：** `-j N` 只对当前这条命令生效。保存的默认值（初始为 8）只能在 `browse` 里用 `+/-` 修改。
+
+在 `browse` 里按 `u` 可以输入本地文件或文件夹路径。文件夹会递归上传，进度显示在状态栏。
 
 `download` 和 `browse` 支持以下高级传输选项（`ls`、`upload` 只支持 `--ip`）：
 
