@@ -1,0 +1,63 @@
+name: AUR
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version to publish (without v prefix, e.g. 0.12.1; leave empty for latest release)'
+        type: string
+        required: false
+      packages:
+        description: 'Space-separated list of packages to update (leave empty for all 4 packages)'
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  update-aur:
+    name: Update AUR packages
+    runs-on: ubuntu-latest
+    container: archlinux:base
+    steps:
+      - name: Install dependencies
+        run: |
+          pacman -Sy --noconfirm git openssh python sudo binutils
+          id builder &>/dev/null || useradd -m builder
+
+      - uses: actions/checkout@v4
+
+      - name: Setup AUR SSH (builder)
+        env:
+          AUR_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          install -dm700 -o builder -g builder /home/builder/.ssh
+          printf '%s\n' "$AUR_KEY" > /home/builder/.ssh/aur_key
+          chmod 600 /home/builder/.ssh/aur_key
+          chown builder:builder /home/builder/.ssh/aur_key
+          ssh-keyscan -t ed25519 aur.archlinux.org > /home/builder/.ssh/known_hosts 2>/dev/null || true
+          chown builder:builder /home/builder/.ssh/known_hosts
+          chown -R builder:builder .
+
+      - name: Update AUR packages (as builder)
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PACKAGES: ${{ inputs.packages }}
+        run: |
+          su builder -s /bin/bash -c "
+            export GIT_SSH_COMMAND='ssh -i /home/builder/.ssh/aur_key -o User=aur -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/home/builder/.ssh/known_hosts -o IdentitiesOnly=yes'
+            export HOME=/home/builder
+            git config --global user.name 'mizorewww (ci)'
+            git config --global user.email 'mizorewww@users.noreply.github.com'
+
+            ARGS=()
+            if [ -n \"\$INPUT_VERSION\" ]; then
+              ARGS+=(--version \"\$INPUT_VERSION\")
+            fi
+            if [ -n \"\$INPUT_PACKAGES\" ]; then
+              ARGS+=(--packages \$INPUT_PACKAGES)
+            fi
+
+            python3 scripts/update-aur.py \"\${ARGS[@]}\" --push
+          "
