@@ -665,6 +665,7 @@ impl Gdirect {
             })
             .action(
                 material_button("dialog-cancel", ButtonVariant::Text)
+                    .accessibility_label(t("取消", "Cancel"))
                     .child(t("取消", "Cancel"))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close_dialog(cx))),
             )
@@ -678,6 +679,7 @@ impl Gdirect {
                     },
                 )
                 .when(danger, |b| b.tone(ButtonTone::Accent))
+                .accessibility_label(confirm.to_owned())
                 .child(confirm.to_owned())
                 .on_click(
                     cx.listener(|this, _: &ClickEvent, window, cx| this.confirm_dialog(window, cx)),

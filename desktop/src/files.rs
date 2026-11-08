@@ -807,6 +807,7 @@ impl Gdirect {
             .child(
                 MaterialButton::new("download")
                     .icon(Symbol::DOWNLOAD)
+                    .accessibility_label(t("下载所选项", "Download selected"))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         let files = this.picked();
                         this.download(files, cx);
