@@ -189,7 +189,8 @@ impl Gdirect {
                                 ),
                             )),
                     )
-                    .child(
+                    // The actions wrap together.
+                    .child(div().flex().items_center().gap(rem(12.)).child(
                         MaterialButton::new("import")
                             .variant(ButtonVariant::Outlined)
                             .icon(Symbol::PLAYLIST_ADD)
@@ -212,7 +213,7 @@ impl Gdirect {
                             .icon(Symbol::RADAR)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.start_scan(None, cx)))
                             .child(t("重新扫描", "Rescan"))
-                    }),
+                    })),
             )
             .child(
                 div()
@@ -576,7 +577,14 @@ impl Gdirect {
                             .flex()
                             .items_center()
                             .gap(rem(8.))
-                            .child(ui::mono(e.ip.clone()).text_color(color(ink)))
+                            .child(
+                                ui::mono(e.ip.clone())
+                                    .text_color(color(ink))
+                                    .min_w_0()
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
+                                    .text_ellipsis(),
+                            )
                             .child(ui::text(
                                 TypeRole::LabelSmall,
                                 ColorRole::ON_SURFACE_VARIANT,
