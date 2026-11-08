@@ -316,7 +316,7 @@ fn is_uploaded(saved: Option<&SavedFile>, size: u64, modified: u128) -> bool {
     saved.is_some_and(|saved| saved.size == size && saved.modified == modified)
 }
 /// Progress of a recursive upload.
-#[derive(Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct TreeProgress {
     /// Path relative to the folder being uploaded.
     pub path: String,
