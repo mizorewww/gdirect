@@ -106,11 +106,11 @@ impl Gdirect {
                     match self.settings.pinned {
                         Some(ip) => tf!(
                             "固定 {ip} · TLS 身份 · 证书",
-                            "Pinned to {ip} · TLS identity · Certificates"
+                            "Pinned to {ip} · TLS · certificates"
                         ),
                         None => t(
                             "自动选择线路 · TLS 身份 · 证书",
-                            "Automatic route · TLS identity · Certificates",
+                            "Auto route · TLS · certificates",
                         )
                         .into(),
                     },
@@ -463,7 +463,7 @@ impl Gdirect {
                         ui::setting_row(
                             "article",
                             t("Google 文档导出格式", "Google Docs export format"),
-                            Some(t("文档、表格、幻灯片下载时转换成的格式", "The format Docs, Sheets and Slides are converted to on download").into()),
+                            Some(t("文档、表格、幻灯片下载时转换成的格式", "Docs, Sheets and Slides are converted to this format when downloaded").into()),
                             Some(
                                 ConnectedButtonGroup::new("export", t("导出格式", "Export format"))
                                     .options([("pdf", "PDF"), ("office", "Office")])

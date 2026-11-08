@@ -161,7 +161,7 @@ pub fn setting_row(
         .child(
             div()
                 .flex_1()
-                .min_w(rem(180.))
+                .min_w(rem(80.))
                 .flex()
                 .flex_col()
                 .gap(rem(2.))
