@@ -2121,6 +2121,7 @@ dependencies = [
  "gpui-kit-material",
  "gpui-material-symbols",
  "serde_json",
+ "sys-locale",
 ]
 
 [[package]]

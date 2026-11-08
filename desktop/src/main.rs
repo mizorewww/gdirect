@@ -4,6 +4,7 @@ mod app;
 mod endpoints;
 mod files;
 mod format;
+mod i18n;
 mod settings;
 mod settings_page;
 mod transfers;
@@ -49,6 +50,7 @@ fn main() -> anyhow::Result<()> {
             gpui_kit::open_window(options, cx, move |window, cx| {
                 if let Ok(db) = gdirect::store::Store::open(&db_path) {
                     let settings = settings::Settings::load(&db);
+                    i18n::apply(settings.language);
                     theme::init_component_theme(
                         app::Gdirect::initial_scheme(&settings, cx),
                         1.0,

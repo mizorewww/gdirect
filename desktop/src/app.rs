@@ -1,5 +1,7 @@
 //! The window's one view: state shared by the pages, the channel background
 //! threads report through, navigation, theme and dialogs.
+use crate::i18n::t;
+use crate::tf;
 use crate::{
     settings::{Settings, Theme},
     transfers::{self, Queues},
@@ -91,13 +93,24 @@ pub struct MountInfo {
 }
 
 /// The accent colors the appearance pane offers: seed and name.
-pub const ACCENTS: [(u32, &str); 5] = [
-    (0x415F91, "蓝色"),
-    (0x006A65, "青色"),
-    (0x4C662B, "绿色"),
-    (0x8F4C38, "陶土色"),
-    (0x65558F, "紫色"),
+pub const ACCENTS: [(u32, AccentName); 5] = [
+    (0x415F91, AccentName("蓝色", "Blue")),
+    (0x006A65, AccentName("青色", "Teal")),
+    (0x4C662B, AccentName("绿色", "Green")),
+    (0x8F4C38, AccentName("陶土色", "Terracotta")),
+    (0x65558F, AccentName("紫色", "Purple")),
 ];
+
+/// An accent's name in Chinese and English; it turns into the text for the
+/// current language.
+#[derive(Clone, Copy)]
+pub struct AccentName(pub &'static str, pub &'static str);
+
+impl From<AccentName> for SharedString {
+    fn from(name: AccentName) -> Self {
+        t(name.0, name.1).into()
+    }
+}
 
 pub struct Gdirect {
     pub db_path: PathBuf,
@@ -172,8 +185,10 @@ impl Gdirect {
         let (tx, rx) = mpsc::channel::<Update>();
         let poll = cx.spawn(async move |this, cx| poll(rx, this, cx).await);
 
-        let filter_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("按名称筛选当前文件夹"));
+        let filter_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t("按名称筛选当前文件夹", "Filter this folder by name"))
+        });
         let name_input = cx.new(|cx| InputState::new(window, cx));
         let connections = cx.new(|_| {
             SliderState::new()
@@ -221,10 +236,22 @@ impl Gdirect {
         ];
 
         let nav = vec![
-            NavItem::new("files", "文件", NavIcon::symbol(Symbol::FOLDER)),
-            NavItem::new("transfers", "传输", NavIcon::symbol(Symbol::SWAP_VERT)),
-            NavItem::new("endpoints", "线路", NavIcon::symbol(Symbol::NETWORK_PING)),
-            NavItem::new("settings", "设置", NavIcon::symbol(Symbol::SETTINGS)),
+            NavItem::new("files", t("文件", "Files"), NavIcon::symbol(Symbol::FOLDER)),
+            NavItem::new(
+                "transfers",
+                t("传输", "Transfers"),
+                NavIcon::symbol(Symbol::SWAP_VERT),
+            ),
+            NavItem::new(
+                "endpoints",
+                t("线路", "Routes"),
+                NavIcon::symbol(Symbol::NETWORK_PING),
+            ),
+            NavItem::new(
+                "settings",
+                t("设置", "Settings"),
+                NavIcon::symbol(Symbol::SETTINGS),
+            ),
         ];
 
         let mut this = Self {
@@ -245,7 +272,7 @@ impl Gdirect {
             nav,
             theme_frame_pending: false,
             _subs: subs,
-            path: vec![("root".into(), "我的云盘".into())],
+            path: vec![("root".into(), t("我的云盘", "My Drive").into())],
             entries: Vec::new(),
             loading: false,
             list_error: None,
@@ -397,7 +424,10 @@ impl Gdirect {
                     // A reconnect that fails keeps the working client; the
                     // listing it dropped is made again through that one.
                     Err(e) if this.api.is_some() => {
-                        this.say(format!("无法切换线路：{e:#}"), cx);
+                        this.say(
+                            tf!("无法切换线路：{e:#}", "Couldn’t switch routes: {e:#}"),
+                            cx,
+                        );
                         this.refresh(cx);
                     }
                     Err(e) => this.connect_error = Some(format!("{e:#}")),
@@ -537,43 +567,52 @@ impl Gdirect {
             bool,
             bool,
         ) = match &self.dialog {
-            Some(Dialog::NewFolder) => ("新建文件夹".into(), None, "创建", true, false),
+            Some(Dialog::NewFolder) => (
+                t("新建文件夹", "New folder").into(),
+                None,
+                t("创建", "Create"),
+                true,
+                false,
+            ),
             Some(Dialog::Rename(file)) => (
-                "重命名".into(),
+                t("重命名", "Rename").into(),
                 Some(format!("“{}”", file.name).into()),
-                "重命名",
+                t("重命名", "Rename"),
                 true,
                 false,
             ),
             Some(Dialog::Trash(files)) => (
-                "移至回收站？".into(),
+                t("移至回收站？", "Move to trash?").into(),
                 Some(
                     if files.len() == 1 {
-                        format!(
+                        tf!(
                             "“{}”会移到 Google 云盘的回收站，30 天内可以恢复。",
+                            "“{}” will be moved to the Google Drive trash. You can restore it within 30 days.",
                             files[0].name
                         )
                     } else {
-                        format!(
+                        tf!(
                             "{} 项会移到 Google 云盘的回收站，30 天内可以恢复。",
+                            "{} items will be moved to the Google Drive trash. You can restore them within 30 days.",
                             files.len()
                         )
                     }
                     .into(),
                 ),
-                "移至回收站",
+                t("移至回收站", "Move to trash"),
                 false,
                 true,
             ),
             Some(Dialog::Logout(account)) => (
-                "退出账号？".into(),
+                t("退出账号？", "Sign out?").into(),
                 Some(
-                    format!(
-                        "将删除 {account} 保存的凭据、访问令牌和上传会话。已扫描的线路会保留。"
+                    tf!(
+                        "将删除 {account} 保存的凭据、访问令牌和上传会话。已扫描的线路会保留。",
+                        "This removes the saved credentials, access tokens and upload sessions for {account}. Scanned routes are kept."
                     )
                     .into(),
                 ),
-                "退出",
+                t("退出", "Sign out"),
                 false,
                 true,
             ),
@@ -590,14 +629,14 @@ impl Gdirect {
                     div().pt(rem(8.)).child(
                         TextField::new("dialog-name", &self.name_input)
                             .variant(TextFieldVariant::Outlined)
-                            .label("名称")
+                            .label(t("名称", "Name"))
                             .w_full(),
                     ),
                 )
             })
             .action(
                 material_button("dialog-cancel", ButtonVariant::Text)
-                    .child("取消")
+                    .child(t("取消", "Cancel"))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close_dialog(cx))),
             )
             .action(
@@ -740,7 +779,7 @@ impl Gdirect {
                         let size = path.metadata().map(|m| m.len()).unwrap_or(0);
                         Ok((
                             file.id,
-                            format!("{} · 新建文件", crate::format::bytes(size)),
+                            tf!("{} · 新建文件", "{} · new file", crate::format::bytes(size)),
                         ))
                     }
                 },
@@ -784,7 +823,7 @@ impl Gdirect {
             }
         });
         let signed_in = self.account.is_some();
-        let fab = Fab::new("new", Symbol::ADD, "新建")
+        let fab = Fab::new("new", Symbol::ADD, t("新建", "New"))
             .color(FabColor::PrimaryContainer)
             .disabled(!signed_in || self.api.is_none())
             .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
@@ -796,7 +835,7 @@ impl Gdirect {
         let menu = MaterialMenu::new("new-menu")
             .width(220.)
             .item(
-                MaterialMenuItem::new("新建文件夹")
+                MaterialMenuItem::new(t("新建文件夹", "New folder"))
                     .leading(ui::symbol("create_new_folder", false))
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.new_menu = false;
@@ -805,7 +844,7 @@ impl Gdirect {
                     })),
             )
             .item(
-                MaterialMenuItem::new("上传文件…")
+                MaterialMenuItem::new(t("上传文件…", "Upload files…"))
                     .leading(ui::symbol("upload_file", false))
                     .divider(false)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -814,14 +853,14 @@ impl Gdirect {
                     })),
             )
             .item(
-                MaterialMenuItem::new("上传文件夹…")
+                MaterialMenuItem::new(t("上传文件夹…", "Upload folder…"))
                     .leading(ui::symbol("drive_folder_upload", false))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.new_menu = false;
                         this.choose_upload(true, cx);
                     })),
             );
-        NavigationRail::new("rail", "主导航")
+        NavigationRail::new("rail", t("主导航", "Main navigation"))
             .container(ColorRole::SURFACE_CONTAINER)
             .items(items)
             .selected(self.page.value())
@@ -878,10 +917,10 @@ pub const TITLE_BAR: Pixels = px(40.);
 impl Render for Gdirect {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let labels = CaptionLabels {
-            minimize: "最小化".into(),
-            maximize: "最大化".into(),
-            restore: "还原".into(),
-            close: "关闭".into(),
+            minimize: t("最小化", "Minimize").into(),
+            maximize: t("最大化", "Maximize").into(),
+            restore: t("还原", "Restore").into(),
+            close: t("关闭", "Close").into(),
         };
         let content = if self.accounts.is_empty() {
             self.render_welcome(cx).into_any_element()

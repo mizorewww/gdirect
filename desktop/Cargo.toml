@@ -18,6 +18,7 @@ anyhow = "1"
 dirs = "6"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 serde_json = "1"
+sys-locale = "0.3"
 # gpui-kit-material is not on crates.io yet: the sibling checkout, at the Kit
 # revision it is audited against. Its Material Symbols come from crates.io.
 gpui-kit = { git = "https://github.com/longbridge/gpui-kit", rev = "8da4e005258ac0aac9a6a332cce746eeaafa08a8" }

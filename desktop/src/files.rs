@@ -1,4 +1,6 @@
 //! 文件: browsing a Drive folder and acting on its files.
+use crate::i18n::t;
+use crate::tf;
 use crate::{
     app::{Dialog, Gdirect, Page, SortKey},
     format::{self, Kind},
@@ -12,6 +14,27 @@ use gpui_kit_material::prelude::*;
 use std::path::PathBuf;
 
 const COLUMNS: [f32; 3] = [160., 112., 56.];
+
+/// A count with its unit: `{n}{zh}` in Chinese, "1 file" or "3 files" in English.
+fn count(n: usize, zh: &str, one: &str, many: &str) -> String {
+    if crate::i18n::chinese() {
+        format!("{n} {zh}")
+    } else if n == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{n} {many}")
+    }
+}
+
+/// "3 项" or "3 items".
+fn item_count(n: usize) -> String {
+    count(n, "项", "item", "items")
+}
+
+/// "3 个文件" or "3 files".
+fn file_count(n: usize) -> String {
+    count(n, "个文件", "file", "files")
+}
 
 impl Gdirect {
     pub fn folder(&self) -> &str {
@@ -82,7 +105,10 @@ impl Gdirect {
                     Err(e) => {
                         // A cached listing stays on screen; say why it may be stale.
                         if !this.entries.is_empty() {
-                            this.say(format!("无法刷新此文件夹：{e}"), cx);
+                            this.say(
+                                tf!("无法刷新此文件夹：{e}", "Couldn’t refresh this folder: {e}"),
+                                cx,
+                            );
                         }
                         this.list_error = Some(e);
                     }
@@ -152,9 +178,21 @@ impl Gdirect {
                 &account,
             );
             let message = match (added, skipped) {
-                (0, _) => "没有可下载的文件：已在队列中，或无法下载".to_owned(),
-                (n, 0) => format!("已加入下载队列 · {n} 个文件"),
-                (n, s) => format!("已加入下载队列 · {n} 个文件，跳过 {s} 个"),
+                (0, _) => t(
+                    "没有可下载的文件：已在队列中，或无法下载",
+                    "Nothing to download: already queued, or can’t be downloaded",
+                )
+                .to_owned(),
+                (n, 0) => tf!(
+                    "已加入下载队列 · {}",
+                    "Queued for download · {}",
+                    file_count(n)
+                ),
+                (n, s) => tf!(
+                    "已加入下载队列 · {}，跳过 {s} 个",
+                    "Queued for download · {}, skipped {s}",
+                    file_count(n)
+                ),
             };
             self.say(message, cx);
         }
@@ -200,12 +238,12 @@ impl Gdirect {
                     this.listing.remove(i);
                 }
                 let message = match result {
-                    Ok(files) if files.is_empty() => format!("{name} 里没有文件"),
+                    Ok(files) if files.is_empty() => tf!("{name} 里没有文件", "No files in {name}"),
                     Ok(files) => {
                         let (added, _) = this.queues.enqueue(files, this.settings.office, &account);
-                        format!("{name}：已加入 {added} 个文件")
+                        tf!("{name}：已加入 {}", "{name}: queued {}", file_count(added))
                     }
-                    Err(e) => format!("无法列出 {name}：{e}"),
+                    Err(e) => tf!("无法列出 {name}：{e}", "Couldn’t list {name}: {e}"),
                 };
                 this.say(message, cx);
                 this.pump(cx);
@@ -241,10 +279,10 @@ impl Gdirect {
     pub fn create_folder(&mut self, name: String, cx: &mut Context<Self>) {
         let parent = self.folder().to_owned();
         self.operate(
-            format!("正在新建 {name}…"),
+            tf!("正在新建 {name}…", "Creating {name}…"),
             move |api| {
                 let file = api.create(&parent, &name, true)?;
-                Ok(format!("已新建文件夹 {}", file.name))
+                Ok(tf!("已新建文件夹 {}", "Created folder {}", file.name))
             },
             cx,
         );
@@ -252,10 +290,10 @@ impl Gdirect {
 
     pub fn rename(&mut self, file: File, name: String, cx: &mut Context<Self>) {
         self.operate(
-            format!("正在重命名 {}…", file.name),
+            tf!("正在重命名 {}…", "Renaming {}…", file.name),
             move |api| {
                 let renamed = api.rename(&file.id, &name)?;
-                Ok(format!("已重命名为 {}", renamed.name))
+                Ok(tf!("已重命名为 {}", "Renamed to {}", renamed.name))
             },
             cx,
         );
@@ -265,12 +303,20 @@ impl Gdirect {
         self.selected
             .retain(|id| !files.iter().any(|f| &f.id == id));
         self.operate(
-            format!("正在将 {} 项移至回收站…", files.len()),
+            tf!(
+                "正在将 {}移至回收站…",
+                "Moving {} to trash…",
+                item_count(files.len())
+            ),
             move |api| {
                 for file in &files {
                     api.trash(&file.id)?;
                 }
-                Ok(format!("已将 {} 项移至回收站", files.len()))
+                Ok(tf!(
+                    "已将 {}移至回收站",
+                    "Moved {} to trash",
+                    item_count(files.len())
+                ))
             },
             cx,
         );
@@ -281,11 +327,19 @@ impl Gdirect {
         if files.is_empty() {
             return;
         }
-        let message = format!(
-            "已{} {} 项 · 打开目标文件夹后粘贴",
-            if cut { "剪切" } else { "复制" },
-            files.len()
-        );
+        let message = if cut {
+            tf!(
+                "已剪切 {} · 打开目标文件夹后粘贴",
+                "Cut {} · open the destination folder to paste",
+                item_count(files.len())
+            )
+        } else {
+            tf!(
+                "已复制 {} · 打开目标文件夹后粘贴",
+                "Copied {} · open the destination folder to paste",
+                item_count(files.len())
+            )
+        };
         self.clipboard = Some((files, cut));
         self.selected.clear();
         self.say(message, cx);
@@ -298,12 +352,18 @@ impl Gdirect {
         let folder = self.folder().to_owned();
         if cut {
             if files.iter().any(|f| f.id == folder) {
-                self.say("不能把文件夹移到它自己里面", cx);
+                self.say(
+                    t(
+                        "不能把文件夹移到它自己里面",
+                        "Can’t move a folder into itself",
+                    ),
+                    cx,
+                );
                 return;
             }
             self.clipboard = None;
             self.operate(
-                format!("正在移动 {} 项…", files.len()),
+                tf!("正在移动 {}…", "Moving {}…", item_count(files.len())),
                 move |api| {
                     let mut moved = 0;
                     for file in &files {
@@ -311,7 +371,7 @@ impl Gdirect {
                             moved += 1;
                         }
                     }
-                    Ok(format!("已移动 {moved} 项到此处"))
+                    Ok(tf!("已移动 {}到此处", "Moved {} here", item_count(moved)))
                 },
                 cx,
             );
@@ -320,18 +380,28 @@ impl Gdirect {
             let (folders, files): (Vec<File>, Vec<File>) =
                 files.into_iter().partition(File::folder);
             if files.is_empty() {
-                self.say("Google 云盘不能复制文件夹；请用剪切来移动", cx);
+                self.say(
+                    t(
+                        "Google 云盘不能复制文件夹；请用剪切来移动",
+                        "Google Drive can’t copy folders; use cut to move them",
+                    ),
+                    cx,
+                );
                 return;
             }
             self.operate(
-                format!("正在复制 {} 项…", files.len()),
+                tf!("正在复制 {}…", "Copying {}…", item_count(files.len())),
                 move |api| {
                     for file in &files {
                         api.copy(&file.id, &folder)?;
                     }
-                    let mut message = format!("已复制 {} 项", files.len());
+                    let mut message = tf!("已复制 {}", "Copied {}", item_count(files.len()));
                     if !folders.is_empty() {
-                        message += &format!("；{} 个文件夹无法复制", folders.len());
+                        message += &tf!(
+                            "；{}无法复制",
+                            "; couldn’t copy {}",
+                            count(folders.len(), "个文件夹", "folder", "folders")
+                        );
                     }
                     Ok(message)
                 },
@@ -346,7 +416,7 @@ impl Gdirect {
             files: !folders,
             directories: folders,
             multiple: true,
-            prompt: Some("上传".into()),
+            prompt: Some(t("上传", "Upload").into()),
         });
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = rx.await {
@@ -368,17 +438,41 @@ impl Gdirect {
         for path in paths {
             self.queues.enqueue_upload(path, parent.clone(), &account);
         }
-        self.say(format!("已加入上传队列 · {n} 项 → {}", parent.1), cx);
+        self.say(
+            tf!(
+                "已加入上传队列 · {} → {}",
+                "Queued for upload · {} → {}",
+                item_count(n),
+                parent.1
+            ),
+            cx,
+        );
         self.pump(cx);
     }
 
     fn file_state(&self, file: &File) -> Option<(&'static str, ColorRole, &'static str)> {
         Some(match self.queues.file_state(&file.id)? {
-            State::Done { .. } => ("check_circle", ColorRole::SUCCESS, "已下载"),
-            State::Queued => ("schedule", ColorRole::ON_SURFACE_VARIANT, "排队中"),
-            State::Running => ("downloading", ColorRole::PRIMARY, "下载中"),
-            State::Paused => ("pause_circle", ColorRole::ON_SURFACE_VARIANT, "已暂停"),
-            State::Failed(_) => ("error", ColorRole::ERROR, "下载失败"),
+            State::Done { .. } => (
+                "check_circle",
+                ColorRole::SUCCESS,
+                t("已下载", "Downloaded"),
+            ),
+            State::Queued => (
+                "schedule",
+                ColorRole::ON_SURFACE_VARIANT,
+                t("排队中", "Queued"),
+            ),
+            State::Running => (
+                "downloading",
+                ColorRole::PRIMARY,
+                t("下载中", "Downloading"),
+            ),
+            State::Paused => (
+                "pause_circle",
+                ColorRole::ON_SURFACE_VARIANT,
+                t("已暂停", "Paused"),
+            ),
+            State::Failed(_) => ("error", ColorRole::ERROR, t("下载失败", "Download failed")),
         })
     }
 
@@ -424,7 +518,7 @@ impl Gdirect {
             .tone(ButtonTone::Neutral)
             .icon(Symbol::ARROW_DROP_DOWN)
             .icon_position(ButtonIconPosition::Trailing)
-            .accessibility_label("切换账号")
+            .accessibility_label(t("切换账号", "Switch account"))
             .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
                 if matches!(event, ClickEvent::Keyboard(_)) {
                     this.account_menu = !this.account_menu;
@@ -460,7 +554,7 @@ impl Gdirect {
         }
         menu = menu
             .item(
-                MaterialMenuItem::new("添加账号")
+                MaterialMenuItem::new(t("添加账号", "Add account"))
                     .leading(ui::symbol("person_add", false))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.account_menu = false;
@@ -468,7 +562,7 @@ impl Gdirect {
                     })),
             )
             .item(
-                MaterialMenuItem::new("账号设置")
+                MaterialMenuItem::new(t("账号设置", "Account settings"))
                     .leading(ui::symbol("manage_accounts", false))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.account_menu = false;
@@ -498,7 +592,7 @@ impl Gdirect {
                 Some((ip, ms, _)) => MaterialButton::new("route")
                     .variant(ButtonVariant::Outlined)
                     .tone(ButtonTone::Neutral)
-                    .accessibility_label(format!("当前线路 {ip}"))
+                    .accessibility_label(tf!("当前线路 {ip}", "Current route {ip}"))
                     .on_click(
                         cx.listener(|this, _: &ClickEvent, _, cx| this.go(Page::Endpoints, cx)),
                     )
@@ -526,8 +620,8 @@ impl Gdirect {
                 None if self.connecting => MaterialButton::new("route")
                     .variant(ButtonVariant::Outlined)
                     .tone(ButtonTone::Neutral)
-                    .loading(true, "正在选择线路")
-                    .child("正在选择线路…")
+                    .loading(true, t("正在选择线路", "Choosing a route"))
+                    .child(t("正在选择线路…", "Choosing a route…"))
                     .into_any_element(),
                 None => MaterialButton::new("route")
                     .variant(ButtonVariant::Outlined)
@@ -536,7 +630,7 @@ impl Gdirect {
                     .on_click(
                         cx.listener(|this, _: &ClickEvent, _, cx| this.go(Page::Endpoints, cx)),
                     )
-                    .child("未连接")
+                    .child(t("未连接", "Not connected"))
                     .into_any_element(),
             })
             .child(
@@ -567,7 +661,12 @@ impl Gdirect {
                 .px(rem(8.))
                 .py(rem(4.))
                 .rounded(RADIUS_SMALL)
-                .child(name.clone());
+                // The root's name follows a language switch.
+                .child(if depth == 0 {
+                    t("我的云盘", "My Drive").into()
+                } else {
+                    name.clone()
+                });
             crumbs = crumbs.child(if depth == last {
                 label
                     .text_color(color(ColorRole::ON_SURFACE))
@@ -588,7 +687,7 @@ impl Gdirect {
             crumbs = crumbs.child(
                 div()
                     .ml(rem(8.))
-                    .child(CircularProgress::new("loading", "正在加载").size(20.)),
+                    .child(CircularProgress::new("loading", t("正在加载", "Loading")).size(20.)),
             );
         }
         let paste = self.clipboard.as_ref().map(|(files, cut)| {
@@ -596,11 +695,15 @@ impl Gdirect {
                 .variant(ButtonVariant::Tonal)
                 .icon(Symbol::CONTENT_PASTE)
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.paste(cx)))
-                .child(format!(
-                    "{}到此处 · {} 项",
-                    if *cut { "移动" } else { "粘贴" },
-                    files.len()
-                ))
+                .child(if *cut {
+                    tf!("移动到此处 · {}", "Move here · {}", item_count(files.len()))
+                } else {
+                    tf!(
+                        "粘贴到此处 · {}",
+                        "Paste here · {}",
+                        item_count(files.len())
+                    )
+                })
         });
         div()
             .min_h(rem(64.))
@@ -615,17 +718,23 @@ impl Gdirect {
             .when_some(paste, |d, b| d.child(b))
             .when(self.clipboard.is_some(), |d| {
                 d.child(
-                    IconButton::new("clear-clipboard", Symbol::CLOSE, "清除剪贴板").on_click(
-                        cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.clipboard = None;
-                            cx.notify();
-                        }),
-                    ),
+                    IconButton::new(
+                        "clear-clipboard",
+                        Symbol::CLOSE,
+                        t("清除剪贴板", "Clear clipboard"),
+                    )
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.clipboard = None;
+                        cx.notify();
+                    })),
                 )
             })
             .child(
-                ConnectedButtonGroup::new("view", "视图")
-                    .options([("list", "列表视图"), ("grid", "网格视图")])
+                ConnectedButtonGroup::new("view", t("视图", "View"))
+                    .options([
+                        ("list", t("列表视图", "List view")),
+                        ("grid", t("网格视图", "Grid view")),
+                    ])
                     .icon("list", Symbol::VIEW_LIST)
                     .icon("grid", Symbol::GRID_VIEW)
                     .labels(GroupLabels::Never)
@@ -640,8 +749,8 @@ impl Gdirect {
     fn render_selection(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let picked = self.picked();
         let label: SharedString = match picked.as_slice() {
-            [one] => format!("已选择 1 项 · {}", one.name).into(),
-            many => format!("已选择 {} 项", many.len()).into(),
+            [one] => tf!("已选择 1 项 · {}", "1 selected · {}", one.name).into(),
+            many => tf!("已选择 {} 项", "{} selected", many.len()).into(),
         };
         let single = picked.len() == 1;
         let action = |id: &'static str, symbol: Symbol, label: &'static str| {
@@ -658,12 +767,12 @@ impl Gdirect {
             .rounded(rem(32.))
             .bg(color(ColorRole::SURFACE_CONTAINER_HIGH))
             .child(
-                action("clear", Symbol::CLOSE, "取消选择").on_click(cx.listener(
-                    |this, _: &ClickEvent, _, cx| {
+                action("clear", Symbol::CLOSE, t("取消选择", "Clear selection")).on_click(
+                    cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.selected.clear();
                         cx.notify();
-                    },
-                )),
+                    }),
+                ),
             )
             .child(
                 ui::line(TypeRole::TitleMedium, ColorRole::ON_SURFACE, label)
@@ -677,18 +786,27 @@ impl Gdirect {
                         let files = this.picked();
                         this.download(files, cx);
                     }))
-                    .child(format!("下载 · {} 连接", self.settings.connections)),
+                    .child(tf!(
+                        "下载 · {}",
+                        "Download · {}",
+                        count(
+                            self.settings.connections as usize,
+                            "连接",
+                            "connection",
+                            "connections"
+                        )
+                    )),
             )
             .child(
-                action("copy", Symbol::CONTENT_COPY, "复制")
+                action("copy", Symbol::CONTENT_COPY, t("复制", "Copy"))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.yank(false, cx))),
             )
             .child(
-                action("cut", Symbol::CONTENT_CUT, "剪切")
+                action("cut", Symbol::CONTENT_CUT, t("剪切", "Cut"))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.yank(true, cx))),
             )
             .child(
-                action("rename", Symbol::EDIT, "重命名")
+                action("rename", Symbol::EDIT, t("重命名", "Rename"))
                     .disabled(!single)
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         if let [file] = this.picked().as_slice() {
@@ -697,12 +815,12 @@ impl Gdirect {
                     })),
             )
             .child(
-                action("trash", Symbol::DELETE, "移至回收站").on_click(cx.listener(
-                    |this, _: &ClickEvent, window, cx| {
+                action("trash", Symbol::DELETE, t("移至回收站", "Move to trash")).on_click(
+                    cx.listener(|this, _: &ClickEvent, window, cx| {
                         let files = this.picked();
                         this.open_dialog(Dialog::Trash(files), window, cx);
-                    },
-                )),
+                    }),
+                ),
             )
     }
 
@@ -711,32 +829,43 @@ impl Gdirect {
             let body = if let Some((_, scan)) = &self.scan {
                 ui::empty(
                     "radar",
-                    format!(
+                    tf!(
                         "正在扫描 Google 前端 · 已验证 {} / {}",
+                        "Scanning Google front ends · {} / {} verified",
                         scan.good,
                         scan.target.max(1)
                     ),
-                    "首次使用要找出从本机网络可直达的地址，大约需要一分钟。进度和结果见“线路”页。",
+                    t(
+                        "首次使用要找出从本机网络可直达的地址，大约需要一分钟。进度和结果见“线路”页。",
+                        "The first run looks for addresses reachable from your network, which takes about a minute. See Routes for progress and results.",
+                    ),
                 )
             } else if self.connecting {
                 ui::empty(
                     "network_ping",
-                    "正在选择线路",
-                    "首次使用会扫描可直达的 Google 前端，大约需要半分钟。",
+                    t("正在选择线路", "Choosing a route"),
+                    t(
+                        "首次使用会扫描可直达的 Google 前端，大约需要半分钟。",
+                        "The first run scans for reachable Google front ends, which takes about 30 seconds.",
+                    ),
                 )
             } else {
                 ui::empty(
                     "cloud_off",
-                    "未连接到 Google 云盘",
-                    self.connect_error
-                        .clone()
-                        .unwrap_or_else(|| "请先在“线路”页扫描可用地址。".into()),
+                    t("未连接到 Google 云盘", "Not connected to Google Drive"),
+                    self.connect_error.clone().unwrap_or_else(|| {
+                        t(
+                            "请先在“线路”页扫描可用地址。",
+                            "Scan for usable addresses in Routes first.",
+                        )
+                        .into()
+                    }),
                 )
                 .child(
                     MaterialButton::new("reconnect")
                         .icon(Symbol::REFRESH)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.connect(cx)))
-                        .child("重新连接"),
+                        .child(t("重新连接", "Reconnect")),
                 )
             };
             return div().flex_1().child(body).into_any_element();
@@ -744,20 +873,31 @@ impl Gdirect {
         let shown = self.shown();
         if shown.is_empty() {
             let body = if let Some(error) = &self.list_error {
-                ui::empty("error", "无法列出此文件夹", error.clone())
+                ui::empty(
+                    "error",
+                    t("无法列出此文件夹", "Couldn’t list this folder"),
+                    error.clone(),
+                )
             } else if self.loading {
-                ui::empty("hourglass_empty", "正在加载…", "")
+                ui::empty("hourglass_empty", t("正在加载…", "Loading…"), "")
             } else if !self.filter.is_empty() {
                 ui::empty(
                     "search_off",
-                    "没有匹配的文件",
-                    format!("当前文件夹里没有名称包含“{}”的项目", self.filter),
+                    t("没有匹配的文件", "No matching files"),
+                    tf!(
+                        "当前文件夹里没有名称包含“{}”的项目",
+                        "Nothing in this folder has “{}” in its name",
+                        self.filter
+                    ),
                 )
             } else {
                 ui::empty(
                     "folder_open",
-                    "这个文件夹是空的",
-                    "把文件拖到这里即可上传，或点左上角的 + 新建。",
+                    t("这个文件夹是空的", "This folder is empty"),
+                    t(
+                        "把文件拖到这里即可上传，或点左上角的 + 新建。",
+                        "Drag files here to upload them, or click + at the top left to create something.",
+                    ),
                 )
             };
             return div().flex_1().child(body).into_any_element();
@@ -832,22 +972,21 @@ impl Gdirect {
             .border_b_1()
             .border_color(color(ColorRole::OUTLINE_VARIANT))
             .text_color(color(ColorRole::ON_SURFACE_VARIANT))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(column("sort-name", "名称", SortKey::Name)),
-            )
+            .child(div().flex_1().min_w_0().child(column(
+                "sort-name",
+                t("名称", "Name"),
+                SortKey::Name,
+            )))
             .child(div().w(rem(COLUMNS[0])).child(column(
                 "sort-modified",
-                "修改时间",
+                t("修改时间", "Modified"),
                 SortKey::Modified,
             )))
-            .child(
-                div()
-                    .w(rem(COLUMNS[1]))
-                    .child(column("sort-size", "大小", SortKey::Size)),
-            )
+            .child(div().w(rem(COLUMNS[1])).child(column(
+                "sort-size",
+                t("大小", "Size"),
+                SortKey::Size,
+            )))
             .child(div().w(rem(COLUMNS[2])))
     }
 
@@ -924,19 +1063,22 @@ impl Gdirect {
     fn render_row_menu(&self, ix: usize, file: &File, cx: &mut Context<Self>) -> impl IntoElement {
         let open = self.row_menu.as_deref() == Some(file.id.as_str());
         let trigger_id = file.id.clone();
-        let trigger = IconButton::new(("more", ix), Symbol::MORE_VERT, "更多操作").on_click(
-            cx.listener(move |this, event: &ClickEvent, _, cx| {
-                cx.stop_propagation();
-                if matches!(event, ClickEvent::Keyboard(_)) {
-                    this.row_menu = if this.row_menu.as_deref() == Some(trigger_id.as_str()) {
-                        None
-                    } else {
-                        Some(trigger_id.clone())
-                    };
-                    cx.notify();
-                }
-            }),
-        );
+        let trigger = IconButton::new(
+            ("more", ix),
+            Symbol::MORE_VERT,
+            t("更多操作", "More actions"),
+        )
+        .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+            cx.stop_propagation();
+            if matches!(event, ClickEvent::Keyboard(_)) {
+                this.row_menu = if this.row_menu.as_deref() == Some(trigger_id.as_str()) {
+                    None
+                } else {
+                    Some(trigger_id.clone())
+                };
+                cx.notify();
+            }
+        }));
         let item =
             |label: &'static str,
              icon: &'static str,
@@ -952,7 +1094,11 @@ impl Gdirect {
         let menu = MaterialMenu::new(("row-menu", ix))
             .width(200.)
             .item(item(
-                if file.folder() { "打开" } else { "下载" },
+                if file.folder() {
+                    t("打开", "Open")
+                } else {
+                    t("下载", "Download")
+                },
                 if file.folder() {
                     "folder_open"
                 } else {
@@ -963,20 +1109,20 @@ impl Gdirect {
             ))
             .when(file.folder(), |m| {
                 m.item(item(
-                    "下载整个文件夹",
+                    t("下载整个文件夹", "Download folder"),
                     "download",
                     file.clone(),
                     |this, f, _, cx| this.download(vec![f], cx),
                 ))
             })
             .item(item(
-                "重命名",
+                t("重命名", "Rename"),
                 "edit",
                 file.clone(),
                 |this, f, window, cx| this.open_dialog(Dialog::Rename(f), window, cx),
             ))
             .item(item(
-                "复制",
+                t("复制", "Copy"),
                 "content_copy",
                 file.clone(),
                 |this, f, _, cx| {
@@ -985,14 +1131,19 @@ impl Gdirect {
                 },
             ))
             .item(
-                item("剪切", "content_cut", file.clone(), |this, f, _, cx| {
-                    this.selected = vec![f.id];
-                    this.yank(true, cx)
-                })
+                item(
+                    t("剪切", "Cut"),
+                    "content_cut",
+                    file.clone(),
+                    |this, f, _, cx| {
+                        this.selected = vec![f.id];
+                        this.yank(true, cx)
+                    },
+                )
                 .divider(true),
             )
             .item(item(
-                "移至回收站",
+                t("移至回收站", "Move to trash"),
                 "delete",
                 file.clone(),
                 |this, f, window, cx| this.open_dialog(Dialog::Trash(vec![f]), window, cx),

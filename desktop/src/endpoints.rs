@@ -1,7 +1,8 @@
 //! 线路: the Google front ends reachable from this network, and scanning for them.
 use crate::{
     app::{Gdirect, ScanState},
-    ui,
+    i18n::t,
+    tf, ui,
 };
 use gdirect::{scan::Event, store::Store};
 use gpui_kit::{prelude::*, *};
@@ -49,9 +50,9 @@ impl Gdirect {
                 match result {
                     Ok(()) => this.say(
                         if cancelled {
-                            "已停止扫描"
+                            t("已停止扫描", "Scan stopped")
                         } else {
-                            "扫描完成，可用地址已保存"
+                            t("扫描完成，可用地址已保存", "Scan complete · usable addresses saved")
                         },
                         cx,
                     ),
@@ -66,8 +67,11 @@ impl Gdirect {
                         this.connect(cx);
                     } else if this.api.is_none() && this.scan_error.is_none() {
                         this.connect_error = Some(
-                            "没有找到可直达的 Google 前端，请在“线路”页重新扫描或导入候选 IP。"
-                                .into(),
+                            t(
+                                "没有找到可直达的 Google 前端，请在“线路”页重新扫描或导入候选 IP。",
+                                "No directly reachable Google front end found. Rescan or import candidate IPs on the Routes page.",
+                            )
+                            .into(),
                         );
                     }
                 }
@@ -118,7 +122,13 @@ impl Gdirect {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("导入候选 IP（每行一个）".into()),
+            prompt: Some(
+                t(
+                    "导入候选 IP（每行一个）",
+                    "Import candidate IPs (one per line)",
+                )
+                .into(),
+            ),
         });
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(mut paths))) = rx.await
@@ -135,8 +145,12 @@ impl Gdirect {
         self.settings.save(&self.db);
         self.say(
             match ip {
-                Some(ip) => format!("所有请求只走 {ip}"),
-                None => "已取消固定，按延迟自动选择".into(),
+                Some(ip) => tf!("所有请求只走 {ip}", "All requests now go through {ip}"),
+                None => t(
+                    "已取消固定，按延迟自动选择",
+                    "Unpinned · choosing by latency",
+                )
+                .into(),
             },
             cx,
         );
@@ -165,11 +179,14 @@ impl Gdirect {
                             .flex()
                             .flex_col()
                             .gap(rem(4.))
-                            .child(ui::text(TypeRole::HeadlineSmall, ColorRole::ON_SURFACE, "线路"))
+                            .child(ui::text(TypeRole::HeadlineSmall, ColorRole::ON_SURFACE, t("线路", "Routes")))
                             .child(ui::text(
                                 TypeRole::BodyMedium,
                                 ColorRole::ON_SURFACE_VARIANT,
-                                "从本机网络可直达的 Google 前端。证书始终用内置的 Google GTS 根证书校验。",
+                                t(
+                                    "从本机网络可直达的 Google 前端。证书始终用内置的 Google GTS 根证书校验。",
+                                    "Google front ends reachable directly from this network. Certificates are always verified against the built-in Google GTS root.",
+                                ),
                             )),
                     )
                     .child(
@@ -178,7 +195,7 @@ impl Gdirect {
                             .icon(Symbol::PLAYLIST_ADD)
                             .disabled(scanning)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.import_candidates(cx)))
-                            .child("导入候选 IP"),
+                            .child(t("导入候选 IP", "Import candidate IPs")),
                     )
                     .child(if scanning {
                         let stopping = self
@@ -189,12 +206,12 @@ impl Gdirect {
                             .icon(Symbol::STOP)
                             .disabled(stopping)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.stop_scan(cx)))
-                            .child(if stopping { "正在停止…" } else { "停止扫描" })
+                            .child(if stopping { t("正在停止…", "Stopping…") } else { t("停止扫描", "Stop scan") })
                     } else {
                         MaterialButton::new("scan")
                             .icon(Symbol::RADAR)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.start_scan(None, cx)))
-                            .child("重新扫描")
+                            .child(t("重新扫描", "Rescan"))
                     }),
             )
             .child(
@@ -215,7 +232,10 @@ impl Gdirect {
                             notice_banner(
                                 "tun",
                                 NoticeKind::Warning,
-                                "几乎所有地址都响应了 TCP，可能有 TUN 代理或 VPN 在拦截，结果反映的是代理而不是你的直连网络。请把 Google IP 段设为 DIRECT 并关闭 fake-ip，然后重新扫描。",
+                                t(
+                                    "几乎所有地址都响应了 TCP，可能有 TUN 代理或 VPN 在拦截，结果反映的是代理而不是你的直连网络。请把 Google IP 段设为 DIRECT 并关闭 fake-ip，然后重新扫描。",
+                                    "Almost every address answered TCP, so a TUN proxy or VPN is probably intercepting traffic and the results reflect the proxy, not your direct network. Set Google's IP ranges to DIRECT, turn off fake-ip, then rescan.",
+                                ),
                             )
                             .child(
                                 material_button("tun-ok", ButtonVariant::Text)
@@ -223,7 +243,7 @@ impl Gdirect {
                                         this.intercepted = false;
                                         cx.notify();
                                     }))
-                                    .child("知道了"),
+                                    .child(t("知道了", "Got it")),
                             ),
                         )
                     })
@@ -239,7 +259,10 @@ impl Gdirect {
                     .child(ui::text(
                         TypeRole::BodySmall,
                         ColorRole::ON_SURFACE_VARIANT,
-                        "固定一个地址相当于 --ip，所有请求只走它；取消固定后按延迟自动选择，并在失效时切换到下一个。",
+                        t(
+                            "固定一个地址相当于 --ip，所有请求只走它；取消固定后按延迟自动选择，并在失效时切换到下一个。",
+                            "Pinning an address works like --ip: every request goes through it. Unpinned, gdirect chooses by latency and switches to the next address if one fails.",
+                        ),
                     )),
                     ),
             )
@@ -255,11 +278,14 @@ impl Gdirect {
             .current_route()
             .unwrap_or_else(|| ("—".into(), None, String::new()));
         let mode = if self.settings.pinned.is_some() {
-            "已固定此地址"
+            t("已固定此地址", "Pinned address")
         } else if self.api.is_some() {
-            "当前线路 · 按延迟自动选择"
+            t(
+                "当前线路 · 按延迟自动选择",
+                "Current route · chosen by latency",
+            )
         } else {
-            "未连接"
+            t("未连接", "Not connected")
         };
         let stat = |label: &'static str, value: String, unit: &'static str| {
             div()
@@ -331,9 +357,12 @@ impl Gdirect {
                         TypeRole::BodyMedium,
                         ColorRole::ON_SURFACE_VARIANT,
                         if sni.is_empty() {
-                            "真实 SNI".to_owned()
+                            t("真实 SNI", "Real SNI").to_owned()
                         } else {
-                            format!("伪装 TLS 身份 {sni}（Host 保持真实）")
+                            tf!(
+                                "伪装 TLS 身份 {sni}（Host 保持真实）",
+                                "Disguised TLS identity {sni} (real Host kept)"
+                            )
                         },
                     )),
             )
@@ -342,11 +371,19 @@ impl Gdirect {
                     .flex()
                     .gap(rem(32.))
                     .child(stat(
-                        "延迟",
+                        t("延迟", "Latency"),
                         ms.map_or("—".into(), |ms| ms.to_string()),
                         "ms",
                     ))
-                    .child(stat("可用", usable.to_string(), "个地址")),
+                    .child(stat(
+                        t("可用", "Usable"),
+                        usable.to_string(),
+                        if usable == 1 {
+                            t("个地址", "address")
+                        } else {
+                            t("个地址", "addresses")
+                        },
+                    )),
             )
     }
 
@@ -354,24 +391,42 @@ impl Gdirect {
         let target = state.target.max(1);
         let (title, detail) = match state.candidates {
             Some(n) => (
-                format!("正在验证导入的 {n} 个候选地址"),
-                "TLS 握手 → Drive API → 测试下载".to_owned(),
+                {
+                    let s = if n == 1 { "" } else { "es" };
+                    tf!(
+                        "正在验证导入的 {n} 个候选地址",
+                        "Verifying {n} imported candidate address{s}"
+                    )
+                },
+                t(
+                    "TLS 握手 → Drive API → 测试下载",
+                    "TLS handshake → Drive API → test download",
+                )
+                .to_owned(),
             ),
             None => (
-                format!(
+                tf!(
                     "正在扫描 Google 前端 · 已验证 {} / {target}",
+                    "Scanning Google front ends · {} / {target} verified",
                     state.good.min(target)
                 ),
-                format!(
-                    "已探测 {} 个地址，{} 个响应 TCP · {}",
-                    state.probed,
-                    state.open,
-                    if state.ipv6 {
-                        "IPv4 + IPv6"
-                    } else {
-                        "仅 IPv4（本机没有 IPv6 路由）"
-                    }
-                ),
+                {
+                    let probed = state.probed;
+                    let es = if probed == 1 { "" } else { "es" };
+                    tf!(
+                        "已探测 {probed} 个地址，{} 个响应 TCP · {}",
+                        "Probed {probed} address{es}, {} answered TCP · {}",
+                        state.open,
+                        if state.ipv6 {
+                            "IPv4 + IPv6"
+                        } else {
+                            t(
+                                "仅 IPv4（本机没有 IPv6 路由）",
+                                "IPv4 only (no IPv6 route on this device)",
+                            )
+                        }
+                    )
+                },
             ),
         };
         div()
@@ -392,18 +447,20 @@ impl Gdirect {
                 detail,
             ))
             .child(
-                LinearProgress::new("scan-progress", "扫描进度").value(match state.candidates {
-                    Some(_) => None,
-                    None if state.good == 0 => None,
-                    None => Some(state.good.min(target) as f32 / target as f32),
-                }),
+                LinearProgress::new("scan-progress", t("扫描进度", "Scan progress")).value(
+                    match state.candidates {
+                        Some(_) => None,
+                        None if state.good == 0 => None,
+                        None => Some(state.good.min(target) as f32 / target as f32),
+                    },
+                ),
             )
     }
 
     fn render_filters(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div().flex().items_center().child(
-            ConnectedButtonGroup::new("family", "地址类型")
-                .options([("all", "全部"), ("v4", "IPv4"), ("v6", "IPv6")])
+            ConnectedButtonGroup::new("family", t("地址类型", "Address type"))
+                .options([("all", t("全部", "All")), ("v4", "IPv4"), ("v6", "IPv6")])
                 .selected(self.family.clone())
                 .on_change(cx.listener(|this, value: &SharedString, _, cx| {
                     this.family = value.clone();
@@ -433,13 +490,19 @@ impl Gdirect {
             return match family {
                 Some(family) if !self.endpoints.is_empty() => ui::empty(
                     "filter_alt_off",
-                    format!("没有 {family} 地址"),
-                    "扫描只会在本机有对应路由时探测这类地址。",
+                    tf!("没有 {family} 地址", "No {family} addresses"),
+                    t(
+                        "扫描只会在本机有对应路由时探测这类地址。",
+                        "Scans probe these addresses only when this device has a route for them.",
+                    ),
                 ),
                 _ => ui::empty(
                     "radar",
-                    "还没有扫描到地址",
-                    "点“重新扫描”寻找从本机网络可直达的 Google 前端。",
+                    t("还没有扫描到地址", "No addresses scanned yet"),
+                    t(
+                        "点“重新扫描”寻找从本机网络可直达的 Google 前端。",
+                        "Choose Rescan to find Google front ends reachable directly from this network.",
+                    ),
                 ),
             }
             .into_any_element();
@@ -450,10 +513,19 @@ impl Gdirect {
             .h(rem(48.))
             .px(rem(16.))
             .text_color(color(ColorRole::ON_SURFACE_VARIANT))
-            .child(div().flex_1().min_w(rem(COLUMNS[0])).child("地址"))
-            .child(div().w(rem(COLUMNS[1])).child("延迟"))
-            .child(div().w(rem(COLUMNS[2])).child("TLS 身份"))
-            .child(div().flex_1().min_w(rem(120.)).child("状态"))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(rem(COLUMNS[0]))
+                    .child(t("地址", "Address")),
+            )
+            .child(div().w(rem(COLUMNS[1])).child(t("延迟", "Latency")))
+            .child(
+                div()
+                    .w(rem(COLUMNS[2]))
+                    .child(t("TLS 身份", "TLS identity")),
+            )
+            .child(div().flex_1().min_w(rem(120.)).child(t("状态", "Status")))
             .child(div().w(rem(COLUMNS[3])));
         // Bars compare the listed front ends, on a scale of at least 200 ms.
         let slowest = rows
@@ -540,9 +612,9 @@ impl Gdirect {
                             if !ok {
                                 "—".to_owned()
                             } else if e.sni.is_empty() {
-                                "真实 SNI".into()
+                                t("真实 SNI", "Real SNI").into()
                             } else {
-                                format!("伪装 · {}", e.sni)
+                                tf!("伪装 · {}", "Disguised · {}", e.sni)
                             },
                         )
                         .w(rem(COLUMNS[2])),
@@ -556,7 +628,7 @@ impl Gdirect {
                             .gap(rem(8.))
                             .when(in_use, |d| {
                                 d.child(ui::pill(
-                                    "使用中",
+                                    t("使用中", "In use"),
                                     ColorRole::PRIMARY,
                                     ColorRole::ON_PRIMARY,
                                 ))
@@ -569,9 +641,11 @@ impl Gdirect {
                                     ColorRole::ERROR
                                 },
                                 if ok {
-                                    "可用".to_owned()
+                                    t("可用", "Usable").to_owned()
                                 } else {
-                                    e.error.clone().unwrap_or_else(|| "不可用".into())
+                                    e.error
+                                        .clone()
+                                        .unwrap_or_else(|| t("不可用", "Unusable").into())
                                 },
                             )),
                     )
@@ -581,9 +655,9 @@ impl Gdirect {
                                 ("pin", ix),
                                 Symbol::KEEP,
                                 if pinned {
-                                    "取消固定"
+                                    t("取消固定", "Unpin")
                                 } else {
-                                    "固定使用此地址"
+                                    t("固定使用此地址", "Pin this address")
                                 },
                             )
                             .toggle(true)

@@ -1,5 +1,6 @@
 //! The client's preferences, kept in gdirect's SQLite settings table so the
 //! command line and the client share what they have in common.
+use crate::i18n::Language;
 use gdirect::store::Store;
 use std::path::PathBuf;
 
@@ -47,6 +48,7 @@ pub struct Settings {
     pub mount_path: PathBuf,
     pub read_only: bool,
     pub theme: Theme,
+    pub language: Language,
     pub accent: usize,
 }
 
@@ -86,6 +88,11 @@ impl Settings {
                 Some("light") => Theme::Light,
                 Some("dark") => Theme::Dark,
                 _ => Theme::System,
+            },
+            language: match get("language").as_deref() {
+                Some("zh") => Language::Chinese,
+                Some("en") => Language::English,
+                _ => Language::System,
             },
             accent: get("accent").and_then(|a| a.parse().ok()).unwrap_or(0),
         }
@@ -131,6 +138,17 @@ impl Settings {
                     Theme::System => "system",
                     Theme::Light => "light",
                     Theme::Dark => "dark",
+                }
+                .into(),
+            ),
+        );
+        put(
+            "language",
+            Some(
+                match self.language {
+                    Language::System => "system",
+                    Language::Chinese => "zh",
+                    Language::English => "en",
                 }
                 .into(),
             ),

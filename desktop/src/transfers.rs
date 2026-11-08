@@ -1,6 +1,6 @@
 //! The download and upload queues: each runs one item at a time on its own
 //! thread, as `gdirect browse` does, and reports through the app's channel.
-use crate::format;
+use crate::{format, i18n::t, tf};
 use anyhow::Context as _;
 use chrono::{DateTime, Local};
 use gdirect::{
@@ -390,9 +390,12 @@ pub fn run_download(
     cancel: Arc<AtomicBool>,
     progress: std::sync::mpsc::Sender<Stats>,
 ) -> anyhow::Result<(String, PathBuf)> {
-    const UNWRITABLE: &str = "无法写入下载目录，请检查它的权限和剩余空间";
+    let unwritable = t(
+        "无法写入下载目录，请检查它的权限和剩余空间",
+        "Can't write to the download folder. Check its permissions and free space",
+    );
     if let Some(dir) = job.output.parent() {
-        std::fs::create_dir_all(dir).context(UNWRITABLE)?;
+        std::fs::create_dir_all(dir).context(unwritable)?;
     }
     let md5 = if options.md5 && job.export.is_none() {
         job.file.md5_checksum.clone()
@@ -401,13 +404,13 @@ pub fn run_download(
     };
     let output = output_on_disk(&job.output, md5.as_deref(), &job.file.id)?;
     let token = api.download_token()?;
-    anyhow::ensure!(!cancel.load(Ordering::Relaxed), "已取消");
+    anyhow::ensure!(!cancel.load(Ordering::Relaxed), t("已取消", "Cancelled"));
     // The API client may already have failed over; downloads follow it.
     let (ip, sni, backups) = api.route();
     let existed = output.exists() && !control(&output).exists();
     // Only a download that writes data can leave a partial file behind.
     if !existed {
-        std::fs::write(owner(&output), &job.file.id).context(UNWRITABLE)?;
+        std::fs::write(owner(&output), &job.file.id).context(unwritable)?;
     }
     let result = download::run(
         download::Args {
@@ -431,7 +434,10 @@ pub fn run_download(
     );
     anyhow::ensure!(
         !cancel.load(Ordering::Relaxed),
-        "已取消，已下载的部分会保留"
+        t(
+            "已取消，已下载的部分会保留",
+            "Cancelled. Downloaded data is kept"
+        )
     );
     result?;
     let _ = std::fs::remove_file(owner(&output));
@@ -440,11 +446,18 @@ pub fn run_download(
         .map(|m| format::bytes(m.len()))
         .unwrap_or_default();
     let note = if existed {
-        "已存在且校验和一致，跳过下载".into()
+        t(
+            "已存在且校验和一致，跳过下载",
+            "Already exists with a matching checksum · skipped",
+        )
+        .into()
     } else if job.export.is_some() {
-        format!("{size} · 由 Google 文档导出")
+        tf!(
+            "{size} · 由 Google 文档导出",
+            "{size} · exported from Google Docs"
+        )
     } else if options.md5 && job.file.md5_checksum.is_some() {
-        format!("{size} · MD5 校验通过")
+        tf!("{size} · MD5 校验通过", "{size} · MD5 verified")
     } else {
         size
     };
@@ -489,28 +502,61 @@ pub fn explain(error: &anyhow::Error) -> String {
         .and_then(|code| code.parse::<i32>().ok())
     {
         let reason = match code {
-            1 => "连接或 TLS 握手失败，可在“线路”页换一个地址",
-            2 => "连接超时，可在“线路”页重新扫描",
-            3 => "文件不存在，或没有与此账号共享",
-            6 => "网络问题",
-            9 => "磁盘空间不足",
-            13 => "目标文件已存在",
-            15..=18 => "无法写入文件，请检查下载目录的权限和剩余空间",
-            19 => "域名解析失败",
-            22 => "Google 云盘拒绝了下载（配额、权限或下载次数限制）",
-            24 => "授权被拒绝，请在“设置 › 账号”重新登录",
-            _ => "下载出错",
+            1 => t(
+                "连接或 TLS 握手失败，可在“线路”页换一个地址",
+                "Connection or TLS handshake failed. Try another address on the Routes page",
+            ),
+            2 => t(
+                "连接超时，可在“线路”页重新扫描",
+                "Connection timed out. Try rescanning on the Routes page",
+            ),
+            3 => t(
+                "文件不存在，或没有与此账号共享",
+                "The file doesn't exist or isn't shared with this account",
+            ),
+            6 => t("网络问题", "Network problem"),
+            9 => t("磁盘空间不足", "Not enough disk space"),
+            13 => t("目标文件已存在", "The target file already exists"),
+            15..=18 => t(
+                "无法写入文件，请检查下载目录的权限和剩余空间",
+                "Can't write the file. Check the download folder's permissions and free space",
+            ),
+            19 => t("域名解析失败", "DNS lookup failed"),
+            22 => t(
+                "Google 云盘拒绝了下载（配额、权限或下载次数限制）",
+                "Google Drive refused the download (quota, permissions or download limit)",
+            ),
+            24 => t(
+                "授权被拒绝，请在“设置 › 账号”重新登录",
+                "Authorization was refused. Sign in again in Settings › Account",
+            ),
+            _ => t("下载出错", "Download error"),
         };
-        return format!("{reason}（libaria2 错误码 {code}）· 已下载的部分会保留，重试即可续传");
+        return tf!(
+            "{reason}（libaria2 错误码 {code}）· 已下载的部分会保留，重试即可续传",
+            "{reason} (libaria2 error {code}) · downloaded data is kept; retry to resume"
+        );
     }
     if text.contains("MD5 does not match") {
-        return "下载完成，但 MD5 与云盘记录不一致；文件已保留，以便检查".into();
+        return t(
+            "下载完成，但 MD5 与云盘记录不一致；文件已保留，以便检查",
+            "Download finished, but the MD5 doesn't match Google Drive's record. The file was kept so you can check it",
+        )
+        .into();
     }
     if text.contains("login/quota error page") {
-        return "Google 云盘返回了登录或配额错误页".into();
+        return t(
+            "Google 云盘返回了登录或配额错误页",
+            "Google Drive returned a sign-in or quota error page",
+        )
+        .into();
     }
     if text.contains("local file changed during upload") {
-        return "上传期间本地文件被修改，请在文件稳定后重试".into();
+        return t(
+            "上传期间本地文件被修改，请在文件稳定后重试",
+            "The local file changed during upload. Retry once it stops changing",
+        )
+        .into();
     }
     text
 }
@@ -518,23 +564,38 @@ pub fn explain(error: &anyhow::Error) -> String {
 /// A finished folder upload in the client's words.
 pub fn folder_summary(result: &gdirect::upload::TreeUpload) -> String {
     let mut parts = vec![if result.uploaded > 0 {
-        format!(
-            "已上传 {} 个文件（{}）",
-            result.uploaded,
+        let n = result.uploaded;
+        let s = plural(n as u64);
+        tf!(
+            "已上传 {n} 个文件（{}）",
+            "Uploaded {n} file{s} ({})",
             format::bytes(result.bytes)
         )
     } else if result.unchanged > 0 {
-        "没有新文件".to_owned()
+        t("没有新文件", "No new files").to_owned()
     } else {
-        format!("已建立 {} 个文件夹", result.folders.max(1))
+        let n = result.folders.max(1);
+        let s = plural(n as u64);
+        tf!("已建立 {n} 个文件夹", "Created {n} folder{s}")
     }];
     if result.unchanged > 0 {
-        parts.push(format!("{} 个此前已上传", result.unchanged));
+        let n = result.unchanged;
+        parts.push(tf!("{n} 个此前已上传", "{n} already uploaded"));
     }
     if result.skipped > 0 {
-        parts.push(format!("跳过 {} 个本地项（如符号链接）", result.skipped));
+        let n = result.skipped;
+        let s = plural(n as u64);
+        parts.push(tf!(
+            "跳过 {n} 个本地项（如符号链接）",
+            "Skipped {n} local item{s} (such as symlinks)"
+        ));
     }
     parts.join(" · ")
+}
+
+/// The English plural suffix for a count.
+fn plural(n: u64) -> &'static str {
+    if n == 1 { "" } else { "s" }
 }
 
 #[cfg(test)]

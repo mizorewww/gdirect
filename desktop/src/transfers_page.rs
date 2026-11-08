@@ -2,6 +2,8 @@
 use crate::{
     app::{Gdirect, Page},
     format::{self, Kind},
+    i18n::t,
+    tf,
     transfers::State,
     ui,
 };
@@ -78,9 +80,9 @@ impl Gdirect {
     /// A queued item's status: it runs only while its account is active.
     fn waiting_for(&self, account: &str) -> String {
         if self.account.as_deref() == Some(account) {
-            "排队中".into()
+            t("排队中", "Queued").into()
         } else {
-            format!("等待切换到 {account}")
+            tf!("等待切换到 {account}", "Waiting for {account}")
         }
     }
 
@@ -93,14 +95,18 @@ impl Gdirect {
                 key: ("listing", i as u64),
                 kind: Kind::Folder,
                 name: format!("{name}/"),
-                status: "正在列出".into(),
+                status: t("正在列出", "Listing").into(),
                 status_ink: ColorRole::PRIMARY,
                 fraction: None,
                 muted: false,
-                detail: format!(
-                    "已找到 {count} 个文件 · 保存到 {}",
-                    format::home(&self.settings.download_dir.join(name))
-                ),
+                detail: {
+                    let s = if *count == 1 { "" } else { "s" };
+                    tf!(
+                        "已找到 {count} 个文件 · 保存到 {}",
+                        "Found {count} file{s} · saving to {}",
+                        format::home(&self.settings.download_dir.join(name))
+                    )
+                },
                 actions: Vec::new(),
             })
             .collect();
@@ -114,30 +120,33 @@ impl Gdirect {
                 State::Running => {
                     let speed = job.stats.speed;
                     let left = if speed > 0 && total > job.stats.done {
-                        format!(
+                        tf!(
                             " · 剩余 {}",
+                            " · {} left",
                             format::duration((total - job.stats.done) / speed)
                         )
                     } else {
                         String::new()
                     };
                     (
-                        "下载中".to_owned(),
+                        t("下载中", "Downloading").to_owned(),
                         ColorRole::PRIMARY,
                         if total > 0 {
-                            format!(
-                                "{} / {} · {}{left} · {} 个连接",
+                            let connections = job.stats.connections.max(0);
+                            let s = if connections == 1 { "" } else { "s" };
+                            tf!(
+                                "{} / {} · {}{left} · {connections} 个连接",
+                                "{} / {} · {}{left} · {connections} connection{s}",
                                 format::bytes(job.stats.done),
                                 format::bytes(total),
-                                format::speed(speed),
-                                job.stats.connections.max(0)
+                                format::speed(speed)
                             )
                         } else {
-                            "正在连接…".into()
+                            t("正在连接…", "Connecting…").into()
                         },
                         vec![(
                             "stop_circle",
-                            "取消（保留已下载部分）",
+                            t("取消（保留已下载部分）", "Cancel (keep downloaded data)"),
                             Action::CancelDownload(job.id),
                         )],
                     )
@@ -145,38 +154,59 @@ impl Gdirect {
                 State::Queued => (
                     self.waiting_for(&job.account),
                     ColorRole::ON_SURFACE_VARIANT,
-                    format!(
+                    tf!(
                         "{}保存到 {}",
+                        "{}saving to {}",
                         job.size
                             .map(|s| format!("{} · ", format::bytes(s)))
                             .unwrap_or_default(),
                         format::home(&job.output)
                     ),
-                    vec![("close", "从队列移除", Action::RemoveDownload(job.id))],
+                    vec![(
+                        "close",
+                        t("从队列移除", "Remove from queue"),
+                        Action::RemoveDownload(job.id),
+                    )],
                 ),
                 State::Paused => (
-                    "已取消 · 可续传".to_owned(),
+                    t("已取消 · 可续传", "Cancelled · can resume").to_owned(),
                     ColorRole::ON_SURFACE_VARIANT,
-                    format!(
+                    tf!(
                         "已保留 {} · 继续时从断点开始",
+                        "{} kept · resumes where it stopped",
                         format::bytes(job.stats.done)
                     ),
                     vec![
-                        ("play_arrow", "继续", Action::ResumeDownload(job.id)),
+                        (
+                            "play_arrow",
+                            t("继续", "Resume"),
+                            Action::ResumeDownload(job.id),
+                        ),
                         (
                             "close",
-                            "从队列移除（已下载部分留在磁盘上）",
+                            t(
+                                "从队列移除（已下载部分留在磁盘上）",
+                                "Remove from queue (downloaded data stays on disk)",
+                            ),
                             Action::RemoveDownload(job.id),
                         ),
                     ],
                 ),
                 State::Failed(error) => (
-                    "失败".to_owned(),
+                    t("失败", "Failed").to_owned(),
                     ColorRole::ERROR,
                     error.clone(),
                     vec![
-                        ("refresh", "重试", Action::ResumeDownload(job.id)),
-                        ("close", "从队列移除", Action::RemoveDownload(job.id)),
+                        (
+                            "refresh",
+                            t("重试", "Retry"),
+                            Action::ResumeDownload(job.id),
+                        ),
+                        (
+                            "close",
+                            t("从队列移除", "Remove from queue"),
+                            Action::RemoveDownload(job.id),
+                        ),
                     ],
                 ),
                 State::Done { .. } => unreachable!(),
@@ -209,10 +239,11 @@ impl Gdirect {
                 let p = &job.progress;
                 let (status, ink, detail, actions) = match &job.state {
                     State::Running if job.folder => (
-                        "上传中".to_owned(),
+                        t("上传中", "Uploading").to_owned(),
                         ColorRole::PRIMARY,
-                        format!(
+                        tf!(
                             "{} / {} 个文件 · {} / {} · {} · 中断后重新上传即可续传",
+                            "{} / {} files · {} / {} · {} · upload again to resume if interrupted",
                             p.files_done,
                             p.files_total,
                             format::bytes(p.bytes_done),
@@ -221,12 +252,15 @@ impl Gdirect {
                         ),
                         vec![(
                             "stop_circle",
-                            "取消（已上传的部分可续传）",
+                            t(
+                                "取消（已上传的部分可续传）",
+                                "Cancel (uploaded data can resume)",
+                            ),
                             Action::CancelUpload(job.id),
                         )],
                     ),
                     State::Running => (
-                        "上传中".to_owned(),
+                        t("上传中", "Uploading").to_owned(),
                         ColorRole::PRIMARY,
                         format!(
                             "{} / {} · {}",
@@ -236,7 +270,10 @@ impl Gdirect {
                         ),
                         vec![(
                             "stop_circle",
-                            "取消（已上传的部分可续传）",
+                            t(
+                                "取消（已上传的部分可续传）",
+                                "Cancel (uploaded data can resume)",
+                            ),
                             Action::CancelUpload(job.id),
                         )],
                     ),
@@ -244,37 +281,62 @@ impl Gdirect {
                         self.waiting_for(&job.account),
                         ColorRole::ON_SURFACE_VARIANT,
                         if job.folder {
-                            "递归上传，保留目录结构".to_owned()
+                            t(
+                                "递归上传，保留目录结构",
+                                "Uploads recursively, keeping the folder structure",
+                            )
+                            .to_owned()
                         } else {
                             job.path
                                 .metadata()
                                 .map(|m| {
-                                    format!("{} · 始终新建文件，不覆盖同名", format::bytes(m.len()))
+                                    tf!(
+                                        "{} · 始终新建文件，不覆盖同名",
+                                        "{} · always creates a new file, never overwrites",
+                                        format::bytes(m.len())
+                                    )
                                 })
                                 .unwrap_or_default()
                         },
-                        vec![("close", "从队列移除", Action::RemoveUpload(job.id))],
+                        vec![(
+                            "close",
+                            t("从队列移除", "Remove from queue"),
+                            Action::RemoveUpload(job.id),
+                        )],
                     ),
                     State::Failed(error) => (
-                        "失败".to_owned(),
+                        t("失败", "Failed").to_owned(),
                         ColorRole::ERROR,
                         error.clone(),
                         vec![
-                            ("refresh", "重试", Action::ResumeUpload(job.id)),
-                            ("close", "从队列移除", Action::RemoveUpload(job.id)),
+                            ("refresh", t("重试", "Retry"), Action::ResumeUpload(job.id)),
+                            (
+                                "close",
+                                t("从队列移除", "Remove from queue"),
+                                Action::RemoveUpload(job.id),
+                            ),
                         ],
                     ),
                     State::Paused => (
-                        "已取消 · 可续传".to_owned(),
+                        t("已取消 · 可续传", "Cancelled · can resume").to_owned(),
                         ColorRole::ON_SURFACE_VARIANT,
-                        format!(
+                        tf!(
                             "已上传 {} / {} · 继续时从中断处开始",
+                            "{} / {} uploaded · resumes where it stopped",
                             format::bytes(p.bytes_done),
                             format::bytes(p.bytes_total)
                         ),
                         vec![
-                            ("play_arrow", "继续", Action::ResumeUpload(job.id)),
-                            ("close", "从队列移除", Action::RemoveUpload(job.id)),
+                            (
+                                "play_arrow",
+                                t("继续", "Resume"),
+                                Action::ResumeUpload(job.id),
+                            ),
+                            (
+                                "close",
+                                t("从队列移除", "Remove from queue"),
+                                Action::RemoveUpload(job.id),
+                            ),
                         ],
                     ),
                     State::Done { .. } => unreachable!(),
@@ -333,16 +395,20 @@ impl Gdirect {
                     .px(rem(24.))
                     .pb(rem(16.))
                     .child(
-                        ui::text(TypeRole::HeadlineSmall, ColorRole::ON_SURFACE, "传输")
-                            .flex_1()
-                            .min_w(rem(120.)),
+                        ui::text(
+                            TypeRole::HeadlineSmall,
+                            ColorRole::ON_SURFACE,
+                            t("传输", "Transfers"),
+                        )
+                        .flex_1()
+                        .min_w(rem(120.)),
                     )
                     .child(self.render_stepper(cx))
                     .child(
-                        ConnectedButtonGroup::new("transfer-kind", "传输类型")
+                        ConnectedButtonGroup::new("transfer-kind", t("传输类型", "Transfer type"))
                             .options([
-                                ("dl", format!("下载 · {dl_count}")),
-                                ("up", format!("上传 · {up_count}")),
+                                ("dl", tf!("下载 · {dl_count}", "Downloads · {dl_count}")),
+                                ("up", tf!("上传 · {up_count}", "Uploads · {up_count}")),
                             ])
                             .icon("dl", Symbol::DOWNLOAD)
                             .icon("up", Symbol::UPLOAD)
@@ -388,17 +454,21 @@ impl Gdirect {
                 ui::text(
                     TypeRole::LabelLarge,
                     ColorRole::ON_SURFACE_VARIANT,
-                    "连接数",
+                    t("连接数", "Connections"),
                 )
                 .mr(rem(4.)),
             )
             .child(
-                IconButton::new("conn-down", Symbol::REMOVE, "减少连接数")
-                    .button_size(ButtonSize::ExtraSmall)
-                    .disabled(n <= 1)
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                        this.set_connections(this.settings.connections - 1, window, cx)
-                    })),
+                IconButton::new(
+                    "conn-down",
+                    Symbol::REMOVE,
+                    t("减少连接数", "Fewer connections"),
+                )
+                .button_size(ButtonSize::ExtraSmall)
+                .disabled(n <= 1)
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.set_connections(this.settings.connections - 1, window, cx)
+                })),
             )
             .child(
                 ui::text(TypeRole::TitleMedium, ColorRole::ON_SURFACE, n.to_string())
@@ -406,7 +476,7 @@ impl Gdirect {
                     .text_center(),
             )
             .child(
-                IconButton::new("conn-up", Symbol::ADD, "增加连接数")
+                IconButton::new("conn-up", Symbol::ADD, t("增加连接数", "More connections"))
                     .button_size(ButtonSize::ExtraSmall)
                     .disabled(n >= 16)
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
@@ -434,29 +504,49 @@ impl Gdirect {
         let (title, sub) = if uploads {
             match self.queues.active_upload() {
                 Some(job) => (
-                    format!("正在上传 · {}", format::speed(job.speed)),
-                    format!(
-                        "队列中还有 {} 项 · 上传始终新建文件",
-                        queued.saturating_sub(1)
-                    ),
+                    tf!("正在上传 · {}", "Uploading · {}", format::speed(job.speed)),
+                    {
+                        let left = queued.saturating_sub(1);
+                        let s = if left == 1 { "" } else { "s" };
+                        tf!(
+                            "队列中还有 {left} 项 · 上传始终新建文件",
+                            "{left} more item{s} in the queue · uploads always create new files"
+                        )
+                    },
                 ),
                 None => (
-                    "没有进行中的上传".into(),
-                    "把文件拖到“文件”页，或用左上角的 + 上传".into(),
+                    t("没有进行中的上传", "No uploads in progress").into(),
+                    t(
+                        "把文件拖到“文件”页，或用左上角的 + 上传",
+                        "Drop files on the Files page, or use + at the top left to upload",
+                    )
+                    .into(),
                 ),
             }
         } else {
             match self.queues.active_download() {
                 Some(job) => (
-                    format!("正在下载 · {}", format::speed(job.stats.speed)),
-                    format!(
-                        "队列中还有 {} 项 · 连接数对下一个下载生效并保存为默认值",
-                        queued.saturating_sub(1)
+                    tf!(
+                        "正在下载 · {}",
+                        "Downloading · {}",
+                        format::speed(job.stats.speed)
                     ),
+                    {
+                        let left = queued.saturating_sub(1);
+                        let s = if left == 1 { "" } else { "s" };
+                        tf!(
+                            "队列中还有 {left} 项 · 连接数对下一个下载生效并保存为默认值",
+                            "{left} more item{s} in the queue · connection count applies to the next download and is saved as the default"
+                        )
+                    },
                 ),
                 None => (
-                    "没有进行中的下载".into(),
-                    format!("保存到 {}", format::home(&self.settings.download_dir)),
+                    t("没有进行中的下载", "No downloads in progress").into(),
+                    tf!(
+                        "保存到 {}",
+                        "Saving to {}",
+                        format::home(&self.settings.download_dir)
+                    ),
                 ),
             }
         };
@@ -479,9 +569,9 @@ impl Gdirect {
                     "{}· {}",
                     ms.map(|ms| format!("· {ms} ms ")).unwrap_or_default(),
                     if sni.is_empty() {
-                        "真实 SNI".to_owned()
+                        t("真实 SNI", "Real SNI").to_owned()
                     } else {
-                        format!("伪装 · {sni}")
+                        tf!("伪装 · {sni}", "Disguised · {sni}")
                     }
                 ))
         });
@@ -522,17 +612,18 @@ impl Gdirect {
                         .icon(Symbol::REFRESH)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             let n = this.queues.retry_failed();
-                            this.say(format!("已重新排队 {n} 项"), cx);
+                            let s = if n == 1 { "" } else { "s" };
+                            this.say(tf!("已重新排队 {n} 项", "Requeued {n} item{s}"), cx);
                             this.pump(cx);
                         }))
-                        .child("重试失败项"),
+                        .child(t("重试失败项", "Retry failed")),
                 )
             })
             .child(if uploads {
                 MaterialButton::new("open-target")
                     .icon(Symbol::FOLDER_OPEN)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.go(Page::Files, cx)))
-                    .child("在云盘中查看")
+                    .child(t("在云盘中查看", "Show in Google Drive"))
             } else {
                 MaterialButton::new("open-target")
                     .icon(Symbol::FOLDER_OPEN)
@@ -541,7 +632,7 @@ impl Gdirect {
                         let _ = std::fs::create_dir_all(&dir);
                         cx.open_with_system(&dir);
                     }))
-                    .child("打开下载目录")
+                    .child(t("打开下载目录", "Open download folder"))
             })
     }
 
@@ -564,9 +655,12 @@ impl Gdirect {
                         TypeRole::BodyMedium,
                         ColorRole::ON_SURFACE_VARIANT,
                         if uploads {
-                            "队列是空的"
+                            t("队列是空的", "The queue is empty")
                         } else {
-                            "队列是空的 · 在“文件”页选择文件后点“下载”"
+                            t(
+                                "队列是空的 · 在“文件”页选择文件后点“下载”",
+                                "The queue is empty · select files on the Files page and choose Download",
+                            )
                         },
                     ))
                     .into_any_element(),
@@ -588,7 +682,10 @@ impl Gdirect {
                     .items_center()
                     .justify_between()
                     .min_h(rem(40.))
-                    .child(ui::section_label("队列 · 依次进行"))
+                    .child(ui::section_label(t(
+                        "队列 · 依次进行",
+                        "Queue · one at a time",
+                    )))
                     .when(has_queued, |d| {
                         d.child(
                             material_button("clear-queued", ButtonVariant::Text)
@@ -596,7 +693,7 @@ impl Gdirect {
                                     this.queues.clear_queued(uploads);
                                     cx.notify();
                                 }))
-                                .child("移除未开始的项"),
+                                .child(t("移除未开始的项", "Remove queued items")),
                         )
                     }),
             )
@@ -636,7 +733,7 @@ impl Gdirect {
                             .child(ui::text(TypeRole::LabelLarge, row.status_ink, row.status)),
                     )
                     .child(
-                        LinearProgress::new(id.clone(), format!("{} 进度", row.name))
+                        LinearProgress::new(id.clone(), tf!("{} 进度", "{} progress", row.name))
                             .value(row.fraction)
                             .muted(row.muted),
                     )
@@ -685,7 +782,7 @@ impl Gdirect {
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.show_folder(parent.0.clone(), parent.1.clone(), cx)
                         }))
-                        .child("在云盘中查看")
+                        .child(t("在云盘中查看", "Show in Google Drive"))
                         .into_any_element(),
                     None,
                 ));
@@ -708,13 +805,13 @@ impl Gdirect {
                     MaterialButton::new(("open-dl", job.id as usize))
                         .variant(ButtonVariant::Tonal)
                         .on_click(move |_, _, cx| cx.open_with_system(&open))
-                        .child("打开")
+                        .child(t("打开", "Open"))
                         .into_any_element(),
                     Some(
                         IconButton::new(
                             ("reveal-dl", job.id as usize),
                             Symbol::FOLDER_OPEN,
-                            "在访达中显示",
+                            t("在访达中显示", "Show in Finder"),
                         )
                         .on_click(move |_, _, cx| cx.reveal_path(&reveal))
                         .into_any_element(),
@@ -735,14 +832,14 @@ impl Gdirect {
                     .items_center()
                     .justify_between()
                     .min_h(rem(40.))
-                    .child(ui::section_label("已完成"))
+                    .child(ui::section_label(t("已完成", "Completed")))
                     .child(
                         material_button("clear-done", ButtonVariant::Text)
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                 this.queues.clear_finished(uploads);
                                 cx.notify();
                             }))
-                            .child("清除"),
+                            .child(t("清除", "Clear")),
                     ),
             )
             .child(ui::group(rows))

@@ -1,4 +1,6 @@
 //! Signing in and out, switching accounts, and the background mount.
+use crate::i18n::t;
+use crate::tf;
 use crate::{app::Gdirect, ui};
 use gdirect::{api::Api, store::Store};
 use gpui_kit::{prelude::*, *};
@@ -16,7 +18,13 @@ impl Gdirect {
         let db_path = self.db_path.clone();
         let current = self.account.clone();
         let reauth = client.is_none();
-        self.say("已在浏览器中打开 Google 登录页…", cx);
+        self.say(
+            t(
+                "已在浏览器中打开 Google 登录页…",
+                "Opened Google sign-in in your browser…",
+            ),
+            cx,
+        );
         self.background(
             move || -> anyhow::Result<String> {
                 let api = Api::new(db_path, current, None, None, false)?;
@@ -26,12 +34,18 @@ impl Gdirect {
                 this.signing_in = false;
                 match result {
                     Ok(email) => {
-                        this.say(format!("已登录 {email}（默认账号）"), cx);
+                        this.say(
+                            tf!(
+                                "已登录 {email}（默认账号）",
+                                "Signed in as {email} (default account)"
+                            ),
+                            cx,
+                        );
                         this.reload_accounts();
                         this.reset_files();
                         this.connect(cx);
                     }
-                    Err(e) => this.say(format!("登录失败：{e:#}"), cx),
+                    Err(e) => this.say(tf!("登录失败：{e:#}", "Sign-in failed: {e:#}"), cx),
                 }
             },
         );
@@ -43,7 +57,7 @@ impl Gdirect {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("选择 OAuth 客户端 JSON".into()),
+            prompt: Some(t("选择 OAuth 客户端 JSON", "Choose OAuth client JSON").into()),
         });
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(mut paths))) = rx.await
@@ -86,7 +100,7 @@ impl Gdirect {
         }
         self.reload_accounts();
         self.reset_files();
-        self.say(format!("默认账号：{email}"), cx);
+        self.say(tf!("默认账号：{email}", "Default account: {email}"), cx);
         self.connect(cx);
     }
 
@@ -98,7 +112,13 @@ impl Gdirect {
             .flatten()
             .is_some()
         {
-            self.say(format!("{account} 有后台挂载，请先卸载"), cx);
+            self.say(
+                tf!(
+                    "{account} 有后台挂载，请先卸载",
+                    "{account} has a background mount. Unmount it first."
+                ),
+                cx,
+            );
             return;
         }
         if let Err(e) = self.db.remove_account(&account) {
@@ -110,7 +130,7 @@ impl Gdirect {
         }
         let was_current = self.account.as_ref() == Some(&account);
         self.reload_accounts();
-        self.say(format!("已退出 {account}"), cx);
+        self.say(tf!("已退出 {account}", "Signed out of {account}"), cx);
         if was_current {
             self.reset_files();
             self.connect(cx);
@@ -136,8 +156,14 @@ impl Gdirect {
                     this.mount_busy = false;
                     this.reload_accounts();
                     match result {
-                        Ok(()) => this.say("已卸载，缓存中的写入会保留到下次挂载", cx),
-                        Err(e) => this.say(format!("卸载失败：{e:#}"), cx),
+                        Ok(()) => this.say(
+                            t(
+                                "已卸载，缓存中的写入会保留到下次挂载",
+                                "Unmounted. Cached writes are kept until the next mount.",
+                            ),
+                            cx,
+                        ),
+                        Err(e) => this.say(tf!("卸载失败：{e:#}", "Couldn’t unmount: {e:#}"), cx),
                     }
                 },
             );
@@ -167,8 +193,14 @@ impl Gdirect {
                     this.mount_busy = false;
                     this.reload_accounts();
                     match result {
-                        Ok(()) => this.say("已挂载，可以在访达中打开", cx),
-                        Err(e) => this.say(format!("挂载失败：{e:#}"), cx),
+                        Ok(()) => this.say(
+                            t(
+                                "已挂载，可以在访达中打开",
+                                "Mounted. You can open it in Finder.",
+                            ),
+                            cx,
+                        ),
+                        Err(e) => this.say(tf!("挂载失败：{e:#}", "Couldn’t mount: {e:#}"), cx),
                     }
                 },
             );
@@ -202,11 +234,14 @@ impl Gdirect {
                             .justify_center()
                             .child(ui::symbol("add_to_drive", true).size(rem(40.)).color(color(ColorRole::ON_PRIMARY_CONTAINER))),
                     )
-                    .child(ui::text(TypeRole::HeadlineMedium, ColorRole::ON_SURFACE, "登录 Google 云盘"))
+                    .child(ui::text(TypeRole::HeadlineMedium, ColorRole::ON_SURFACE, t("登录 Google 云盘", "Sign in to Google Drive")))
                     .child(ui::text(
                         TypeRole::BodyLarge,
                         ColorRole::ON_SURFACE_VARIANT,
-                        "gdirect 用你自己的 Google 桌面应用 OAuth 客户端登录，直接连到可达的 Google 前端传输文件。选择从 Google Cloud 控制台下载的客户端 JSON，然后在浏览器中选择账号。",
+                        t(
+                            "gdirect 用你自己的 Google 桌面应用 OAuth 客户端登录，直接连到可达的 Google 前端传输文件。选择从 Google Cloud 控制台下载的客户端 JSON，然后在浏览器中选择账号。",
+                            "gdirect signs in with your own Google desktop-app OAuth client and transfers files straight through a reachable Google front end. Choose the client JSON you downloaded from the Google Cloud console, then pick an account in your browser.",
+                        ),
                     ))
                     .child(
                         div()
@@ -218,9 +253,9 @@ impl Gdirect {
                                 MaterialButton::new("choose-client")
                                     .button_size(ButtonSize::Medium)
                                     .icon(Symbol::KEY)
-                                    .loading(self.signing_in, "正在等待浏览器登录")
+                                    .loading(self.signing_in, t("正在等待浏览器登录", "Waiting for browser sign-in"))
                                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.choose_client(cx)))
-                                    .child("选择客户端 JSON…"),
+                                    .child(t("选择客户端 JSON…", "Choose client JSON…")),
                             )
                             .when(self.oauth_client, |d| {
                                 d.child(
@@ -230,7 +265,7 @@ impl Gdirect {
                                         .icon(Symbol::LOGIN)
                                         .disabled(self.signing_in)
                                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.login(None, cx)))
-                                        .child("使用已保存的客户端"),
+                                        .child(t("使用已保存的客户端", "Use saved client")),
                                 )
                             }),
                     )
@@ -238,7 +273,10 @@ impl Gdirect {
                         notice_banner(
                             "welcome-tip",
                             NoticeKind::Info,
-                            "应用处于测试阶段时，每个账号都要加为测试用户，登录 7 天后过期。",
+                            t(
+                                "应用处于测试阶段时，每个账号都要加为测试用户，登录 7 天后过期。",
+                                "While the app is in testing, add each account as a test user. Sign-ins expire after 7 days.",
+                            ),
                         )
                         .mt(rem(8.)),
                     ),
