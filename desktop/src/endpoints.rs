@@ -100,13 +100,14 @@ impl Gdirect {
                 state.open = open;
                 state.good = good;
             }
-            Event::Intercepted => self.intercepted = true,
+            Event::Intercepted { .. } => self.intercepted = true,
             Event::Verified { .. } => {
                 state.good += 1;
                 self.reload_endpoints();
             }
             Event::Unavailable(_) => self.reload_endpoints(),
-            Event::Skipped(_) | Event::ProbeWarning(_) => {}
+            // The Settings page shows how connections leave this machine.
+            Event::Skipped(_) | Event::ProbeWarning(_) | Event::Network(_) => {}
         }
     }
 
@@ -233,10 +234,17 @@ impl Gdirect {
                             notice_banner(
                                 "tun",
                                 NoticeKind::Warning,
-                                t(
-                                    "几乎所有地址都响应了 TCP，可能有 TUN 代理或 VPN 在拦截，结果反映的是代理而不是你的直连网络。请把 Google IP 段设为 DIRECT 并关闭 fake-ip，然后重新扫描。",
-                                    "Almost every address answered TCP, so a TUN proxy or VPN is probably intercepting traffic and the results reflect the proxy, not your direct network. Set Google's IP ranges to DIRECT, turn off fake-ip, then rescan.",
-                                ),
+                                if self.settings.bypass_tun {
+                                    t(
+                                        "几乎所有地址都响应了 TCP。连接已经绕过 TUN 代理走物理网卡，所以拦截可能来自网卡之下的 VPN、防火墙或路由器，结果反映的是它们而不是你的直连网络。",
+                                        "Almost every address answered TCP. Connections already bypass TUN proxies through your network adapter, so a VPN, firewall or router below it is probably intercepting, and the results reflect it, not your direct network.",
+                                    )
+                                } else {
+                                    t(
+                                        "几乎所有地址都响应了 TCP，可能有 TUN 代理或 VPN 在拦截，结果反映的是代理而不是你的直连网络。在“设置 › 网络”中打开“绕过 TUN 代理直连 Google”，然后重新扫描。",
+                                        "Almost every address answered TCP, so a TUN proxy or VPN is probably intercepting, and the results reflect the proxy, not your direct network. Turn on “Connect to Google directly, bypassing TUN proxies” in Settings › Network, then rescan.",
+                                    )
+                                },
                             )
                             .child(
                                 material_button("tun-ok", ButtonVariant::Text)

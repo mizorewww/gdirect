@@ -560,34 +560,36 @@ impl Gdirect {
                 "Built-in Google GTS root certificates; the system CA isn’t used",
             )),
         };
-        // The Clash rule on one line, with a way to copy it whole.
-        let rule = div()
-            .flex()
-            .items_center()
-            .gap(rem(8.))
-            .pl(rem(20.))
-            .pr(rem(8.))
-            .py(rem(4.))
-            .child(
-                ui::mono(CLASH_RULE)
-                    .flex_1()
-                    .min_w_0()
-                    .whitespace_nowrap()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .text_color(color(ColorRole::ON_SURFACE)),
-            )
-            .child(
-                IconButton::new(
-                    "copy-rule",
-                    Symbol::CONTENT_COPY,
-                    t("复制规则", "Copy rule"),
-                )
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(CLASH_RULE.into()));
-                    this.say(t("已复制规则", "Rule copied"), cx);
-                })),
-            );
+        // What bypassing does on this network right now.
+        let network = gdirect::netif::status();
+        let bypass_now = match (
+            s.bypass_tun,
+            network.bound(),
+            &network.physical,
+            &network.tun,
+        ) {
+            (true, Some(bound), _, Some(tun)) => Some(tf!(
+                "当前：{}，绕过 {tun}",
+                "Now: {}, bypassing {tun}",
+                bound.name
+            )),
+            (true, Some(bound), _, None) => Some(tf!("当前：{}", "Now: {}", bound.name)),
+            (true, None, Some(physical), _) => Some(tf!(
+                "无法绑定到 {}，连接仍可能被代理接管",
+                "Can’t bind to {}; your proxy may still take these connections",
+                physical.name
+            )),
+            (false, _, _, Some(tun)) => Some(tf!("当前：经过 {tun}", "Now: through {tun}",)),
+            _ => None,
+        };
+        let bypass_text = t(
+            "TUN 模式的代理或 VPN 开着时，gdirect 连接 Google 仍走物理网卡；关闭后由代理规则决定。切换后会重新扫描线路",
+            "With a TUN-mode proxy or VPN on, gdirect still reaches Google through your network adapter. Turn off to let your proxy rules decide. Switching rescans routes",
+        );
+        let bypass_text = match bypass_now {
+            Some(now) => format!("{bypass_text}{}{now}", t("。", ". ")),
+            None => bypass_text.to_owned(),
+        };
         div()
             .flex()
             .flex_col()
@@ -629,6 +631,28 @@ impl Gdirect {
                         ).into()),
                         identity,
                     ),
+                    ui::setting_row(
+                        "alt_route",
+                        t("绕过 TUN 代理直连 Google", "Connect to Google directly, bypassing TUN proxies"),
+                        Some(bypass_text.into()),
+                        Some(
+                            MaterialSwitch::new(
+                                "bypass-tun",
+                                t("绕过 TUN 代理直连 Google", "Connect to Google directly, bypassing TUN proxies"),
+                            )
+                            .checked(s.bypass_tun)
+                            .on_change(cx.listener(|this, on: &bool, _, cx| {
+                                this.settings.bypass_tun = *on;
+                                let _ = gdirect::netif::save(&this.db, *on);
+                                // Endpoints verified over the other path no
+                                // longer count: connecting scans again.
+                                let _ = gdirect::netif::sync(&this.db);
+                                this.reload_endpoints();
+                                this.connect(cx);
+                            }))
+                            .into_any_element(),
+                        ),
+                    ),
                 ])),
             )
             .child(
@@ -662,18 +686,6 @@ impl Gdirect {
                         }),
                     ),
                 ])),
-            )
-            .child(
-                section(t("与 Clash/Mihomo 一起使用", "With Clash/Mihomo"))
-                    .child(notice_banner(
-                        "tun-tip",
-                        NoticeKind::Info,
-                        t(
-                            "开着 TUN？把 Google IP 段设为 DIRECT 并关闭 fake-ip，或者添加下面这条规则。",
-                            "Using TUN mode? Set Google’s IP ranges to DIRECT and turn off fake-ip, or add the rule below.",
-                        ),
-                    ))
-                    .child(ui::group(vec![rule.into_any_element()])),
             )
     }
 
@@ -1017,9 +1029,6 @@ const RAIL: f32 = 88.;
 const MARGIN: f32 = 8.;
 /// The widest the pane, and the list when alone, grows.
 const MAX_W: f32 = 720.;
-
-/// The rule that sends the app around a Clash/Mihomo TUN.
-const CLASH_RULE: &str = "PROCESS-NAME,gdirect-desktop,DIRECT";
 
 /// How the settings page splits the content area, in logical px.
 #[derive(Clone, Copy)]

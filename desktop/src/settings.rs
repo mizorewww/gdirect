@@ -45,6 +45,10 @@ pub struct Settings {
     pub ca_cert: Option<PathBuf>,
     /// A pinned front end (`--ip`); None picks the fastest.
     pub pinned: Option<std::net::IpAddr>,
+    /// Bind Google connections to the network adapter so a TUN proxy cannot
+    /// capture them; shared with `gdirect scan --bypass-tun`, and saved by
+    /// `gdirect::netif::save` when switched rather than by [`Settings::save`].
+    pub bypass_tun: bool,
     pub mount_path: PathBuf,
     pub read_only: bool,
     pub theme: Theme,
@@ -55,7 +59,11 @@ pub struct Settings {
 const PREFIX: &str = "desktop.";
 
 impl Settings {
+    /// Reads the preferences. It also applies the TUN bypass choice to this
+    /// process and retires endpoints verified over another network path, so
+    /// that the route check that follows at launch sees them as gone.
     pub fn load(db: &Store) -> Self {
+        let _ = gdirect::netif::sync(db);
         let get = |key: &str| db.setting(&format!("{PREFIX}{key}")).ok().flatten();
         let flag = |key: &str, default: bool| get(key).map_or(default, |v| v == "1");
         let home = dirs::home_dir().unwrap_or_default();
@@ -80,6 +88,7 @@ impl Settings {
             },
             ca_cert: get("ca_cert").map(PathBuf::from),
             pinned: get("pinned").and_then(|ip| ip.parse().ok()),
+            bypass_tun: gdirect::netif::saved(db),
             mount_path: get("mount_path")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| home.join("GoogleDrive")),
