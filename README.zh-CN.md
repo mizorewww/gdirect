@@ -13,12 +13,13 @@
   <img alt="gdirect 桌面客户端：列出云盘文件夹，一个文件正在下载，其余在排队" src="docs/images/files-light.png">
 </picture>
 
-<p align="center">
-  <a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-windows-x64.msi"><img alt="下载 Windows 版" src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20Windows%20%E7%89%88-0078D4?style=for-the-badge&logo=windows&logoColor=white"></a>
-  <a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-macos-arm64.zip"><img alt="下载 macOS 版（Apple 芯片）" src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20macOS%20%E7%89%88%EF%BC%88Apple%20%E8%8A%AF%E7%89%87%EF%BC%89-000000?style=for-the-badge&logo=apple&logoColor=white"></a>
-  <a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-macos-x64.zip"><img alt="下载 macOS 版（Intel）" src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20macOS%20%E7%89%88%EF%BC%88Intel%EF%BC%89-000000?style=for-the-badge&logo=apple&logoColor=white"></a>
-  <a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-linux-x64.tar.gz"><img alt="下载 Linux 版" src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20Linux%20%E7%89%88-FCC624?style=for-the-badge&logo=linux&logoColor=black"></a>
-</p>
+<p align="center"><a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-windows-x64.msi"><img alt="下载 Windows 版" src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20Windows%20%E7%89%88-0078D4?style=for-the-badge&logo=windows&logoColor=white"></a></p>
+
+<p align="center"><a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-macos-arm64.zip"><img alt="下载 macOS 版（Apple 芯片）" src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20macOS%20%E7%89%88%EF%BC%88Apple%20%E8%8A%AF%E7%89%87%EF%BC%89-000000?style=for-the-badge&logo=apple&logoColor=white"></a></p>
+
+<p align="center"><a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-macos-x64.zip"><img alt="下载 macOS 版（Intel）" src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20macOS%20%E7%89%88%EF%BC%88Intel%EF%BC%89-000000?style=for-the-badge&logo=apple&logoColor=white"></a></p>
+
+<p align="center"><a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-linux-x64.tar.gz"><img alt="下载 Linux 版" src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20Linux%20%E7%89%88-FCC624?style=for-the-badge&logo=linux&logoColor=black"></a></p>
 
 - **直连传输：** 扫描 Google 自己的前端，只用能连通的那些；证书按程序内置的 Google 根证书校验。
 - **快且可续传：** 每个下载最多 16 条连接，完成后校验 MD5；下载和上传中断后都能接着传。

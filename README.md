@@ -13,12 +13,13 @@ Browse, download, upload and mount your Google Drive from networks where Google 
   <img alt="The gdirect desktop client listing a Drive folder, with one file downloading and others queued" src="docs/images/en/files-light.png">
 </picture>
 
-<p align="center">
-  <a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-windows-x64.msi"><img alt="Download for Windows" src="https://img.shields.io/badge/Download%20for%20Windows-0078D4?style=for-the-badge&logo=windows&logoColor=white"></a>
-  <a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-macos-arm64.zip"><img alt="Download for macOS (Apple silicon)" src="https://img.shields.io/badge/Download%20for%20macOS%20%28Apple%20silicon%29-000000?style=for-the-badge&logo=apple&logoColor=white"></a>
-  <a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-macos-x64.zip"><img alt="Download for macOS (Intel)" src="https://img.shields.io/badge/Download%20for%20macOS%20%28Intel%29-000000?style=for-the-badge&logo=apple&logoColor=white"></a>
-  <a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-linux-x64.tar.gz"><img alt="Download for Linux" src="https://img.shields.io/badge/Download%20for%20Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black"></a>
-</p>
+<p align="center"><a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-windows-x64.msi"><img alt="Download for Windows" src="https://img.shields.io/badge/Download%20for%20Windows-0078D4?style=for-the-badge&logo=windows&logoColor=white"></a></p>
+
+<p align="center"><a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-macos-arm64.zip"><img alt="Download for macOS (Apple silicon)" src="https://img.shields.io/badge/Download%20for%20macOS%20%28Apple%20silicon%29-000000?style=for-the-badge&logo=apple&logoColor=white"></a></p>
+
+<p align="center"><a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-macos-x64.zip"><img alt="Download for macOS (Intel)" src="https://img.shields.io/badge/Download%20for%20macOS%20%28Intel%29-000000?style=for-the-badge&logo=apple&logoColor=white"></a></p>
+
+<p align="center"><a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-linux-x64.tar.gz"><img alt="Download for Linux" src="https://img.shields.io/badge/Download%20for%20Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black"></a></p>
 
 - **Direct transfers:** scans Google's own front ends and keeps the ones that answer; certificates are checked against Google's roots built into the binary.
 - **Fast and resumable:** up to 16 connections per download, MD5 checked; interrupted downloads and uploads pick up where they stopped.
