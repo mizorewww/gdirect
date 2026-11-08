@@ -18,6 +18,10 @@ use std::borrow::Cow;
 fn main() -> anyhow::Result<()> {
     // A pinned background mount runs rclone under `<this binary> mount-helper`.
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if args.first().is_some_and(|a| a == "--version") {
+        println!("gdirect-desktop {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     if args.first().is_some_and(|a| a == "mount-helper") {
         return mount_helper(&args[1..]);
     }
