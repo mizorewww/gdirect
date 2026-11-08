@@ -427,6 +427,13 @@ impl Gdirect {
             .child(div().w(rem(COLUMNS[2])).child("TLS 身份"))
             .child(div().flex_1().min_w(rem(120.)).child("状态"))
             .child(div().w(rem(COLUMNS[3])));
+        // Bars compare the listed front ends, on a scale of at least 200 ms.
+        let slowest = rows
+            .iter()
+            .filter_map(|e| e.latency_ms)
+            .max()
+            .unwrap_or(0)
+            .max(200) as f32;
         let body: Vec<AnyElement> = rows
             .into_iter()
             .enumerate()
@@ -440,7 +447,9 @@ impl Gdirect {
                 } else {
                     ColorRole::ON_SURFACE_VARIANT
                 };
-                let bar = e.latency_ms.map(|ms| (ms as f32 / 200.).clamp(0.03, 1.));
+                let bar = e
+                    .latency_ms
+                    .map(|ms| ((ms as f32 / slowest).clamp(0.03, 1.), ms < 300));
                 div()
                     .flex()
                     .items_center()
@@ -477,7 +486,7 @@ impl Gdirect {
                                 )
                                 .w(rem(56.)),
                             )
-                            .when_some(bar, |d, fraction| {
+                            .when_some(bar, |d, (fraction, fast)| {
                                 d.child(
                                     div()
                                         .w(rem(80.))
@@ -486,7 +495,7 @@ impl Gdirect {
                                         .bg(color(ColorRole::SURFACE_CONTAINER_HIGHEST))
                                         .child(
                                             div().h_full().w(relative(fraction)).rounded_full().bg(
-                                                color(if fraction < 0.25 {
+                                                color(if fast {
                                                     ColorRole::PRIMARY
                                                 } else {
                                                     ColorRole::OUTLINE
