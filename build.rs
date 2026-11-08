@@ -52,6 +52,17 @@ fn main() {
     });
     if let Some(ssl) = &ssl {
         println!("cargo:rustc-link-search=native={ssl}/lib");
+    } else if static_ssl && os != "macos" {
+        // Bundling a static library into the library crate, rustc searches only
+        // -L paths, not the linker's defaults such as Debian's multiarch
+        // directory; ask the C compiler where libssl.a is.
+        let cc = env::var("CC").unwrap_or_else(|_| "cc".into());
+        if let Ok(out) = Command::new(cc).arg("-print-file-name=libssl.a").output() {
+            let library = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+            if let Some(parent) = library.parent().filter(|p| p.is_absolute()) {
+                println!("cargo:rustc-link-search=native={}", parent.display());
+            }
+        }
     }
     if static_ssl && os == "macos" {
         // Darwin's -l search can prefer a dylib even for Rust static native libraries.
@@ -89,7 +100,7 @@ fn main() {
     ] {
         println!("cargo:rerun-if-changed={path}");
     }
-    for var in ["OPENSSL_PREFIX", "OPENSSL_STATIC"] {
+    for var in ["OPENSSL_PREFIX", "OPENSSL_STATIC", "CC"] {
         println!("cargo:rerun-if-env-changed={var}");
     }
 }
