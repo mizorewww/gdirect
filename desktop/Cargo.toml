@@ -27,6 +27,10 @@ gpui-material-symbols = { version = "0.1", default-features = false, features = 
 
 [workspace]
 
+# Release builds ship without debug symbols, a large part of the binary.
+[profile.release]
+strip = true
+
 [profile.dev]
 debug = "line-tables-only"
 
