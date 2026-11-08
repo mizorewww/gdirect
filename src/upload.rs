@@ -334,11 +334,14 @@ pub struct TreeProgress {
 pub struct TreeUpload {
     pub id: String,
     pub name: String,
-    uploaded: usize,
-    unchanged: usize,
-    folders: usize,
-    skipped: usize,
-    bytes: u64,
+    /// Files uploaded in this run, and their bytes.
+    pub uploaded: usize,
+    pub bytes: u64,
+    /// Files a previous run had already uploaded.
+    pub unchanged: usize,
+    pub folders: usize,
+    /// Local items left out (symbolic links, unreadable entries).
+    pub skipped: usize,
 }
 impl TreeUpload {
     /// A one-line result suitable for a terminal or the browse status bar.
