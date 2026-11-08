@@ -118,6 +118,7 @@ impl Gdirect {
         self.selected.clear();
         self.list_error = None;
         self.filter.clear();
+        self.clear_filter = true;
         self.rows.scroll_to_item(0, ScrollStrategy::Top);
         self.refresh(cx);
     }
@@ -383,9 +384,13 @@ impl Gdirect {
 
     pub fn render_files(
         &mut self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        if std::mem::take(&mut self.clear_filter) {
+            self.filter_input
+                .update(cx, |input, cx| input.set_value("", window, cx));
+        }
         div()
             .size_full()
             .flex()

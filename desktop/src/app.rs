@@ -137,6 +137,8 @@ pub struct Gdirect {
     pub row_menu: Option<String>,
     pub dialog: Option<Dialog>,
     pub name_input: Entity<InputState>,
+    /// The filter field shows text that no longer applies; empty it.
+    pub clear_filter: bool,
     /// The dialog's name field takes focus once the dialog is up.
     focus_name: bool,
     /// Bumped by each connection attempt; results from older ones are dropped.
@@ -260,6 +262,7 @@ impl Gdirect {
             dialog: None,
             name_input,
             focus_name: false,
+            clear_filter: false,
             session: 0,
             rows: UniformListScrollHandle::new(),
             queues: Queues::default(),
