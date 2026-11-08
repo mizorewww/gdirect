@@ -32,7 +32,8 @@ pub fn run(
     connections: u8,
     endpoints: Vec<IpAddr>,
 ) -> Result<()> {
-    let version = Command::new("rclone")
+    let rclone = rclone();
+    let version = Command::new(&rclone)
         .arg("version")
         .output()
         .context("install rclone first (macOS: brew install rclone)")?;
@@ -173,7 +174,7 @@ pub fn run(
         log.display()
     );
     if foreground || cfg!(windows) {
-        let mut command = Command::new("rclone");
+        let mut command = Command::new(&rclone);
         command
             .args(&args)
             .env("GOOGLE_APPLICATION_CREDENTIALS", &credentials);
@@ -201,7 +202,7 @@ pub fn run(
         command.arg("--");
     }
     command
-        .arg("rclone")
+        .arg(&rclone)
         .args(&args)
         .env("GOOGLE_APPLICATION_CREDENTIALS", &credentials);
     #[cfg(unix)]
@@ -269,13 +270,46 @@ pub fn run(
         log.display()
     )
 }
+/// The rclone to run. An app started from the macOS Finder gets a minimal PATH
+/// without Homebrew or the installer's ~/.local/bin, so those are tried after
+/// PATH; plain "rclone" (and its error) when none has it.
+pub fn rclone() -> PathBuf {
+    let name = if cfg!(windows) {
+        "rclone.exe"
+    } else {
+        "rclone"
+    };
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default();
+    if let Some(home) = dirs::home_dir() {
+        dirs.push(home.join(".local/bin"));
+    }
+    dirs.extend(
+        [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/home/linuxbrew/.linuxbrew/bin",
+        ]
+        .map(PathBuf::from),
+    );
+    dirs.into_iter()
+        .map(|dir| dir.join(name))
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| PathBuf::from(name))
+}
 /// `gdirect mount-helper`: serves the proxy for a background mount, starts
 /// rclone through it, prints rclone's PID and exits when rclone does.
 pub fn helper(endpoints: Vec<IpAddr>, command: &[OsString]) -> Result<()> {
     let (program, args) = command
         .split_first()
         .context("mount-helper needs a command")?;
-    ensure!(program == "rclone", "mount-helper only runs rclone");
+    ensure!(
+        Path::new(program)
+            .file_stem()
+            .is_some_and(|stem| stem == "rclone"),
+        "mount-helper only runs rclone"
+    );
     let proxy = crate::proxy::spawn(endpoints)?;
     let mut rclone = Command::new(program);
     rclone.args(args).stdin(Stdio::null()).stdout(Stdio::null());
