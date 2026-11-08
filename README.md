@@ -206,3 +206,5 @@ cargo run --release --manifest-path desktop/Cargo.toml
 ```
 
 `--db PATH` uses another state file, as the command line's `--db` does.
+
+gpui-kit-material is under active development and is moving its engine patches upstream. `desktop/Cargo.toml` patches the same crates to its `vendor/` copies, so if a build fails after updating gpui-kit-material, make `[patch]` in `desktop/Cargo.toml` match the one in its `Cargo.toml`.

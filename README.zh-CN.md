@@ -222,3 +222,5 @@ cargo run --release --manifest-path desktop/Cargo.toml
 ```
 
 `--db PATH` 使用另一个数据文件，和命令行的 `--db` 一样。
+
+gpui-kit-material 正在开发中，并在把引擎补丁逐步迁移到上游。`desktop/Cargo.toml` 把同一批 crate 指向它 `vendor/` 下的副本，所以更新 gpui-kit-material 后如果编译失败，把 `desktop/Cargo.toml` 的 `[patch]` 改成和它 `Cargo.toml` 里的一致即可。
