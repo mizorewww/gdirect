@@ -808,7 +808,8 @@ impl Gdirect {
                 MenuPopup::new("new-popup", fab, menu)
                     .open(self.new_menu)
                     .on_open_change(cx.listener(|this, open: &bool, _, cx| {
-                        this.new_menu = *open;
+                        // The menu ignores its trigger's disabled state.
+                        this.new_menu = *open && this.api.is_some();
                         cx.notify();
                     })),
             )
