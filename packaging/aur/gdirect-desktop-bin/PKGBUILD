@@ -14,6 +14,8 @@ depends=(
   'libxkbcommon-x11'
   'libxcb'
   'vulkan-icd-loader'
+  'fontconfig'
+  'freetype2'
   'hicolor-icon-theme'
 )
 optdepends=(
