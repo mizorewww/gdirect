@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Removed
+
+- Third-party relays. The built-in relay 183.56.143.147, tried first since 0.8.0, now refuses connections (thanks to readers who reported it). gdirect now uses only Google's own front ends: stored endpoints outside Google's address space are ignored, `scan --ips` skips them and `--ip` rejects them. `--google-only` and `GDIRECT_GOOGLE_ONLY` are still accepted but have no effect.
+
 ### Added
 
 - Recursive folder upload: `gdirect upload DIR --recursive` mirrors a local folder tree under a new Drive folder, including empty folders. An interrupted run resumes with the same command — folders already created are reused and finished files are skipped — and `--restart` starts over with a new Drive folder. Symbolic links and special files inside the folder are skipped. In `browse`, `u` now accepts a folder path and shows live upload progress in the status bar.

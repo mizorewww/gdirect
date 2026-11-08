@@ -29,11 +29,12 @@ struct Cli {
     /// Signed-in account to use: an address or an unambiguous prefix (default: see gdirect accounts)
     #[arg(short = 'a', long, global = true, env = "GDIRECT_ACCOUNT")]
     account: Option<String>,
-    /// Use only Google's own front ends: skip third-party relays (by default
-    /// a known relay is tried first because it is fast in mainland China)
+    /// No effect: only Google's own front ends are used (kept so scripts that
+    /// pass it keep working)
     #[arg(
         long,
         global = true,
+        hide = true,
         env = "GDIRECT_GOOGLE_ONLY",
         value_parser = clap::builder::BoolishValueParser::new()
     )]
@@ -201,10 +202,15 @@ impl Direct {
             .with_backups(self.backups.clone()))
     }
 }
-fn direct_route(db: &store::Store, route: &Route, google_only: bool) -> Result<Direct> {
+fn direct_route(db: &store::Store, route: &Route) -> Result<Direct> {
     let explicit = route.sni();
     let auto = explicit.is_none();
+    let google = ranges::current(db);
     if let Some(ip) = route.ip {
+        ensure!(
+            google.contains(ip),
+            "{ip} is not in Google's address space; --ip takes a Google front end"
+        );
         return Ok(Direct {
             ip,
             sni: explicit,
@@ -212,11 +218,10 @@ fn direct_route(db: &store::Store, route: &Route, google_only: bool) -> Result<D
             backups: Vec::new(),
         });
     }
-    let google = ranges::current(db);
-    let mut routes = scan::usable(db.routes(16)?, &google, google_only);
+    let mut routes = scan::usable(db.routes(16)?, &google);
     if routes.is_empty() {
-        scan::run(db, None, google_only)?;
-        routes = scan::usable(db.routes(16)?, &google, google_only);
+        scan::run(db, None)?;
+        routes = scan::usable(db.routes(16)?, &google);
     }
     let identity = |sni: String| (!sni.is_empty()).then_some(sni);
     let mut routes = routes.into_iter().map(|r| (r.ip, identity(r.sni)));
@@ -250,10 +255,10 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Scan { list: true, .. } => {
             let google = ranges::current(&db);
             for e in db.endpoints()? {
-                // Anything outside Google's published space is someone else's relay.
+                // Stored by older releases; transfers never use it.
                 let owner = match e.ip.parse() {
                     Ok(ip) if google.contains(ip) => "",
-                    _ => " [third-party relay]",
+                    _ => " [not Google; ignored]",
                 };
                 match e.latency_ms {
                     Some(ms) if e.sni.is_empty() => println!("{}\tOK\t{ms} ms{owner}", e.ip),
@@ -267,7 +272,7 @@ fn run(cli: Cli) -> Result<()> {
             }
         }
         Commands::Scan { ips, .. } => {
-            scan::run(&db, ips.as_deref(), cli.google_only)?;
+            scan::run(&db, ips.as_deref())?;
         }
         Commands::Unmount => {
             let asked = match cli.account.as_deref() {
@@ -338,7 +343,7 @@ fn run(cli: Cli) -> Result<()> {
             route,
         } => {
             let account = account()?;
-            let api = direct_route(&db, &route, cli.google_only)?.api(db_path, account)?;
+            let api = direct_route(&db, &route)?.api(db_path, account)?;
             let files = api.list(&folder)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&files)?);
@@ -380,7 +385,7 @@ fn run(cli: Cli) -> Result<()> {
                 );
             }
             let account = account()?;
-            let api = direct_route(&db, &route, cli.google_only)?.api(db_path, account)?;
+            let api = direct_route(&db, &route)?.api(db_path, account)?;
             if metadata.is_dir() {
                 let uploaded = upload_folder(&api, &file, &parent, name.as_deref(), restart)?;
                 eprintln!("{}", uploaded.summary());
@@ -397,7 +402,7 @@ fn run(cli: Cli) -> Result<()> {
             transfer,
         } => {
             let account = account()?;
-            let api = direct_route(&db, &transfer.route, cli.google_only)?.api(db_path, account)?;
+            let api = direct_route(&db, &transfer.route)?.api(db_path, account)?;
             let connections = transfer.connections.unwrap_or_else(saved);
             start_download(&api, file, output, export, &transfer, connections)?;
         }
@@ -407,7 +412,7 @@ fn run(cli: Cli) -> Result<()> {
             transfer,
         } => {
             let account = account()?;
-            let api = direct_route(&db, &transfer.route, cli.google_only)?.api(db_path, account)?;
+            let api = direct_route(&db, &transfer.route)?.api(db_path, account)?;
             let options = tui::Options {
                 folder,
                 output,

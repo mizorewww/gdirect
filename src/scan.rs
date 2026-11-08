@@ -29,28 +29,13 @@ const OFFSETS: [u8; 7] = [100, 113, 155, 132, 138, 91, 123];
 /// rest of Google's space.
 const CORE: &str = "142.250.0.0/15 172.217.0.0/16 172.253.0.0/16 173.194.0.0/16 74.125.0.0/16 192.178.0.0/15 64.233.160.0/19 66.102.0.0/20 108.177.0.0/17 209.85.128.0/17 216.58.192.0/19 216.239.32.0/19 108.170.192.0/18 72.14.192.0/18";
 const SEEDS: &str = include_str!("frontend-seeds.txt");
-/// Known third-party relays that forward to Google. Not Google: the operator
-/// sees client IPs and, without the forged identity, the hostname, but TLS
-/// stays end to end and is verified against Google's roots. They are fast and
-/// stable in mainland China, so they are tried first unless --google-only.
-const RELAYS: [&str; 1] = ["183.56.143.147"];
-fn relay(ip: IpAddr) -> bool {
-    RELAYS.iter().any(|r| r.parse() == Ok(ip))
-}
-/// Endpoints in the order transfers should use them: known relays first
-/// (unless `google_only`, which drops everything outside Google's space),
-/// then the rest as given (fastest first).
-pub fn usable(
-    routes: Vec<crate::store::Route>,
-    google: &Ranges,
-    google_only: bool,
-) -> Vec<crate::store::Route> {
-    let mut routes: Vec<_> = routes
-        .into_iter()
-        .filter(|r| !google_only || google.contains(r.ip))
-        .collect();
-    routes.sort_by_key(|r| !relay(r.ip));
+/// Endpoints transfers may use, fastest first: only Google's own front ends.
+/// Anything else stored by older releases (third-party relays) is ignored.
+pub fn usable(routes: Vec<crate::store::Route>, google: &Ranges) -> Vec<crate::store::Route> {
     routes
+        .into_iter()
+        .filter(|r| google.contains(r.ip))
+        .collect()
 }
 fn public(ip: IpAddr) -> bool {
     match ip {
@@ -73,7 +58,8 @@ fn public(ip: IpAddr) -> bool {
         }
     }
 }
-fn file_candidates(path: &Path) -> Result<Vec<IpAddr>> {
+/// Candidate IPs from a file; addresses outside Google's space are skipped.
+fn file_candidates(path: &Path, google: &Ranges) -> Result<Vec<IpAddr>> {
     let mut ips = Vec::new();
     for line in std::fs::read_to_string(path)?.lines() {
         let value = line.split('#').next().unwrap_or("").trim();
@@ -82,12 +68,17 @@ fn file_candidates(path: &Path) -> Result<Vec<IpAddr>> {
                 .parse::<IpAddr>()
                 .context("candidate file must contain one IP per line")?;
             ensure!(public(ip), "candidate must be a public IP");
-            if !ips.contains(&ip) {
+            if !google.contains(ip) {
+                eprintln!("  skipping {ip}: not in Google's address space");
+            } else if !ips.contains(&ip) {
                 ips.push(ip);
             }
         }
     }
-    ensure!(!ips.is_empty(), "no candidate IPs");
+    ensure!(
+        !ips.is_empty(),
+        "no candidate IPs in Google's address space"
+    );
     Ok(ips)
 }
 /// Small xorshift generator; the sweep order only needs to differ between
@@ -267,7 +258,6 @@ fn probe(ip: IpAddr, forged: bool) -> Result<(i64, Option<String>)> {
 /// Records verdicts and prints the working endpoints; returns how many verified.
 fn record(
     db: &Store,
-    google: &Ranges,
     verdicts: Vec<Verdict>,
     store_failures: impl Fn(IpAddr) -> bool,
     warned: &mut bool,
@@ -285,15 +275,10 @@ fn record(
                     *warned = true;
                 }
                 db.endpoint(&ip.to_string(), Some(ms), None, sni)?;
-                let owner = if google.contains(ip) {
-                    ""
-                } else {
-                    "  [third-party relay]"
-                };
                 if sni.is_empty() {
-                    eprintln!("  OK  {ip}  {ms} ms{owner}");
+                    eprintln!("  OK  {ip}  {ms} ms");
                 } else {
-                    eprintln!("  OK  {ip}  {ms} ms (SNI {sni}){owner}");
+                    eprintln!("  OK  {ip}  {ms} ms (SNI {sni})");
                 }
                 good.push(ip);
             }
@@ -306,18 +291,17 @@ fn record(
     }
     Ok(good)
 }
-pub fn run(db: &Store, path: Option<&Path>, google_only: bool) -> Result<()> {
+pub fn run(db: &Store, path: Option<&Path>) -> Result<()> {
     let google = crate::ranges::current(db);
     let mut warned = false;
     if let Some(path) = path {
-        // Explicit candidates are probed exactly as listed, relays included.
-        let ips = file_candidates(path)?;
+        let ips = file_candidates(path, &google)?;
         eprintln!(
             "Scanning {} candidates (TLS + Drive API + test download)…",
             ips.len()
         );
         let verdicts = verify(&ips, usize::MAX);
-        record(db, &google, verdicts, |_| true, &mut warned)?;
+        record(db, verdicts, |_| true, &mut warned)?;
     } else {
         crate::ranges::refresh(db, db.best_route()?.map(|r| r.ip));
         let google = crate::ranges::current(db);
@@ -333,17 +317,6 @@ pub fn run(db: &Store, path: Option<&Path>, google_only: bool) -> Result<()> {
             .flatten()
             .map(|a| a.ip())
             .collect();
-        if !google_only {
-            let relays: Vec<IpAddr> = RELAYS.iter().filter_map(|r| r.parse().ok()).collect();
-            eprintln!("Checking known relays (not Google; use --google-only to skip)…");
-            record(
-                db,
-                &google,
-                verify(&relays, usize::MAX),
-                |_| true,
-                &mut warned,
-            )?;
-        }
         let mut queue = plan(&google, &known, &dns, &mut Shuffle::new());
         let mut tried: HashSet<IpAddr> = HashSet::new();
         let mut reached: HashSet<IpAddr> = HashSet::new();
@@ -370,7 +343,7 @@ pub fn run(db: &Store, path: Option<&Path>, google_only: bool) -> Result<()> {
             let candidates: Vec<IpAddr> = answered.into_iter().map(|(ip, _)| ip).collect();
             reached.extend(&candidates);
             let verdicts = verify(&candidates, TARGET - good);
-            let working = record(db, &google, verdicts, |ip| known.contains(&ip), &mut warned)?;
+            let working = record(db, verdicts, |ip| known.contains(&ip), &mut warned)?;
             good += working.len();
             // Front ends come in groups: the rest of a working /24 goes next.
             for ip in working.iter().rev() {
@@ -393,7 +366,7 @@ pub fn run(db: &Store, path: Option<&Path>, google_only: bool) -> Result<()> {
         }
     }
     ensure!(
-        !usable(db.routes(LIMIT)?, &google, google_only).is_empty(),
+        !usable(db.routes(LIMIT)?, &google).is_empty(),
         "no usable Google front end found; route Google IPs DIRECT if you use a TUN proxy, or provide candidates with gdirect scan --ips FILE"
     );
     eprintln!("Verified endpoints saved in SQLite.");
@@ -451,7 +424,7 @@ mod tests {
         }));
     }
     #[test]
-    fn relays_go_first_unless_google_only() {
+    fn only_google_endpoints_are_usable() {
         let google = crate::ranges::embedded();
         let route = |ip: &str| crate::store::Route {
             ip: ip.parse().unwrap(),
@@ -468,17 +441,9 @@ mod tests {
                 route("192.179.60.132"),
             ]
         };
+        // Order is kept (the store returns fastest first).
         assert_eq!(
-            ips(usable(routes(), &google, false)),
-            [
-                "183.56.143.147",
-                "142.250.27.100",
-                "1.2.3.4",
-                "192.179.60.132"
-            ]
-        );
-        assert_eq!(
-            ips(usable(routes(), &google, true)),
+            ips(usable(routes(), &google)),
             ["142.250.27.100", "192.179.60.132"]
         );
     }

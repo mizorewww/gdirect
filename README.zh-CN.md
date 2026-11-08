@@ -12,7 +12,7 @@ gdirect 是一个在终端里浏览、下载、上传和挂载 Google 云盘的�
 | 登录与账号验证（`accounts.google.com`、`oauth2.googleapis.com`、`www.googleapis.com`），以及扫描到的 IP 无法刷新令牌时 | 系统网络（系统 DNS、代理） |
 | `mount`（rclone） | 系统网络 |
 
-第一次运行传输类命令时，会检查一个已知的中转节点，并扫描 Google 自己的前端服务器，在 24 小时内沿用能用的那些。这个中转节点 183.56.143.147 不是 Google 的服务器，它把连接转发给 Google；在中国大陆它又快又稳，所以排在第一个尝试。它读不到你的流量（TLS 端到端加密，证书按 Google 根证书校验），但运营者能看到你的 IP，以及在不用伪造身份时你访问的是哪个 Google 主机。不想经过它，可以加 `--google-only`（或设置 `GDIRECT_GOOGLE_ONLY=1`），这样只用 Google 自己的前端。这些前端的地址来自 Google 公布为自有的 IP 段（[goog.json 减去 cloud.json](https://knowledge.workspace.google.com/admin/security/obtain-google-ip-address-ranges)，内置一份并每周更新）。在中国大陆，大部分 Google IP 被封，但仍有一部分前端可以直连：扫描先试 TCP 连接，只对能连上的做完整验证（TLS、Drive API 和测试下载），找到 8 个就停止。每个候选 IP 先用真实 SNI 探测，失败再试伪造身份。某个 IP（包括中转节点）失效时，请求和下载会自动换到下一个已验证的 IP。`login` 和 `mount` 不扫描。证书只按内置的 Google GTS 根校验，不信任系统 CA 包——第三方 CA 被攻破也无法对 gdirect 冒充 Google。
+第一次运行传输类命令时，会扫描 Google 自己的前端服务器，在 24 小时内沿用能用的那些。这些前端的地址来自 Google 公布为自有的 IP 段（[goog.json 减去 cloud.json](https://knowledge.workspace.google.com/admin/security/obtain-google-ip-address-ranges)，内置一份并每周更新）。在中国大陆，大部分 Google IP 被封，但仍有一部分前端可以直连：扫描先试 TCP 连接，只对能连上的做完整验证（TLS、Drive API 和测试下载），找到 8 个就停止。每个候选 IP 先用真实 SNI 探测，失败再试伪造身份。某个 IP 失效时，请求和下载会自动换到下一个已验证的 IP。`login` 和 `mount` 不扫描。证书只按内置的 Google GTS 根校验，不信任系统 CA 包——第三方 CA 被攻破也无法对 gdirect 冒充 Google。
 
 网络要求：
 
@@ -142,7 +142,7 @@ gdirect upload ./photos -r --parent FOLDER_ID --name "照片备份"
 | `--ca-cert FILE` | 用指定的 CA 证书包代替内置的 Google GTS 根证书 |
 | `--export MIME` | （`download`）导出 Google 文档，例如 `application/pdf` |
 
-`gdirect scan` 会重新扫描，`gdirect scan --list` 查看扫描结果，其中包括每个 IP 最近一次的错误。要测试自己找到的候选 IP，可以执行 `gdirect scan --ips FILE`：文件中每行写一个公网 IP，`#` 后面是注释。不在 Google IP 段内的地址也可以用，但会标为 `[third-party relay]`：这类服务器读不到你的流量（证书仍按 Google 根证书校验），但能看到你的 IP，以及在不用伪造身份时你访问的是哪个 Google 主机。
+`gdirect scan` 会重新扫描，`gdirect scan --list` 查看扫描结果，其中包括每个 IP 最近一次的错误。要测试自己找到的候选 IP，可以执行 `gdirect scan --ips FILE`：文件中每行写一个公网 IP，`#` 后面是注释。只使用 Google 自有 IP 段内的地址，段外的会被跳过，`--ip` 也一样。不支持第三方中转：它们随时可能失效，运营者还能看到你的 IP。
 
 写脚本时可以用 `GDIRECT_ACCESS_TOKEN` 直接提供访问令牌，不必登录（`mount` 仍然需要先 `gdirect login`）。
 
