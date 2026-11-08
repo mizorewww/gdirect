@@ -122,6 +122,10 @@ jobs:
             mingw-w64-x86_64-pkgconf
             mingw-w64-x86_64-python
       - if: steps.msys2.outcome == 'failure'
+        name: Remove the partial MSYS2 install
+        shell: pwsh
+        run: Remove-Item -Recurse -Force "$env:RUNNER_TEMP\msys64" -ErrorAction SilentlyContinue
+      - if: steps.msys2.outcome == 'failure'
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
