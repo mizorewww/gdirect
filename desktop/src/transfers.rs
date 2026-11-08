@@ -459,6 +459,65 @@ pub fn walk(
     Ok(files)
 }
 
+/// An engine error in the client's words: its messages are written for the
+/// command line, and name flags and commands the client does not have.
+pub fn explain(error: &anyhow::Error) -> String {
+    let text = format!("{error:#}");
+    if let Some(code) = text
+        .split("libaria2 code ")
+        .nth(1)
+        .and_then(|rest| rest.split(')').next())
+        .and_then(|code| code.parse::<i32>().ok())
+    {
+        let reason = match code {
+            1 => "连接或 TLS 握手失败，可在“线路”页换一个地址",
+            2 => "连接超时，可在“线路”页重新扫描",
+            3 => "文件不存在，或没有与此账号共享",
+            6 => "网络问题",
+            9 => "磁盘空间不足",
+            13 => "目标文件已存在",
+            15..=18 => "无法写入文件，请检查下载目录的权限和剩余空间",
+            19 => "域名解析失败",
+            22 => "Google 云盘拒绝了下载（配额、权限或下载次数限制）",
+            24 => "授权被拒绝，请在“设置 › 账号”重新登录",
+            _ => "下载出错",
+        };
+        return format!("{reason}（libaria2 错误码 {code}）· 已下载的部分会保留，重试即可续传");
+    }
+    if text.contains("MD5 does not match") {
+        return "下载完成，但 MD5 与云盘记录不一致；文件已保留，以便检查".into();
+    }
+    if text.contains("login/quota error page") {
+        return "Google 云盘返回了登录或配额错误页".into();
+    }
+    if text.contains("local file changed during upload") {
+        return "上传期间本地文件被修改，请在文件稳定后重试".into();
+    }
+    text
+}
+
+/// A finished folder upload in the client's words.
+pub fn folder_summary(result: &gdirect::upload::TreeUpload) -> String {
+    let mut parts = vec![if result.uploaded > 0 {
+        format!(
+            "已上传 {} 个文件（{}）",
+            result.uploaded,
+            format::bytes(result.bytes)
+        )
+    } else if result.unchanged > 0 {
+        "没有新文件".to_owned()
+    } else {
+        format!("已建立 {} 个文件夹", result.folders.max(1))
+    }];
+    if result.unchanged > 0 {
+        parts.push(format!("{} 个此前已上传", result.unchanged));
+    }
+    if result.skipped > 0 {
+        parts.push(format!("跳过 {} 个本地项（如符号链接）", result.skipped));
+    }
+    parts.join(" · ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

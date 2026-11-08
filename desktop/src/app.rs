@@ -684,7 +684,7 @@ impl Gdirect {
                                 }
                             }
                             Err(_) if cancelled => transfers::State::Paused,
-                            Err(e) => transfers::State::Failed(format!("{e:#}")),
+                            Err(e) => transfers::State::Failed(transfers::explain(&e)),
                         };
                     }
                     this.pump(cx);
@@ -711,7 +711,7 @@ impl Gdirect {
                     };
                     if folder {
                         let result = api.upload_dir(&path, &parent, None, false, report)?;
-                        Ok((result.id.clone(), result.summary()))
+                        Ok((result.id.clone(), transfers::folder_summary(&result)))
                     } else {
                         let name = path
                             .file_name()
@@ -746,7 +746,7 @@ impl Gdirect {
                                     note,
                                 };
                             }
-                            Err(e) => job.state = transfers::State::Failed(format!("{e:#}")),
+                            Err(e) => job.state = transfers::State::Failed(transfers::explain(&e)),
                         }
                     }
                     // The folder it went to may be on screen.
