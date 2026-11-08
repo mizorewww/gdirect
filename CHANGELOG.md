@@ -1,14 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.11.0
 
 ### Added
 
-- A desktop client (preview) in `desktop/`, built with gpui-kit-material and Material Symbols: browse, filter, sort and manage files (new folder, rename, copy, move, trash), queue downloads and uploads (drag files in to upload) with live progress, scan and pin endpoints, and manage accounts, mount, download options and appearance. It shares the command line's engine and state. See "Build from source".
+- A desktop client (preview) in `desktop/`, built with gpui-kit-material and Material Symbols: browse, filter, sort and manage files (new folder, rename, copy, move, trash), queue downloads and uploads (drag files in to upload) with live progress, cancel and resume, scan and pin endpoints (with the TUN interception warning), and manage accounts, mount, download options and appearance. It shares the command line's engine and state. It is built from source and needs gpui-kit-material checked out beside this repository; the release binaries remain the command line only. See "Build from source".
 
 ### Changed
 
-- The engine is now a library crate (`gdirect`) that the command and the desktop client both use; `scan` reports its progress through events and can be stopped between batches.
+- The engine is now a library crate (`gdirect`) that the command and the desktop client both use. `scan` reports its progress through events and can be cancelled, including while it verifies a batch; uploads can be cancelled between chunks and resume later. The command line's behaviour and output are unchanged.
 
 ## 0.10.0
 
