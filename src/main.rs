@@ -3,6 +3,7 @@ mod auth;
 mod download;
 mod drive;
 mod mount;
+mod proxy;
 mod ranges;
 mod scan;
 mod store;
@@ -149,6 +150,16 @@ enum Commands {
         /// Parallel rclone transfers, 1-16 (default: value saved in browse, else 8)
         #[arg(short = 'j', long, value_parser = clap::value_parser!(u8).range(1..=16))]
         connections: Option<u8>,
+        #[command(flatten)]
+        route: Route,
+    },
+    /// Runs rclone for a background mount behind a proxy pinned to `endpoint`s
+    #[command(hide = true)]
+    MountHelper {
+        #[arg(long = "endpoint", required = true)]
+        endpoints: Vec<IpAddr>,
+        #[arg(last = true, required = true)]
+        command: Vec<std::ffi::OsString>,
     },
     /// Unmount a background mount (default: the default account's, or the only one)
     Unmount,
@@ -195,6 +206,15 @@ struct Direct {
     backups: Vec<api::Endpoint>,
 }
 impl Direct {
+    /// Endpoints for a raw TLS tunnel, which always carries the real hostname:
+    /// those verified with it first, those that needed the forged one last.
+    fn tunnel_endpoints(&self) -> Vec<IpAddr> {
+        let mut all: Vec<api::Endpoint> = std::iter::once((self.ip, self.sni.clone()))
+            .chain(self.backups.iter().cloned())
+            .collect();
+        all.sort_by_key(|(_, sni)| sni.as_deref().is_some_and(|s| !s.is_empty()));
+        all.into_iter().map(|(ip, _)| ip).collect()
+    }
     fn api(&self, db: PathBuf, account: Option<String>) -> Result<api::Api> {
         // --no-sni is download-only; Drive API requests keep the real name.
         let sni = self.sni.clone().filter(|s| !s.is_empty());
@@ -311,10 +331,33 @@ fn run(cli: Cli) -> Result<()> {
             read_only,
             foreground,
             connections,
+            route,
         } => {
-            let api = api::Api::new(db_path, account()?, None, None, false)?;
             let connections = connections.unwrap_or_else(saved);
-            mount::run(&api, path.as_deref(), read_only, foreground, connections)?;
+            // rclone reaches Google through the verified endpoints; when a scan
+            // finds none, it falls back to the system network as before.
+            let (api, endpoints) = match direct_route(&db, &route) {
+                Ok(direct) => (direct.api(db_path, account()?)?, direct.tunnel_endpoints()),
+                Err(error) if route.ip.is_some() => return Err(error),
+                Err(error) => {
+                    eprintln!("warning: {error:#}; mounting over the system network");
+                    (
+                        api::Api::new(db_path, account()?, None, None, false)?,
+                        Vec::new(),
+                    )
+                }
+            };
+            mount::run(
+                &api,
+                path.as_deref(),
+                read_only,
+                foreground,
+                connections,
+                endpoints,
+            )?;
+        }
+        Commands::MountHelper { endpoints, command } => {
+            mount::helper(endpoints, &command)?;
         }
         Commands::Login {
             reauth,
@@ -620,8 +663,27 @@ mod tests {
         assert!(recursive && restart);
         assert_eq!(name.as_deref(), Some("backup"));
         assert!(parse(&["upload", "f", "-r"]).is_ok());
-        assert!(parse(&["mount", "--ip", "1.1.1.1"]).is_err());
+        assert!(parse(&["mount", "--ip", "1.1.1.1"]).is_ok());
         assert!(parse(&["mount", "-j", "4"]).is_ok());
+        let Some(Commands::MountHelper { endpoints, command }) = parse(&[
+            "mount-helper",
+            "--endpoint",
+            "142.250.27.100",
+            "--endpoint",
+            "2404:6800:4003:c00::5f",
+            "--",
+            "rclone",
+            "mount",
+            "--read-only",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!()
+        };
+        assert_eq!(endpoints.len(), 2);
+        assert_eq!(command, ["rclone", "mount", "--read-only"]);
+        assert!(parse(&["mount-helper", "--", "rclone"]).is_err());
         assert!(matches!(
             parse(&["logout"]).unwrap().command,
             Some(Commands::Logout {

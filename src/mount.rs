@@ -2,7 +2,10 @@ use crate::{api::Api, store::Store};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
+    ffi::OsString,
     fs,
+    io::{BufRead, BufReader, Write},
+    net::IpAddr,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::Duration,
@@ -19,12 +22,15 @@ fn default_mount() -> Result<PathBuf> {
         .context("cannot locate home directory")?
         .join("GoogleDrive"))
 }
+/// Mounts with rclone. With `endpoints`, rclone reaches Google through a
+/// local proxy pinned to them instead of the system network.
 pub fn run(
     api: &Api,
     path: Option<&Path>,
     read_only: bool,
     foreground: bool,
     connections: u8,
+    endpoints: Vec<IpAddr>,
 ) -> Result<()> {
     let version = Command::new("rclone")
         .arg("version")
@@ -72,7 +78,7 @@ pub fn run(
     );
     let credentials_data = crate::auth::credentials(&db, Some(&account))?;
     // Fail here rather than inside rclone if the saved login no longer works.
-    crate::auth::refresh(&credentials_data)?;
+    api.download_token()?;
     let email = account.as_str();
     let path = path
         .map(Path::to_path_buf)
@@ -114,30 +120,20 @@ pub fn run(
     let config = state.join("rclone.conf");
     fs::write(&config, "[gdirect]\ntype = drive\nenv_auth = true\n")?;
     let log = state.join("rclone.log");
-    #[cfg(unix)]
-    let mut command = {
-        if foreground {
-            Command::new("rclone")
-        } else {
-            let mut cmd = Command::new("nohup");
-            cmd.arg("rclone");
-            cmd
-        }
-    };
-    #[cfg(not(unix))]
-    let mut command = Command::new("rclone");
-    command
-        .arg(if cfg!(target_os = "macos") {
+    let mut args: Vec<OsString> = vec![
+        if cfg!(target_os = "macos") {
             "nfsmount"
         } else {
             "mount"
-        })
-        .arg("gdirect:")
-        .arg(&path)
-        .arg("--config")
-        .arg(&config)
-        .env("GOOGLE_APPLICATION_CREDENTIALS", &credentials)
-        .args([
+        }
+        .into(),
+        "gdirect:".into(),
+        path.clone().into(),
+        "--config".into(),
+        config.clone().into(),
+    ];
+    args.extend(
+        [
             "--vfs-cache-mode",
             "full",
             "--vfs-cache-max-size",
@@ -150,26 +146,40 @@ pub fn run(
             "0600",
             "--dir-perms",
             "0700",
-        ])
-        .arg("--transfers")
-        .arg(connections.to_string())
-        .arg("--vfs-read-chunk-streams")
-        .arg(connections.to_string())
-        .args(["--vfs-read-chunk-size", "4M"])
-        .arg("--cache-dir")
-        .arg(state.join("cache"))
-        .arg("--log-file")
-        .arg(&log)
-        .args(["--log-level", "INFO"]);
+            "--transfers",
+            &connections.to_string(),
+            "--vfs-read-chunk-streams",
+            &connections.to_string(),
+            "--vfs-read-chunk-size",
+            "4M",
+            "--log-level",
+            "INFO",
+        ]
+        .map(OsString::from),
+    );
+    args.extend([
+        "--cache-dir".into(),
+        state.join("cache").into(),
+        "--log-file".into(),
+        log.clone().into(),
+    ]);
     if read_only {
-        command.arg("--read-only");
+        args.push("--read-only".into());
     }
+    let pinned = !endpoints.is_empty();
     println!(
         "Mount: {}\nAccount: {email}\nLog: {}",
         path.display(),
         log.display()
     );
     if foreground || cfg!(windows) {
+        let mut command = Command::new("rclone");
+        command
+            .args(&args)
+            .env("GOOGLE_APPLICATION_CREDENTIALS", &credentials);
+        if pinned {
+            crate::proxy::apply(&mut command, crate::proxy::spawn(endpoints)?);
+        }
         let status = command.status();
         let _ = fs::remove_file(&credentials);
         let status = status?;
@@ -180,6 +190,20 @@ pub fn run(
         );
         return Ok(());
     }
+    // A pinned mount runs rclone under `gdirect mount-helper`, which keeps the
+    // proxy alive exactly as long as rclone and reports rclone's PID.
+    let mut command = Command::new("nohup");
+    if pinned {
+        command.arg(std::env::current_exe()?).arg("mount-helper");
+        for ip in &endpoints {
+            command.arg("--endpoint").arg(ip.to_string());
+        }
+        command.arg("--");
+    }
+    command
+        .arg("rclone")
+        .args(&args)
+        .env("GOOGLE_APPLICATION_CREDENTIALS", &credentials);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -191,14 +215,29 @@ pub fn run(
         .open(&log)?;
     let mut child = command
         .stdin(Stdio::null())
-        .stdout(log_file.try_clone()?)
+        .stdout(if pinned {
+            Stdio::piped()
+        } else {
+            log_file.try_clone()?.into()
+        })
         .stderr(log_file)
         .spawn()?;
-    let mounted = Mounted {
-        path,
-        pid: child.id(),
-        config,
+    let pid = if pinned {
+        let mut line = String::new();
+        BufReader::new(child.stdout.take().context("mount helper has no output")?)
+            .read_line(&mut line)?;
+        match line.trim().parse() {
+            Ok(pid) => pid,
+            Err(_) => {
+                let _ = child.wait();
+                let _ = fs::remove_file(&credentials);
+                anyhow::bail!("mount helper failed to start rclone; see {}", log.display());
+            }
+        }
+    } else {
+        child.id()
     };
+    let mounted = Mounted { path, pid, config };
     db.set(&key, &serde_json::to_string(&mounted)?)?;
     for _ in 0..60 {
         if let Some(status) = child.try_wait()? {
@@ -212,7 +251,13 @@ pub fn run(
         }
         std::thread::sleep(Duration::from_millis(500));
     }
-    child.kill()?;
+    if pinned {
+        let _ = Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status();
+    } else {
+        child.kill()?;
+    }
     child.wait()?;
     // Keep the record if the OS mounted at the timeout boundary.
     if !is_mounted(&mounted.path)? {
@@ -223,6 +268,23 @@ pub fn run(
         "mount did not become ready within 30s; see {}",
         log.display()
     )
+}
+/// `gdirect mount-helper`: serves the proxy for a background mount, starts
+/// rclone through it, prints rclone's PID and exits when rclone does.
+pub fn helper(endpoints: Vec<IpAddr>, command: &[OsString]) -> Result<()> {
+    let (program, args) = command
+        .split_first()
+        .context("mount-helper needs a command")?;
+    ensure!(program == "rclone", "mount-helper only runs rclone");
+    let proxy = crate::proxy::spawn(endpoints)?;
+    let mut rclone = Command::new(program);
+    rclone.args(args).stdin(Stdio::null()).stdout(Stdio::null());
+    crate::proxy::apply(&mut rclone, proxy);
+    let mut child = rclone.spawn()?;
+    println!("{}", child.id());
+    std::io::stdout().flush()?;
+    let status = child.wait()?;
+    std::process::exit(status.code().unwrap_or(1))
 }
 fn is_mounted(path: &Path) -> Result<bool> {
     let result = Command::new("mount").output()?;
