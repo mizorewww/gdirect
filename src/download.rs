@@ -352,7 +352,8 @@ fn file_md5(path: &Path) -> Result<String> {
         .map(|b| format!("{b:02x}"))
         .collect())
 }
-fn matches_md5(path: &Path, expected: Option<&str>) -> Result<bool> {
+/// Whether `path` has the given MD5; false when there is none to compare.
+pub fn matches_md5(path: &Path, expected: Option<&str>) -> Result<bool> {
     let Some(expected) = expected else {
         return Ok(false);
     };
