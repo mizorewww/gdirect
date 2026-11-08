@@ -7,7 +7,7 @@ use std::{
     path::Path,
     sync::{
         Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -38,6 +38,72 @@ const OFFSETS6: [u16; 7] = [0x5f, 0x64, 0x84, 0x8a, 0x8b, 0x71, 0x54];
 /// IPv4 core addresses swept per IPv6 candidate, so IPv4 keeps finding
 /// endpoints quickly on networks where IPv6 is blocked.
 const V4_PER_V6: usize = 3;
+/// What a scan reports as it goes; [`run`] prints these.
+#[derive(Clone, Debug)]
+pub enum Event {
+    /// A candidate from a file lies outside Google's address space.
+    Skipped(IpAddr),
+    /// Verifying the candidates of a file.
+    Candidates(usize),
+    /// Sweeping Google's front ends, over IPv6 too when it has a route.
+    Sweeping {
+        ipv6: bool,
+        target: usize,
+    },
+    /// Almost every address answered TCP: a TUN proxy is probably intercepting.
+    Intercepted,
+    /// The test download failed, so endpoints were verified with the API probe only.
+    ProbeWarning(String),
+    Verified {
+        ip: IpAddr,
+        ms: i64,
+        sni: String,
+    },
+    Unavailable(IpAddr),
+    /// One sweep batch is done.
+    Progress {
+        probed: usize,
+        open: usize,
+        good: usize,
+    },
+}
+impl std::fmt::Display for Event {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Event::Skipped(ip) => write!(f, "  skipping {ip}: not in Google's address space"),
+            Event::Candidates(n) => write!(
+                f,
+                "Scanning {n} candidates (TLS + Drive API + test download)…"
+            ),
+            Event::Sweeping { ipv6, target } => write!(
+                f,
+                "Sweeping Google front ends ({}) for {target} that serve Drive from this network (TCP, then TLS + Drive API + test download)…",
+                if *ipv6 {
+                    "IPv4 and IPv6"
+                } else {
+                    "IPv4; no IPv6 route"
+                }
+            ),
+            Event::Intercepted => write!(
+                f,
+                "warning: almost every address answered TCP, so a TUN proxy or VPN is probably intercepting; results reflect the proxy, not your direct network. Route Google IPs DIRECT for a real scan"
+            ),
+            Event::ProbeWarning(problem) => write!(
+                f,
+                "warning: Drive test file probe failed ({problem}); IPs were verified with the Drive API probe only"
+            ),
+            Event::Verified { ip, ms, sni } if sni.is_empty() => write!(f, "  OK  {ip}  {ms} ms"),
+            Event::Verified { ip, ms, sni } => write!(f, "  OK  {ip}  {ms} ms (SNI {sni})"),
+            Event::Unavailable(ip) => write!(f, "  --  {ip}  unavailable"),
+            Event::Progress { probed, open, good } => {
+                write!(
+                    f,
+                    "  … probed {probed}, {open} answered TCP, {good} verified"
+                )
+            }
+        }
+    }
+}
 /// Endpoints transfers may use, fastest first: only Google's own front ends.
 /// Anything else stored by older releases (third-party relays) is ignored.
 pub fn usable(routes: Vec<crate::store::Route>, google: &Ranges) -> Vec<crate::store::Route> {
@@ -79,7 +145,11 @@ fn public(ip: IpAddr) -> bool {
     }
 }
 /// Candidate IPs from a file; addresses outside Google's space are skipped.
-fn file_candidates(path: &Path, google: &Ranges) -> Result<Vec<IpAddr>> {
+fn file_candidates(
+    path: &Path,
+    google: &Ranges,
+    report: &mut dyn FnMut(Event),
+) -> Result<Vec<IpAddr>> {
     let mut ips = Vec::new();
     for line in std::fs::read_to_string(path)?.lines() {
         let value = line.split('#').next().unwrap_or("").trim();
@@ -89,7 +159,7 @@ fn file_candidates(path: &Path, google: &Ranges) -> Result<Vec<IpAddr>> {
                 .context("candidate file must contain one IP per line")?;
             ensure!(public(ip), "candidate must be a public IP");
             if !google.contains(ip) {
-                eprintln!("  skipping {ip}: not in Google's address space");
+                report(Event::Skipped(ip));
             } else if !ips.contains(&ip) {
                 ips.push(ip);
             }
@@ -319,6 +389,7 @@ fn record(
     verdicts: Vec<Verdict>,
     store_failures: impl Fn(IpAddr) -> bool,
     warned: &mut bool,
+    report: &mut dyn FnMut(Event),
 ) -> Result<Vec<IpAddr>> {
     let mut good = Vec::new();
     for (ip, result, sni) in verdicts {
@@ -327,22 +398,20 @@ fn record(
                 if let Some(problem) = problem
                     && !*warned
                 {
-                    eprintln!(
-                        "warning: Drive test file probe failed ({problem}); IPs were verified with the Drive API probe only"
-                    );
+                    report(Event::ProbeWarning(problem));
                     *warned = true;
                 }
                 db.endpoint(&ip.to_string(), Some(ms), None, sni)?;
-                if sni.is_empty() {
-                    eprintln!("  OK  {ip}  {ms} ms");
-                } else {
-                    eprintln!("  OK  {ip}  {ms} ms (SNI {sni})");
-                }
+                report(Event::Verified {
+                    ip,
+                    ms,
+                    sni: sni.to_owned(),
+                });
                 good.push(ip);
             }
             Err(error) if store_failures(ip) => {
                 db.endpoint(&ip.to_string(), None, Some(&error), "")?;
-                eprintln!("  --  {ip}  unavailable");
+                report(Event::Unavailable(ip));
             }
             Err(_) => {}
         }
@@ -350,16 +419,27 @@ fn record(
     Ok(good)
 }
 pub fn run(db: &Store, path: Option<&Path>) -> Result<()> {
+    run_with(db, path, &AtomicBool::new(false), &mut |event| {
+        eprintln!("{event}")
+    })?;
+    eprintln!("Verified endpoints saved in SQLite.");
+    Ok(())
+}
+/// [`run`], reporting progress to `report` instead of printing it. Setting
+/// `cancel` stops a sweep after its current batch.
+pub fn run_with(
+    db: &Store,
+    path: Option<&Path>,
+    cancel: &AtomicBool,
+    report: &mut dyn FnMut(Event),
+) -> Result<()> {
     let google = crate::ranges::current(db);
     let mut warned = false;
     if let Some(path) = path {
-        let ips = file_candidates(path, &google)?;
-        eprintln!(
-            "Scanning {} candidates (TLS + Drive API + test download)…",
-            ips.len()
-        );
+        let ips = file_candidates(path, &google, report)?;
+        report(Event::Candidates(ips.len()));
         let verdicts = verify(&ips, usize::MAX);
-        record(db, verdicts, |_| true, &mut warned)?;
+        record(db, verdicts, |_| true, &mut warned, report)?;
     } else {
         crate::ranges::refresh(db, db.best_route()?.map(|r| r.ip));
         let google = crate::ranges::current(db);
@@ -379,17 +459,17 @@ pub fn run(db: &Store, path: Option<&Path>) -> Result<()> {
         let mut queue = plan(&google, &known, &dns, ipv6, &mut Shuffle::new());
         let mut tried: HashSet<IpAddr> = HashSet::new();
         let mut reached: HashSet<IpAddr> = HashSet::new();
-        eprintln!(
-            "Sweeping Google front ends ({}) for {TARGET} that serve Drive from this network (TCP, then TLS + Drive API + test download)…",
-            if ipv6 {
-                "IPv4 and IPv6"
-            } else {
-                "IPv4; no IPv6 route"
-            }
-        );
+        report(Event::Sweeping {
+            ipv6,
+            target: TARGET,
+        });
         let (mut probed, mut open, mut good) = (0, 0, 0);
         let mut intercepted = false;
-        while good < TARGET && probed < MAX_PROBES && !queue.is_empty() {
+        while good < TARGET
+            && probed < MAX_PROBES
+            && !queue.is_empty()
+            && !cancel.load(Ordering::Relaxed)
+        {
             let batch: Vec<IpAddr> = std::iter::from_fn(|| queue.pop_front())
                 .filter(|ip| tried.insert(*ip))
                 .take(BATCH)
@@ -400,14 +480,12 @@ pub fn run(db: &Store, path: Option<&Path>) -> Result<()> {
             // Real networks block most of Google; a TUN proxy accepts every connect.
             if batch.len() >= 256 && answered.len() * 10 >= batch.len() * 9 && !intercepted {
                 intercepted = true;
-                eprintln!(
-                    "warning: almost every address answered TCP, so a TUN proxy or VPN is probably intercepting; results reflect the proxy, not your direct network. Route Google IPs DIRECT for a real scan"
-                );
+                report(Event::Intercepted);
             }
             let candidates: Vec<IpAddr> = answered.into_iter().map(|(ip, _)| ip).collect();
             reached.extend(&candidates);
             let verdicts = verify(&candidates, TARGET - good);
-            let working = record(db, verdicts, |ip| known.contains(&ip), &mut warned)?;
+            let working = record(db, verdicts, |ip| known.contains(&ip), &mut warned, report)?;
             good += working.len();
             // Front ends come in groups: the rest of a working /24 or /64 goes next.
             for &ip in working.iter().rev() {
@@ -417,7 +495,7 @@ pub fn run(db: &Store, path: Option<&Path>) -> Result<()> {
                     }
                 }
             }
-            eprintln!("  … probed {probed}, {open} answered TCP, {good} verified");
+            report(Event::Progress { probed, open, good });
         }
         // Earlier endpoints that no longer even answer TCP are marked dead.
         for ip in known
@@ -431,7 +509,6 @@ pub fn run(db: &Store, path: Option<&Path>) -> Result<()> {
         !usable(db.routes(LIMIT)?, &google).is_empty(),
         "no usable Google front end found; route Google IPs DIRECT if you use a TUN proxy, or provide candidates with gdirect scan --ips FILE"
     );
-    eprintln!("Verified endpoints saved in SQLite.");
     Ok(())
 }
 #[cfg(test)]
