@@ -33,8 +33,9 @@
 ```sh
 # macOS / Linux
 curl -fsSL https://raw.githubusercontent.com/mizorewww/gdirect/main/scripts/install.sh | bash
-# 或者用 Homebrew
-brew tap mizorewww/gdirect https://github.com/mizorewww/gdirect && brew install mizorewww/gdirect/gdirect
+# 或者用 Homebrew（Homebrew 7 要求先信任第三方 tap 才能安装）
+brew tap mizorewww/gdirect https://github.com/mizorewww/gdirect && brew trust mizorewww/gdirect
+brew install mizorewww/gdirect/gdirect
 ```
 
 ```powershell
@@ -76,7 +77,7 @@ gdirect mount                    # 挂载到 ~/GoogleDrive
 
 点页面顶部的按钮下载，或者到 [Releases](https://github.com/mizorewww/gdirect/releases/latest) 下载：
 
-- **macOS：** 解压后把 `gdirect.app` 拖进“应用程序”，或者执行 `brew install --cask mizorewww/gdirect/gdirect-desktop`。应用没有经过公证：第一次打开后，到“系统设置 › 隐私与安全性”里点“仍要打开”。
+- **macOS：** 解压后把 `gdirect.app` 拖进“应用程序”，或者按[快速开始](#快速开始)添加并信任 tap 后执行 `brew install --cask mizorewww/gdirect/gdirect-desktop`。应用没有经过公证：第一次打开后，到“系统设置 › 隐私与安全性”里点“仍要打开”。
 - **Windows：** 运行 `gdirect-desktop-windows-x64.msi`，装好后在开始菜单里打开 gdirect。SmartScreen 可能提示发布者未知：点“更多信息 › 仍要运行”。
 - **Linux（x86_64，glibc 2.35+）：** 解压后在目录里执行 `./install.sh` 添加菜单项，或者直接运行 `gdirect-desktop`。
 

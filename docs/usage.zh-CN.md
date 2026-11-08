@@ -36,7 +36,9 @@ Homebrew（macOS / Linux）：
 
 ```sh
 brew tap mizorewww/gdirect https://github.com/mizorewww/gdirect
+brew trust mizorewww/gdirect   # Homebrew 7 要求先信任第三方 tap
 brew install mizorewww/gdirect/gdirect
+brew install --cask mizorewww/gdirect/gdirect-desktop   # 桌面客户端，macOS
 brew install rclone   # 仅挂载需要；Linux 还要用发行版的包管理器安装 fuse3
 ```
 

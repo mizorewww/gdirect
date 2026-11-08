@@ -33,8 +33,9 @@ Browse, download, upload and mount your Google Drive from networks where Google 
 ```sh
 # macOS / Linux
 curl -fsSL https://raw.githubusercontent.com/mizorewww/gdirect/main/scripts/install.sh | bash
-# or Homebrew
-brew tap mizorewww/gdirect https://github.com/mizorewww/gdirect && brew install mizorewww/gdirect/gdirect
+# or Homebrew (Homebrew 7 asks you to trust a tap before installing from it)
+brew tap mizorewww/gdirect https://github.com/mizorewww/gdirect && brew trust mizorewww/gdirect
+brew install mizorewww/gdirect/gdirect
 ```
 
 ```powershell
@@ -76,7 +77,7 @@ The same engine in a Material 3 window: browse and manage files, drag files in t
 
 Download it with the buttons at the top, or from the [releases page](https://github.com/mizorewww/gdirect/releases/latest):
 
-- **macOS:** unzip and move `gdirect.app` to Applications, or `brew install --cask mizorewww/gdirect/gdirect-desktop`. The app is not notarized: the first time, open it, then allow it under System Settings › Privacy & Security › Open Anyway.
+- **macOS:** unzip and move `gdirect.app` to Applications, or, with the tap added and trusted as in [Quick start](#quick-start), `brew install --cask mizorewww/gdirect/gdirect-desktop`. The app is not notarized: the first time, open it, then allow it under System Settings › Privacy & Security › Open Anyway.
 - **Windows:** run `gdirect-desktop-windows-x64.msi`; gdirect appears in the Start menu. Windows SmartScreen may warn that the publisher is unknown: choose More info › Run anyway.
 - **Linux (x86_64, glibc 2.35+):** unpack the tarball and run `./install.sh` inside it for a menu entry, or start `gdirect-desktop` directly.
 

@@ -26,7 +26,9 @@ Homebrew (macOS / Linux):
 
 ```sh
 brew tap mizorewww/gdirect https://github.com/mizorewww/gdirect
+brew trust mizorewww/gdirect   # Homebrew 7 asks you to trust a third-party tap
 brew install mizorewww/gdirect/gdirect
+brew install --cask mizorewww/gdirect/gdirect-desktop   # the desktop app, macOS
 brew install rclone   # only for mount; Linux also needs your distro's fuse3 package
 ```
 
