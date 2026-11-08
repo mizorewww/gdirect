@@ -492,10 +492,14 @@ impl Gdirect {
     }
 
     pub fn confirm_dialog(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let name = self.name_input.read(cx).value().trim().to_string();
+        // A name dialog stays open until it has a name to act on.
+        if name.is_empty() && matches!(self.dialog, Some(Dialog::NewFolder | Dialog::Rename(_))) {
+            return;
+        }
         let Some(dialog) = self.dialog.take() else {
             return;
         };
-        let name = self.name_input.read(cx).value().trim().to_string();
         match dialog {
             Dialog::NewFolder if !name.is_empty() => self.create_folder(name, cx),
             Dialog::Rename(file) if !name.is_empty() && name != file.name => {
