@@ -3,7 +3,7 @@ use anyhow::{Context, Result, ensure};
 use std::{
     collections::{HashSet, VecDeque},
     io::Read,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
     path::Path,
     sync::{
         Mutex,
@@ -50,8 +50,16 @@ pub enum Event {
         ipv6: bool,
         target: usize,
     },
-    /// Almost every address answered TCP: a TUN proxy is probably intercepting.
-    Intercepted,
+    /// How connections leave this machine: bound to the physical interface
+    /// past a TUN, or through a TUN because bypassing is off or not allowed.
+    /// Reported once at the start, only when a TUN or a problem is involved.
+    Network(crate::netif::Status),
+    /// Almost every address answered TCP: a TUN proxy is probably
+    /// intercepting. `bypassing`: even though connections were bound to the
+    /// physical interface.
+    Intercepted {
+        bypassing: bool,
+    },
     /// The test download failed, so endpoints were verified with the API probe only.
     ProbeWarning(String),
     Verified {
@@ -90,9 +98,36 @@ impl std::fmt::Display for Event {
                     "IPv4; no IPv6 route"
                 }
             ),
-            Event::Intercepted => write!(
+            Event::Network(status) => match (status.bound(), &status.tun, &status.denied) {
+                (Some(interface), Some(tun), _) => write!(
+                    f,
+                    "Connecting through {} directly, past the TUN interface {tun}",
+                    interface.name
+                ),
+                (Some(interface), None, _) => {
+                    write!(f, "Connecting through {} directly", interface.name)
+                }
+                (None, _, Some(denied)) if status.enabled => write!(
+                    f,
+                    "warning: cannot bind connections to {} ({denied}), so a TUN proxy can still capture them; on Linux grant CAP_NET_RAW (sudo setcap cap_net_raw+ep \"$(command -v gdirect)\")",
+                    status
+                        .physical
+                        .as_ref()
+                        .map_or("the network adapter", |i| i.name.as_str())
+                ),
+                (None, Some(tun), _) if !status.enabled => write!(
+                    f,
+                    "Bypassing TUN proxies is off: connections go through {tun}, where your proxy rules decide"
+                ),
+                _ => write!(f, "Connecting through the system route"),
+            },
+            Event::Intercepted { bypassing: true } => write!(
                 f,
-                "warning: almost every address answered TCP, so a TUN proxy or VPN is probably intercepting; results reflect the proxy, not your direct network. Route Google IPs DIRECT for a real scan"
+                "warning: almost every address answered TCP even though connections are bound to the network adapter, so a VPN or firewall is probably intercepting below gdirect; results reflect it, not your direct network"
+            ),
+            Event::Intercepted { bypassing: false } => write!(
+                f,
+                "warning: almost every address answered TCP, so a TUN proxy or VPN is probably intercepting; results reflect the proxy, not your direct network. Turn bypassing TUN proxies back on (gdirect scan --bypass-tun on) or route Google IPs DIRECT"
             ),
             Event::ProbeWarning(problem) => write!(
                 f,
@@ -124,13 +159,8 @@ pub fn usable(routes: Vec<crate::store::Route>, google: &Ranges) -> Vec<crate::s
 /// Whether this machine has a global IPv6 route. Connecting a UDP socket
 /// sends nothing; it only picks a source address. A TUN proxy that hands out
 /// a private (ULA) address does not count.
-fn ipv6_route() -> bool {
-    UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0))
-        .and_then(|socket| {
-            socket.connect(("2001:4860:4860::8888", 443))?;
-            socket.local_addr()
-        })
-        .is_ok_and(|local| public(local.ip()))
+fn ipv6_route(interface: Option<&crate::netif::Interface>) -> bool {
+    crate::netif::ipv6_source(interface).is_some_and(public)
 }
 fn public(ip: IpAddr) -> bool {
     match ip {
@@ -283,6 +313,7 @@ fn plan(
 /// TCP connect to port 443 on every address; returns the ones that answered
 /// with their connect time, fastest first.
 fn tcp_sweep(ips: &[IpAddr]) -> Vec<(IpAddr, Duration)> {
+    let interface = crate::netif::bound();
     let next = AtomicUsize::new(0);
     let open = Mutex::new(Vec::new());
     thread::scope(|scope| {
@@ -290,7 +321,9 @@ fn tcp_sweep(ips: &[IpAddr]) -> Vec<(IpAddr, Duration)> {
             scope.spawn(|| {
                 while let Some(&ip) = ips.get(next.fetch_add(1, Ordering::Relaxed)) {
                     let start = Instant::now();
-                    if TcpStream::connect_timeout(&SocketAddr::new(ip, 443), TCP_TIMEOUT).is_ok() {
+                    let address = SocketAddr::new(ip, 443);
+                    if crate::netif::connect_via(&address, TCP_TIMEOUT, interface.as_ref()).is_ok()
+                    {
                         open.lock().unwrap().push((ip, start.elapsed()));
                     }
                 }
@@ -350,7 +383,9 @@ fn probe(ip: IpAddr, forged: bool) -> Result<(i64, Option<String>)> {
     } else {
         (API_HOST, FILE_HOST)
     };
-    let client = crate::api::client_builder()
+    // Bound to the physical interface when bypassing: a TUN proxy would
+    // otherwise carry the real-SNI probe and make a blocked endpoint pass.
+    let client = crate::netif::client(crate::api::client_builder(), ip)
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(3))
@@ -446,6 +481,14 @@ pub fn run_with(
 ) -> Result<()> {
     let google = crate::ranges::current(db);
     let mut warned = false;
+    // Endpoints from another network path are re-verified, not trusted.
+    crate::netif::sync(db)?;
+    let network = crate::netif::status();
+    let bypassing = network.bound().is_some();
+    let via = network.path();
+    if network.tun.is_some() || (network.enabled && network.denied.is_some()) {
+        report(Event::Network(network.clone()));
+    }
     if let Some(path) = path {
         let ips = file_candidates(path, &google, report)?;
         report(Event::Candidates(ips.len()));
@@ -466,7 +509,7 @@ pub fn run_with(
             .flatten()
             .map(|a| a.ip())
             .collect();
-        let ipv6 = ipv6_route();
+        let ipv6 = ipv6_route(network.bound());
         let mut queue = plan(&google, &known, &dns, ipv6, &mut Shuffle::new());
         let mut tried: HashSet<IpAddr> = HashSet::new();
         let mut reached: HashSet<IpAddr> = HashSet::new();
@@ -491,7 +534,7 @@ pub fn run_with(
             // Real networks block most of Google; a TUN proxy accepts every connect.
             if batch.len() >= 256 && answered.len() * 10 >= batch.len() * 9 && !intercepted {
                 intercepted = true;
-                report(Event::Intercepted);
+                report(Event::Intercepted { bypassing });
             }
             let candidates: Vec<IpAddr> = answered.into_iter().map(|(ip, _)| ip).collect();
             reached.extend(&candidates);
@@ -517,9 +560,15 @@ pub fn run_with(
             db.endpoint(&ip.to_string(), None, Some("no TCP answer"), "")?;
         }
     }
+    crate::netif::record(db, via.as_deref())?;
     ensure!(
         !usable(db.routes(LIMIT)?, &google).is_empty(),
-        "no usable Google front end found; route Google IPs DIRECT if you use a TUN proxy, or provide candidates with gdirect scan --ips FILE"
+        "{}",
+        if bypassing {
+            "no usable Google front end found from this network; provide candidates with gdirect scan --ips FILE"
+        } else {
+            "no usable Google front end found; with a TUN proxy, turn bypassing it on (gdirect scan --bypass-tun on) or route Google IPs DIRECT, or provide candidates with gdirect scan --ips FILE"
+        }
     );
     Ok(())
 }

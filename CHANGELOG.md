@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- With a TUN-mode proxy or VPN on (sing-box, Clash/Mihomo, WireGuard…), gdirect's connections to Google front ends now leave through the physical network adapter instead of the tunnel, the way sing-box's `auto_detect_interface` escapes its own TUN (macOS `IP_BOUND_IF`, Linux `SO_BINDTODEVICE` with `CAP_NET_RAW`, Windows `IP_UNICAST_IF`). Previously the TUN sniffed the SNI and sent "direct" transfers through the proxy, and the scan measured the proxy, keeping endpoints that were unreachable directly. Scans, Drive API requests, uploads, aria2 downloads, token refresh over endpoints and the proxy `mount` runs for rclone are bound; sign-in and the system-network fallbacks still follow the proxy. On by default: `gdirect scan --bypass-tun off` (or Settings › Network in the desktop client) lets proxy rules decide, and `GDIRECT_BYPASS_TUN=0`/`1` overrides it for one command.
+- Saved endpoints remember the network path they were verified over; after switching the setting, changing adapter, or a TUN coming or going while bypassing is off, they are scanned again before use. `gdirect scan --list` shows how connections leave the machine.
+- Desktop client: the Clash process rule and the "route Google DIRECT" advice in Settings › Network give way to the bypass switch, which shows the adapter in use. The scan's interception warning now points to it.
+
 ## 0.12.1
 
 ### Added

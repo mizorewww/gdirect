@@ -66,7 +66,7 @@ gdirect mount                    # Drive at ~/GoogleDrive
 The first transfer scans for reachable Google IPs, which can take about a minute.
 
 > [!IMPORTANT]
-> Using a TUN-mode proxy or VPN (such as Clash TUN)? Route Google's IP ranges **DIRECT** and turn off fake-ip for them, or the scan measures the proxy instead of your network. See [Network and proxies](docs/network.md).
+> Using a TUN-mode proxy or VPN (sing-box, Clash TUN…)? Nothing to set up: gdirect binds its Google connections to your network adapter, so the tunnel never carries them; sign-in still uses the proxy. Turn this off with `gdirect scan --bypass-tun off` or in the desktop client's Settings › Network. See [Network and proxies](docs/network.md#tun-proxies-and-vpns).
 
 ## Desktop app (preview)
 

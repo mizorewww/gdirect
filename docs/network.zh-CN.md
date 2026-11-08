@@ -13,12 +13,30 @@
 网络要求：
 
 - 登录时，浏览器需要访问 `accounts.google.com`，程序需要访问 `oauth2.googleapis.com` 和 `www.googleapis.com`。如果 Google 被屏蔽，登录时请保持代理可用。传输期间刷新令牌同样走扫描到的 IP，不需要代理；只有该 IP 不能作为 Google 令牌端点应答时，才回退到系统网络。
-- 如果开着 TUN 模式的代理或 VPN（例如 Clash/Mihomo TUN），要把 Google 的 IP 段设为 **DIRECT 直连**，并对它们关闭 fake-ip。TUN 代理会接受所有连接，否则扫描测到的是代理而不是你的网络；`scan` 发现这种情况时会提示。`gdirect scan --list` 可以查看正在使用的 IP。
+- 开着 TUN 模式的代理或 VPN（sing-box、Clash/Mihomo、WireGuard 等）时无需额外设置，见 [TUN 代理与 VPN](#tun-代理与-vpn)。`gdirect scan --list` 可以查看正在使用的 IP，以及连接从哪里出去。
+
+### TUN 代理与 VPN
+
+TUN 代理接管了默认路由，所以连向扫描到的 Google IP 的连接也会进入隧道，被嗅探出 SNI，再按代理规则发往 Google 对应的出口——通常是代理节点。这样扫描测到的是代理，所谓的直连传输其实在消耗（往往按量计费的）代理流量。`PROCESS-NAME,gdirect,DIRECT` 这类进程规则也不是处处有效（macOS 上的 sing-box 拿不到 TUN 连接的进程信息）。
+
+因此 gdirect 默认把连向扫描到的 IP 的每条连接绑定到 TUN 原本要接管的物理网卡上，做法和 sing-box 自己用来绕开 TUN 的 `auto_detect_interface` 相同：
+
+| 系统 | 如何找到网卡 | 如何绑定 |
+| --- | --- | --- |
+| macOS | 路由表中的默认路由（TUN 开着时，网卡的限定作用域默认路由仍在），跳过 utun、ipsec、ppp、bridge、awdl 等接口 | `IP_BOUND_IF` / `IPV6_BOUND_IF` |
+| Linux | 主路由表的默认路由（`/proc/net/route`），跳过 tun、wg、tailscale、Meta 等接口；策略路由型 TUN 的路由在其他表里 | `SO_BINDTODEVICE` / `SO_BINDTOIFINDEX`，需要 `CAP_NET_RAW`：`sudo setcap cap_net_raw+ep "$(command -v gdirect)"`。没有该权限时 gdirect 仍走系统路由，`scan` 会提示 |
+| Windows | 跃点数最小的 IPv4 默认路由，跳过虚拟和隧道网卡（Wintun、sing-box、Clash、WireGuard、TAP 等） | `IP_UNICAST_IF` / `IPV6_UNICAST_IF`；Drive API 请求绑定网卡地址 |
+
+绑定覆盖扫描、Drive API 请求、上传、下载（aria2）、经扫描 IP 的令牌刷新，以及 `mount` 为 rclone 启动的本地代理。登录、账号验证和回退到系统网络的请求从不绑定，仍走你的代理。没有 TUN 时默认路由本来就是这块网卡，绑定不改变任何事。
+
+如果想让代理规则来决定（例如有意让 Drive 走 VPN），可以关闭它：桌面客户端在“设置 › 网络”中，命令行用 `gdirect scan --bypass-tun off`（会保存；`--bypass-tun on` 重新打开）。`GDIRECT_BYPASS_TUN=0` 或 `=1` 只对单条命令覆盖保存的选择。
+
+gdirect 会记录已保存的 IP 是经由哪条网络路径验证的（`direct:en0`，或 TUN 承载流量时的 `tun:utun4`）。路径变化时——切换了这个设置、换了网卡，或者在不绕过时 TUN 开启或关闭——已保存的 IP 会先重新扫描验证再使用。路径不变时不会触发重新扫描。
 
 ### 只开系统代理，不开 TUN
 
 - 在 macOS 和 Windows 上，登录与账号验证会使用系统中手动配置的 HTTP/HTTPS 代理（回退到系统网络时的刷新令牌也一样）。代理客户端保持规则模式、关闭 TUN 即可：让 `accounts.google.com`、`oauth2.googleapis.com` 和 `www.googleapis.com` 走代理。无需添加 DIRECT 规则；扫描、Drive API 请求、上传和下载仍直连扫描到的节点。
-- 如果开启 TUN 并启用了域名嗅探，`www.googleapis.com` 的代理规则也会命中这些传输，请对扫描到的 IP 关闭嗅探，或用进程规则让 gdirect 的全部流量直连，例如 Clash 的 `PROCESS-NAME,gdirect,DIRECT`。
+- 如果开启 TUN 并启用了域名嗅探，gdirect 的传输仍会绕过它（见 [TUN 代理与 VPN](#tun-代理与-vpn)），登录照常走代理。
 - 在 Linux 上或使用 PAC 时，请为每条命令设置 `HTTPS_PROXY`（客户端的 HTTP 或 mixed 端口）。`HTTP_PROXY` / `HTTPS_PROXY` 优先于系统设置。`NO_PROXY` 不能排除上述 Google 端点。
 
 ```sh

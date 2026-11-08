@@ -96,7 +96,7 @@ Advanced route options (`download` and `browse` take all of them; `ls` and `uplo
 | `--ca-cert FILE` | Use this CA bundle instead of the embedded Google GTS roots |
 | `--export MIME` | (`download`) Export a Google Docs file, for example `application/pdf` |
 
-Run `gdirect scan` to scan again and `gdirect scan --list` to see the results, including the last error for each IP. To test your own candidates, run `gdirect scan --ips FILE`. The file holds one public IPv4 or IPv6 address per line, and `#` starts a comment. Only addresses inside Google's own space are used; others are skipped, and so is `--ip` outside it. Third-party relays are not supported: they stop working without notice, and their operators see your IP address.
+Run `gdirect scan` to scan again and `gdirect scan --list` to see the results, including the last error for each IP and how connections leave the machine. With a TUN-mode proxy or VPN on, gdirect binds its Google connections to the network adapter; `gdirect scan --bypass-tun off` lets your proxy rules decide instead (saved, and shared with the desktop client), `--bypass-tun on` turns it back on, and `GDIRECT_BYPASS_TUN=0`/`1` overrides it for one command. See [TUN proxies and VPNs](network.md#tun-proxies-and-vpns). To test your own candidates, run `gdirect scan --ips FILE`. The file holds one public IPv4 or IPv6 address per line, and `#` starts a comment. Only addresses inside Google's own space are used; others are skipped, and so is `--ip` outside it. Third-party relays are not supported: they stop working without notice, and their operators see your IP address.
 
 For scripts, `GDIRECT_ACCESS_TOKEN` can supply an access token instead of a login (`mount` still needs `gdirect login`).
 

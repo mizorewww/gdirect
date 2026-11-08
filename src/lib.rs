@@ -4,6 +4,7 @@ pub mod auth;
 pub mod download;
 pub mod drive;
 pub mod mount;
+pub mod netif;
 pub mod proxy;
 pub mod ranges;
 pub mod route;

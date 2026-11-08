@@ -66,7 +66,7 @@ gdirect mount                    # 挂载到 ~/GoogleDrive
 第一次传输时会扫描可直连的 Google IP，大约需要一分钟。
 
 > [!IMPORTANT]
-> 开着 TUN 模式的代理或 VPN（例如 Clash TUN）？请把 Google 的 IP 段设为 **DIRECT 直连**并关闭 fake-ip，否则扫描测到的是代理而不是你的网络。详见[网络与代理](docs/network.zh-CN.md)。
+> 开着 TUN 模式的代理或 VPN（sing-box、Clash TUN 等）？无需设置：gdirect 会把连接 Google 的流量绑定到物理网卡，不经过隧道；登录仍走代理。如需关闭，运行 `gdirect scan --bypass-tun off`，或在桌面客户端的“设置 › 网络”中关闭。详见[网络与代理](docs/network.zh-CN.md#tun-代理与-vpn)。
 
 ## 桌面客户端（预览）
 

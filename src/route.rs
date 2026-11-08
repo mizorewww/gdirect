@@ -35,6 +35,9 @@ impl Direct {
 /// to follow the scanned route and allow automatic fallback.
 pub fn resolve(db: &Store, ip: Option<IpAddr>, sni: Option<String>) -> Result<Direct> {
     let auto = sni.is_none();
+    // Endpoints verified over another network path (TUN bypass toggled, the
+    // adapter changed) are retired first, so they are scanned again.
+    crate::netif::sync(db)?;
     let google = ranges::current(db);
     if let Some(ip) = ip {
         ensure!(

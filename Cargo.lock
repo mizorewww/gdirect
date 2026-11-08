@@ -618,6 +618,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "getrandom 0.3.4",
+ "libc",
  "md-5",
  "ratatui",
  "reqwest",
@@ -626,8 +627,10 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "socket2",
  "unicode-width",
  "url",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

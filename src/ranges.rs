@@ -230,7 +230,9 @@ pub fn refresh(db: &Store, via: Option<IpAddr>) {
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(15));
         if let Some(ip) = ip {
-            builder = builder.no_proxy().resolve(FEEDS, SocketAddr::new(ip, 443));
+            builder = crate::netif::client(builder, ip)
+                .no_proxy()
+                .resolve(FEEDS, SocketAddr::new(ip, 443));
         }
         let client = builder.build()?;
         let get = |name: &str| -> Result<String> {

@@ -200,6 +200,9 @@ pub fn run(
             command.arg("--endpoint").arg(ip.to_string());
         }
         command.arg("--");
+        // The helper's proxy binds to the network adapter as this process does.
+        let bypass = if crate::netif::enabled() { "1" } else { "0" };
+        command.env(crate::netif::ENV, bypass);
     }
     command
         .arg(&rclone)

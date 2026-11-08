@@ -19,13 +19,15 @@ static bool library_ready() {
 using ProgressCallback = int (*)(int64_t, int64_t, int, int, void*);
 extern "C" int gdirect_download_ex(const char* url, const char* dir, const char* name,
                                 const char* ip, const char* sni, const char* token,
-                                const char* ca, int connections, ProgressCallback callback, void* data, bool signals) noexcept {
+                                const char* ca, int connections, ProgressCallback callback, void* data, bool signals,
+                                unsigned ifindex) noexcept {
   aria2::Session* session = nullptr;
   int result = -1;
   try {
     gdirect_ip = ip;
     gdirect_sni = sni;
-    if (!library_ready()) { gdirect_ip = gdirect_sni = nullptr; return -1; }
+    gdirect_ifindex = ifindex;
+    if (!library_ready()) { gdirect_ip = gdirect_sni = nullptr; gdirect_ifindex = 0; return -1; }
     aria2::KeyVals opts = {
       {"dir", dir}, {"out", name}, {"continue", "true"},
       {"auto-file-renaming", "false"}, {"allow-overwrite", "false"},
@@ -82,6 +84,7 @@ extern "C" int gdirect_download_ex(const char* url, const char* dir, const char*
     if (session) { try { aria2::sessionFinal(session); } catch (...) {} }
   }
   gdirect_ip = gdirect_sni = nullptr;
+  gdirect_ifindex = 0;
   if (!callback) std::fprintf(stderr, "\n");
   return result;
 }
@@ -89,5 +92,5 @@ extern "C" int gdirect_download_ex(const char* url, const char* dir, const char*
 extern "C" int gdirect_download(const char* url, const char* dir, const char* name,
                                 const char* ip, const char* sni, const char* token,
                                 const char* ca, int connections) noexcept {
-  return gdirect_download_ex(url, dir, name, ip, sni, token, ca, connections, nullptr, nullptr, true);
+  return gdirect_download_ex(url, dir, name, ip, sni, token, ca, connections, nullptr, nullptr, true, 0);
 }

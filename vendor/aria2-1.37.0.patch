@@ -136,17 +136,89 @@ diff --color=auto -ru a/src/SocketCore.cc b/src/SocketCore.cc
  #include "SocketCore.h"
  
  #ifdef HAVE_IPHLPAPI_H
-@@ -66,6 +68,9 @@
+@@ -66,6 +68,10 @@
  #  include "SSHSession.h"
  #endif // HAVE_LIBSSH2
  
 +const char* gdirect_ip = nullptr;
 +const char* gdirect_sni = nullptr;
++unsigned gdirect_ifindex = 0;
 +
  namespace aria2 {
  
  #ifndef __MINGW32__
-@@ -936,7 +941,9 @@
+@@ -117,6 +123,62 @@
+ } // namespace
+ 
+ namespace {
++// gdirect: binds a connection to the physical interface so a TUN proxy
++// cannot capture it (IP_BOUND_IF, SO_BINDTOIFINDEX, IP_UNICAST_IF). Best
++// effort: on failure (Linux without CAP_NET_RAW) it stays unbound.
++void gdirectBindInterface(sock_t fd, int family)
++{
++  if (gdirect_ifindex == 0 || !gdirect_ip || !*gdirect_ip) {
++    return;
++  }
++  int rv = 0;
++#if defined(__APPLE__)
++#  ifndef IP_BOUND_IF
++#    define IP_BOUND_IF 25
++#  endif
++#  ifndef IPV6_BOUND_IF
++#    define IPV6_BOUND_IF 125
++#  endif
++  unsigned int index = gdirect_ifindex;
++  rv = family == AF_INET6
++           ? setsockopt(fd, IPPROTO_IPV6, IPV6_BOUND_IF, (a2_sockopt_t)&index,
++                        sizeof(index))
++           : setsockopt(fd, IPPROTO_IP, IP_BOUND_IF, (a2_sockopt_t)&index,
++                        sizeof(index));
++#elif defined(__linux__)
++#  ifndef SO_BINDTOIFINDEX
++#    define SO_BINDTOIFINDEX 62
++#  endif
++  int index = static_cast<int>(gdirect_ifindex);
++  rv = setsockopt(fd, SOL_SOCKET, SO_BINDTOIFINDEX, (a2_sockopt_t)&index,
++                  sizeof(index));
++#elif defined(__MINGW32__)
++#  ifndef IP_UNICAST_IF
++#    define IP_UNICAST_IF 31
++#  endif
++#  ifndef IPV6_UNICAST_IF
++#    define IPV6_UNICAST_IF 31
++#  endif
++  // IPv4 takes the index in network byte order, IPv6 in host order.
++  DWORD index = family == AF_INET6 ? gdirect_ifindex : htonl(gdirect_ifindex);
++  rv = family == AF_INET6
++           ? setsockopt(fd, IPPROTO_IPV6, IPV6_UNICAST_IF, (a2_sockopt_t)&index,
++                        sizeof(index))
++           : setsockopt(fd, IPPROTO_IP, IP_UNICAST_IF, (a2_sockopt_t)&index,
++                        sizeof(index));
++#else
++  (void)fd;
++  (void)family;
++#endif
++  if (rv != 0) {
++    int errNum = SOCKET_ERRNO;
++    A2_LOG_WARN(fmt("gdirect: cannot bind to interface %u: %s",
++                    gdirect_ifindex, errorMsg(errNum).c_str()));
++  }
++}
++} // namespace
++
++namespace {
+ enum TlsState {
+   // TLS object is not initialized.
+   A2_TLS_NONE = 0,
+@@ -458,6 +520,7 @@
+     }
+ 
+     applySocketBufferSize(fd);
++    gdirectBindInterface(fd, rp->ai_family);
+ 
+     if (!bindAddrs_.empty()) {
+       bool bindSuccess = false;
+@@ -936,7 +999,9 @@
      // "localhost" will produce TLS alert with GNUTLS.
      if (tlsctx->getSide() == TLS_CLIENT && !util::isNumericHost(hostname) &&
          hostname.find(".") != std::string::npos) {
@@ -157,7 +229,7 @@ diff --color=auto -ru a/src/SocketCore.cc b/src/SocketCore.cc
        if (rv != TLS_ERR_OK) {
          throw DL_ABORT_EX(fmt(EX_SSL_INIT_FAILURE,
                                tlsSession_->getLastErrorString().c_str()));
-@@ -1450,6 +1457,12 @@
+@@ -1450,6 +1515,12 @@
    hints.ai_flags = getDefaultAIFlags();
    hints.ai_flags |= flags;
    hints.ai_protocol = protocol;

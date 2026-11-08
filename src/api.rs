@@ -373,8 +373,9 @@ fn client_for(ip: Option<IpAddr>, forged: Option<&str>, host: &str) -> Result<Cl
         .connect_timeout(Duration::from_secs(8))
         .timeout(Duration::from_secs(30));
     if let Some(ip) = ip {
-        // Only pinned transfers bypass proxies; login verifies the account without a pin.
-        builder = builder
+        // Only pinned transfers bypass proxies, TUN ones included (bound to
+        // the physical interface); login verifies the account without a pin.
+        builder = crate::netif::client(builder, ip)
             .no_proxy()
             .resolve(forged.unwrap_or(host), SocketAddr::new(ip, 443));
     }
@@ -506,6 +507,8 @@ impl Api {
             Err(error) if ip.is_some() && transport(&error) => error,
             result => return Ok(result?),
         };
+        // The network may have changed under us: look for the adapter again.
+        crate::netif::forget();
         let db = Store::open(&self.db).ok();
         let mut endpoint = ip.map(|ip| (ip, forged.clone()));
         let mut tried_current = true;

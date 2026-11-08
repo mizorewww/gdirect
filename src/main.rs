@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, ensure};
 use clap::{Args, Parser, Subcommand};
-use gdirect::{api, download, drive, mount, ranges, route, scan, store, tui, upload};
+use gdirect::{api, download, drive, mount, netif, ranges, route, scan, store, tui, upload};
 use std::{
     net::IpAddr,
     path::{Path, PathBuf},
@@ -74,6 +74,17 @@ enum Commands {
         /// Show saved endpoints instead of scanning
         #[arg(long)]
         list: bool,
+        /// Bind Google connections to the network adapter so TUN-mode proxies
+        /// and VPNs cannot capture them: on (default) or off to let proxy
+        /// rules decide. Saved for later commands and the desktop client;
+        /// GDIRECT_BYPASS_TUN=0/1 overrides it for one run
+        #[arg(
+            long,
+            value_name = "on|off",
+            hide_possible_values = true,
+            value_parser = clap::builder::BoolishValueParser::new()
+        )]
+        bypass_tun: Option<bool>,
     },
     /// Sign in with a Google Desktop OAuth client JSON; signing in again adds another account
     Login {
@@ -184,12 +195,54 @@ enum Commands {
         transfer: Transfer,
     },
 }
+/// One line on how connections leave this machine, for `scan --list`.
+fn network_summary(status: &netif::Status) -> String {
+    let tun = status
+        .tun
+        .as_deref()
+        .map(|tun| format!(", past the TUN interface {tun}"))
+        .unwrap_or_default();
+    match (status.bound(), &status.physical) {
+        (Some(bound), _) => format!(
+            "Network: bypassing TUN proxies, bound to {}{tun}",
+            bound.name
+        ),
+        (None, Some(physical)) if status.enabled => format!(
+            "Network: bypassing TUN proxies, but binding to {} is not allowed ({}){tun}",
+            physical.name,
+            status.denied.as_deref().unwrap_or("unknown")
+        ),
+        _ if status.enabled => "Network: bypassing TUN proxies; no network adapter found".into(),
+        _ => match &status.tun {
+            Some(tun) => {
+                format!("Network: not bypassing TUN proxies; {tun} carries the default route")
+            }
+            None => "Network: not bypassing TUN proxies (none detected)".into(),
+        },
+    }
+}
 fn direct_route(db: &store::Store, route: &Route) -> Result<route::Direct> {
     route::resolve(db, route.ip, route.sni())
 }
 fn run(cli: Cli) -> Result<()> {
     let db_path = cli.db.clone().map(Ok).unwrap_or_else(store::default_path)?;
     let db = store::Store::open(&db_path)?;
+    if let Some(Commands::Scan {
+        bypass_tun: Some(on),
+        ..
+    }) = &cli.command
+    {
+        netif::save(&db, *on)?;
+        if std::env::var_os(netif::ENV).is_some() {
+            eprintln!(
+                "note: {} is set and overrides this for each run",
+                netif::ENV
+            );
+        }
+    }
+    // Applies the TUN bypass choice and retires endpoints verified over
+    // another network path, so even `scan --list` shows what still counts.
+    netif::sync(&db)?;
     // Commands that work without a login resolve the account lazily.
     let account = || db.resolve_account(cli.account.as_deref());
     let saved = || -> u8 {
@@ -207,6 +260,7 @@ fn run(cli: Cli) -> Result<()> {
     });
     match command {
         Commands::Scan { list: true, .. } => {
+            eprintln!("{}", network_summary(&netif::status()));
             let google = ranges::current(&db);
             for e in db.endpoints()? {
                 // Stored by older releases; transfers never use it.

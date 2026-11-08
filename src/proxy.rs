@@ -41,7 +41,8 @@ impl Upstream {
         let mut last = io::Error::new(io::ErrorKind::NotFound, "no endpoint");
         for i in 0..self.endpoints.len() {
             let index = (start + i) % self.endpoints.len();
-            match TcpStream::connect_timeout(&self.endpoints[index], CONNECT_TIMEOUT) {
+            // Bound to the physical interface, as gdirect's own connections are.
+            match crate::netif::connect(&self.endpoints[index], CONNECT_TIMEOUT) {
                 Ok(stream) => {
                     self.current.store(index, Ordering::Relaxed);
                     return Ok(stream);
@@ -49,6 +50,7 @@ impl Upstream {
                 Err(error) => last = error,
             }
         }
+        crate::netif::forget();
         Err(last)
     }
 }

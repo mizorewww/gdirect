@@ -106,7 +106,7 @@ gdirect upload ./photos -r --parent FOLDER_ID --name "照片备份"
 | `--ca-cert FILE` | 用指定的 CA 证书包代替内置的 Google GTS 根证书 |
 | `--export MIME` | （`download`）导出 Google 文档，例如 `application/pdf` |
 
-`gdirect scan` 会重新扫描，`gdirect scan --list` 查看扫描结果，其中包括每个 IP 最近一次的错误。要测试自己找到的候选 IP，可以执行 `gdirect scan --ips FILE`：文件中每行写一个公网 IPv4 或 IPv6 地址，`#` 后面是注释。只使用 Google 自有 IP 段内的地址，段外的会被跳过，`--ip` 也一样。不支持第三方中转：它们随时可能失效，运营者还能看到你的 IP。
+`gdirect scan` 会重新扫描，`gdirect scan --list` 查看扫描结果，其中包括每个 IP 最近一次的错误，以及连接从哪里出去。开着 TUN 模式的代理或 VPN 时，gdirect 会把连接 Google 的流量绑定到物理网卡；`gdirect scan --bypass-tun off` 改由代理规则决定（会保存，并与桌面客户端共用），`--bypass-tun on` 重新打开，`GDIRECT_BYPASS_TUN=0`/`1` 只对单条命令生效。详见 [TUN 代理与 VPN](network.zh-CN.md#tun-代理与-vpn)。要测试自己找到的候选 IP，可以执行 `gdirect scan --ips FILE`：文件中每行写一个公网 IPv4 或 IPv6 地址，`#` 后面是注释。只使用 Google 自有 IP 段内的地址，段外的会被跳过，`--ip` 也一样。不支持第三方中转：它们随时可能失效，运营者还能看到你的 IP。
 
 写脚本时可以用 `GDIRECT_ACCESS_TOKEN` 直接提供访问令牌，不必登录（`mount` 仍然需要先 `gdirect login`）。
 

@@ -98,6 +98,15 @@ impl Store {
         };
         Ok(())
     }
+    /// Marks every working endpoint unverified (keeping it as a candidate
+    /// for the next scan) and returns how many there were: they were verified
+    /// over a network path that no longer applies.
+    pub fn retire_endpoints(&self, reason: &str) -> Result<usize> {
+        Ok(self.conn.execute(
+            "UPDATE endpoints SET latency_ms=NULL,available=0,error=? WHERE available=1",
+            [reason],
+        )?)
+    }
     /// The fallback identity proved itself: make it the stored one for this IP.
     pub fn set_sni(&self, ip: &str, sni: &str) -> Result<()> {
         self.conn.execute(
