@@ -195,6 +195,7 @@ impl Api {
         let mut failures = 0;
         let mut probe = false;
         loop {
+            ensure!(!self.cancelled(), "upload cancelled; rerun to resume");
             let current = file.metadata()?;
             ensure!(
                 current.len() == size

@@ -6,7 +6,10 @@ use std::{
     collections::VecDeque,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -106,6 +109,8 @@ pub struct Api {
     /// False once the user picks --sni/--no-sni explicitly: no quiet fallback.
     auto: bool,
     live: Arc<Mutex<Live>>,
+    /// Set to stop an upload between chunks; see [`Api::cancellable`].
+    cancel: Option<Arc<AtomicBool>>,
 }
 impl Api {
     pub fn new(
@@ -129,7 +134,21 @@ impl Api {
             db,
             account,
             auto,
+            cancel: None,
         })
+    }
+    /// A client whose uploads stop, between chunks, once `cancel` is set. The
+    /// upload session is kept, so uploading the same file again resumes it.
+    pub fn cancellable(&self, cancel: Arc<AtomicBool>) -> Self {
+        Self {
+            cancel: Some(cancel),
+            ..self.clone()
+        }
+    }
+    pub(crate) fn cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|c| c.load(Ordering::Relaxed))
     }
     /// Endpoints to move to when the current one stops answering.
     pub fn with_backups(self, backups: Vec<Endpoint>) -> Self {
