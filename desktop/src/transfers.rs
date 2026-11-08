@@ -1,0 +1,412 @@
+//! The download and upload queues: each runs one item at a time on its own
+//! thread, as `gdirect browse` does, and reports through the app's channel.
+use crate::format;
+use chrono::{DateTime, Local};
+use gdirect::{
+    api::{Api, File},
+    download::{self, Stats},
+    upload::TreeProgress,
+};
+use std::{
+    collections::{HashSet, VecDeque},
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Instant,
+};
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum State {
+    Queued,
+    Running,
+    /// Cancelled while running; the partial file is kept and resumes.
+    Paused,
+    Done {
+        at: DateTime<Local>,
+        note: String,
+    },
+    Failed(String),
+}
+
+impl State {
+    pub fn finished(&self) -> bool {
+        matches!(self, Self::Done { .. })
+    }
+    pub fn pending(&self) -> bool {
+        !self.finished()
+    }
+}
+
+pub struct Download {
+    pub id: u64,
+    pub file: File,
+    pub output: PathBuf,
+    /// The export MIME type of a Google document.
+    pub export: Option<String>,
+    pub size: Option<u64>,
+    pub state: State,
+    pub stats: Stats,
+    pub started: Option<Instant>,
+    pub cancel: Option<Arc<AtomicBool>>,
+}
+
+impl Download {
+    pub fn fraction(&self) -> f32 {
+        let total = if self.stats.total > 0 {
+            self.stats.total
+        } else {
+            self.size.unwrap_or(0)
+        };
+        match (&self.state, total) {
+            (State::Done { .. }, _) => 1.,
+            (_, 0) => 0.,
+            _ => (self.stats.done as f64 / total as f64).clamp(0., 1.) as f32,
+        }
+    }
+}
+
+pub struct Upload {
+    pub id: u64,
+    pub path: PathBuf,
+    pub folder: bool,
+    /// Destination folder id and name.
+    pub parent: (String, String),
+    pub state: State,
+    pub progress: TreeProgress,
+    /// Bytes per second, smoothed.
+    pub speed: u64,
+    pub sampled: Option<(Instant, u64)>,
+    /// The Drive id of the finished upload.
+    pub result: Option<String>,
+}
+
+impl Upload {
+    pub fn name(&self) -> String {
+        self.path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.path.display().to_string())
+    }
+    pub fn fraction(&self) -> f32 {
+        let p = &self.progress;
+        if self.state.finished() {
+            1.
+        } else if p.bytes_total > 0 {
+            (p.bytes_done as f64 / p.bytes_total as f64) as f32
+        } else if p.files_total > 0 {
+            p.files_done as f32 / p.files_total as f32
+        } else {
+            0.
+        }
+    }
+    pub fn sample(&mut self, progress: TreeProgress) {
+        let now = Instant::now();
+        match self.sampled {
+            Some((at, bytes)) if now.duration_since(at).as_millis() >= 500 => {
+                let elapsed = now.duration_since(at).as_secs_f64();
+                let rate = (progress.bytes_done.saturating_sub(bytes)) as f64 / elapsed;
+                self.speed = if self.speed == 0 {
+                    rate as u64
+                } else {
+                    (self.speed as f64 * 0.6 + rate * 0.4) as u64
+                };
+                self.sampled = Some((now, progress.bytes_done));
+            }
+            None => self.sampled = Some((now, progress.bytes_done)),
+            _ => {}
+        }
+        self.progress = progress;
+    }
+}
+
+/// How the download thread was configured, from the settings at its start.
+pub struct Options {
+    pub connections: u8,
+    pub md5: bool,
+    /// Explicit identity: see `settings::Identity::sni`.
+    pub sni: Option<String>,
+    pub ca_cert: Option<PathBuf>,
+}
+
+#[derive(Default)]
+pub struct Queues {
+    pub downloads: Vec<Download>,
+    pub uploads: Vec<Upload>,
+    next: u64,
+}
+
+impl Queues {
+    fn id(&mut self) -> u64 {
+        self.next += 1;
+        self.next
+    }
+
+    /// Drive allows duplicate names; give each download its own output path,
+    /// apart from files already on disk that are not this one.
+    fn output_for(&self, dir: &Path, name: &str, file_id: &str) -> PathBuf {
+        let taken = |p: &Path| {
+            self.downloads
+                .iter()
+                .any(|d| d.file.id != file_id && d.output == p)
+        };
+        let first = dir.join(name);
+        if !taken(&first) {
+            return first;
+        }
+        let path = Path::new(name);
+        let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+        let ext = path.extension().map(|e| e.to_string_lossy());
+        (2..)
+            .map(|n| match &ext {
+                Some(ext) => dir.join(format!("{stem} ({n}).{ext}")),
+                None => dir.join(format!("{stem} ({n})")),
+            })
+            .find(|p| !taken(p))
+            .unwrap()
+    }
+
+    /// Queues files into their directories; returns how many were added and skipped.
+    pub fn enqueue(&mut self, files: Vec<(File, PathBuf)>, office: bool) -> (usize, usize) {
+        let (mut added, mut skipped) = (0, 0);
+        for (file, dir) in files {
+            if file.folder() || !file.downloadable() {
+                skipped += 1;
+                continue;
+            }
+            if let Some(i) = self.downloads.iter().position(|d| d.file.id == file.id) {
+                if matches!(self.downloads[i].state, State::Queued | State::Running) {
+                    skipped += 1;
+                    continue;
+                }
+                // Finished, paused or failed earlier: queue it again at the end.
+                let mut job = self.downloads.remove(i);
+                job.state = State::Queued;
+                self.downloads.push(job);
+                added += 1;
+                continue;
+            }
+            let export = format::export(&file, office);
+            let mut name = gdirect::api::safe_name(&file.name);
+            if let Some((_, ext)) = export {
+                name = format!("{name}.{ext}");
+            }
+            let id = self.id();
+            self.downloads.push(Download {
+                id,
+                output: self.output_for(&dir, &name, &file.id),
+                export: export.map(|(mime, _)| mime.to_owned()),
+                size: file.size.as_ref().and_then(|s| s.parse().ok()),
+                state: State::Queued,
+                stats: Stats::default(),
+                started: None,
+                cancel: None,
+                file,
+            });
+            added += 1;
+        }
+        (added, skipped)
+    }
+
+    pub fn enqueue_upload(&mut self, path: PathBuf, parent: (String, String)) {
+        let id = self.id();
+        self.uploads.push(Upload {
+            id,
+            folder: path.is_dir(),
+            path,
+            parent,
+            state: State::Queued,
+            progress: TreeProgress::default(),
+            speed: 0,
+            sampled: None,
+            result: None,
+        });
+    }
+
+    pub fn download(&mut self, id: u64) -> Option<&mut Download> {
+        self.downloads.iter_mut().find(|d| d.id == id)
+    }
+
+    pub fn upload(&mut self, id: u64) -> Option<&mut Upload> {
+        self.uploads.iter_mut().find(|u| u.id == id)
+    }
+
+    pub fn active_download(&self) -> Option<&Download> {
+        self.downloads.iter().find(|d| d.state == State::Running)
+    }
+
+    pub fn active_upload(&self) -> Option<&Upload> {
+        self.uploads.iter().find(|u| u.state == State::Running)
+    }
+
+    /// The state the file list shows next to a file.
+    pub fn file_state(&self, file_id: &str) -> Option<&State> {
+        self.downloads
+            .iter()
+            .rev()
+            .find(|d| d.file.id == file_id)
+            .map(|d| &d.state)
+    }
+
+    /// Items not yet finished, for the navigation badge.
+    pub fn pending(&self) -> usize {
+        self.downloads
+            .iter()
+            .filter(|d| matches!(d.state, State::Queued | State::Running))
+            .count()
+            + self
+                .uploads
+                .iter()
+                .filter(|u| matches!(u.state, State::Queued | State::Running))
+                .count()
+    }
+
+    pub fn retry_failed(&mut self) -> usize {
+        let mut n = 0;
+        for d in &mut self.downloads {
+            if matches!(d.state, State::Failed(_)) {
+                d.state = State::Queued;
+                n += 1;
+            }
+        }
+        for u in &mut self.uploads {
+            if matches!(u.state, State::Failed(_)) {
+                u.state = State::Queued;
+                n += 1;
+            }
+        }
+        n
+    }
+
+    pub fn clear_queued(&mut self, uploads: bool) {
+        if uploads {
+            self.uploads.retain(|u| u.state != State::Queued);
+        } else {
+            self.downloads.retain(|d| d.state != State::Queued);
+        }
+    }
+
+    pub fn clear_finished(&mut self, uploads: bool) {
+        if uploads {
+            self.uploads.retain(|u| !u.state.finished());
+        } else {
+            self.downloads.retain(|d| !d.state.finished());
+        }
+    }
+
+    /// The next queued download, marked running; the caller starts it.
+    pub fn next_download(&mut self) -> Option<&mut Download> {
+        if self.active_download().is_some() {
+            return None;
+        }
+        let job = self
+            .downloads
+            .iter_mut()
+            .find(|d| d.state == State::Queued)?;
+        job.state = State::Running;
+        job.stats = Stats::default();
+        job.started = Some(Instant::now());
+        Some(job)
+    }
+
+    pub fn next_upload(&mut self) -> Option<&mut Upload> {
+        if self.active_upload().is_some() {
+            return None;
+        }
+        let job = self.uploads.iter_mut().find(|u| u.state == State::Queued)?;
+        job.state = State::Running;
+        job.speed = 0;
+        job.sampled = None;
+        Some(job)
+    }
+}
+
+/// Runs one download to completion; `progress` gets live statistics.
+pub fn run_download(
+    api: &Api,
+    job: &Download,
+    options: &Options,
+    cancel: Arc<AtomicBool>,
+    progress: std::sync::mpsc::Sender<Stats>,
+) -> anyhow::Result<String> {
+    if let Some(dir) = job.output.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let token = api.download_token()?;
+    anyhow::ensure!(!cancel.load(Ordering::Relaxed), "已取消");
+    // The API client may already have failed over; downloads follow it.
+    let (ip, sni, backups) = api.route();
+    let existed =
+        job.output.exists() && !PathBuf::from(format!("{}.aria2", job.output.display())).exists();
+    let result = download::run(
+        download::Args {
+            file: job.file.id.clone(),
+            output: job.output.clone(),
+            ip,
+            sni: options.sni.clone().or(sni),
+            auto: options.sni.is_none(),
+            backups,
+            db: Some(api.db.clone()),
+            token: Some(token),
+            export: job.export.clone(),
+            md5: if options.md5 && job.export.is_none() {
+                job.file.md5_checksum.clone()
+            } else {
+                None
+            },
+            connections: options.connections,
+            ca_cert: options.ca_cert.clone(),
+        },
+        Some(&mut download::Progress {
+            tx: progress,
+            cancel: cancel.clone(),
+        }),
+    );
+    anyhow::ensure!(
+        !cancel.load(Ordering::Relaxed),
+        "已取消，已下载的部分会保留"
+    );
+    result?;
+    let size = job
+        .output
+        .metadata()
+        .map(|m| format::bytes(m.len()))
+        .unwrap_or_default();
+    Ok(if existed {
+        "已存在且校验和一致，跳过下载".into()
+    } else if job.export.is_some() {
+        format!("{size} · 由 Google 文档导出")
+    } else if options.md5 && job.file.md5_checksum.is_some() {
+        format!("{size} · MD5 校验通过")
+    } else {
+        size
+    })
+}
+
+/// Lists every file below `folder`, paired with its directory relative to it.
+pub fn walk(
+    api: &Api,
+    folder: &str,
+    progress: impl Fn(usize),
+) -> anyhow::Result<Vec<(File, PathBuf)>> {
+    let mut files = Vec::new();
+    let mut pending = VecDeque::from([(folder.to_owned(), PathBuf::new())]);
+    // A folder can have several parents; list each one only once.
+    let mut seen = HashSet::new();
+    while let Some((id, dir)) = pending.pop_front() {
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        for file in api.list(&id)? {
+            if file.folder() {
+                let sub = dir.join(gdirect::api::safe_name(&file.name));
+                pending.push_back((file.id.clone(), sub));
+            } else {
+                files.push((file, dir.clone()));
+            }
+        }
+        progress(files.len());
+    }
+    Ok(files)
+}

@@ -1,0 +1,58 @@
+# The desktop client. Its own workspace, so the command-line build and its
+# release pipeline never resolve the GUI stack.
+[package]
+name = "gdirect-desktop"
+version = "0.10.0"
+edition = "2024"
+description = "Desktop client for gdirect: browse, transfer and mount Google Drive"
+license = "GPL-2.0-or-later"
+publish = false
+
+[[bin]]
+name = "gdirect-desktop"
+path = "src/main.rs"
+
+[dependencies]
+gdirect = { path = ".." }
+anyhow = "1"
+dirs = "6"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+serde_json = "1"
+# gpui-kit-material is not on crates.io yet: the sibling checkout, at the Kit
+# revision it is audited against. Its Material Symbols come from crates.io.
+gpui-kit = { git = "https://github.com/longbridge/gpui-kit", rev = "8dfdd49de27c0726dd052fb2cfd2b0807d17980b" }
+gpui-kit-material = { path = "../../gpui-kit-material/crates/material" }
+gpui-material-symbols = { version = "0.1", default-features = false, features = ["gpui-kit"] }
+
+[workspace]
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package.gpui-fast]
+opt-level = 3
+
+# Kit, Base and the GPUI engines must be the one patched copy gpui-kit-material
+# is built and tested with (the patch set of its workspace root).
+[patch.crates-io]
+gpui-kit = { path = "../../gpui-kit-material/vendor/gpui-kit" }
+gpui-base = { path = "../../gpui-kit-material/vendor/gpui-base" }
+gpui-pre = { path = "../../gpui-kit-material/vendor/gpui-pre" }
+gpui-pre-apple = { path = "../../gpui-kit-material/vendor/gpui-pre-apple" }
+gpui-pre-web = { path = "../../gpui-kit-material/vendor/gpui-pre-web" }
+gpui-pre-macos = { path = "../../gpui-kit-material/vendor/gpui-pre-macos" }
+gpui-pre-linux = { path = "../../gpui-kit-material/vendor/gpui-pre-linux" }
+gpui-pre-wgpu = { path = "../../gpui-kit-material/vendor/gpui-pre-wgpu" }
+gpui-pre-windows = { path = "../../gpui-kit-material/vendor/gpui-pre-windows" }
+gpui-fast = { path = "../../gpui-kit-material/vendor/gpui-fast" }
+gpui-fast-apple = { path = "../../gpui-kit-material/vendor/gpui-fast-apple" }
+gpui-fast-web = { path = "../../gpui-kit-material/vendor/gpui-fast-web" }
+gpui-fast-macos = { path = "../../gpui-kit-material/vendor/gpui-fast-macos" }
+gpui-fast-linux = { path = "../../gpui-kit-material/vendor/gpui-fast-linux" }
+gpui-fast-wgpu = { path = "../../gpui-kit-material/vendor/gpui-fast-wgpu" }
+gpui-fast-windows = { path = "../../gpui-kit-material/vendor/gpui-fast-windows" }
+wgpu = { path = "../../gpui-kit-material/vendor/wgpu" }
+
+[patch."https://github.com/longbridge/gpui-kit"]
+gpui-kit = { path = "../../gpui-kit-material/vendor/gpui-kit" }
+gpui-base = { path = "../../gpui-kit-material/vendor/gpui-base" }
