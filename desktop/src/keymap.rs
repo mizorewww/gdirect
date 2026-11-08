@@ -54,6 +54,7 @@ actions!(
         Rename,
         Parent,
         FocusFilter,
+        FilterFolder,
         CursorUp,
         CursorDown,
         CursorFirst,
@@ -196,6 +197,14 @@ pub fn key_bindings() -> Vec<Shortcut> {
         row(Refresh, "secondary-r", "刷新", "Refresh", None, All),
         row(Refresh, "f5", "刷新", "Refresh", None, Other),
         row(FocusFilter, "secondary-f", "查找", "Find", None, All),
+        row(
+            FilterFolder,
+            "secondary-alt-f",
+            "筛选此文件夹",
+            "Filter this folder",
+            None,
+            All,
+        ),
         // The Go menu
         row(GoBack, "secondary-[", "后退", "Back", None, All),
         row(GoForward, "secondary-]", "前进", "Forward", None, All),
@@ -703,6 +712,7 @@ pub fn set_menus(cx: &mut App) {
             MenuItem::os_action(t("全选", "Select All"), SelectAll, OsAction::SelectAll),
             MenuItem::separator(),
             MenuItem::action(t("查找", "Find"), FocusFilter),
+            MenuItem::action(t("筛选此文件夹", "Filter This Folder"), FilterFolder),
         ]),
         Menu::new(t("显示", "View")).items([
             MenuItem::action(t("文件", "Files"), ShowFiles),

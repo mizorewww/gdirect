@@ -266,8 +266,8 @@ pub fn supporting(content: impl Into<SharedString>) -> AnyElement {
     text(TypeRole::BodyMedium, ColorRole::ON_SURFACE_VARIANT, content).into_any_element()
 }
 
-/// A path as supporting text: one line that ends in an ellipsis, with the
-/// whole path in a tooltip.
+/// A path as supporting text: one line, cut in the middle so the file or
+/// folder at its end stays in sight, with the whole path in a tooltip.
 pub fn path(id: &'static str, content: impl Into<SharedString>) -> AnyElement {
     path_in(id, ColorRole::ON_SURFACE_VARIANT, content)
 }
@@ -276,7 +276,7 @@ pub fn path(id: &'static str, content: impl Into<SharedString>) -> AnyElement {
 pub fn path_in(id: &'static str, ink: ColorRole, content: impl Into<SharedString>) -> AnyElement {
     let content = content.into();
     MaterialTooltip::plain(id, content.clone())
-        .trigger(name_line(TypeRole::BodyMedium, ink, content))
+        .trigger(name_line(TypeRole::BodyMedium, ink, content).text_ellipsis_middle())
         .into_any_element()
 }
 

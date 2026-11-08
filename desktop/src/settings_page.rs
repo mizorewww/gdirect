@@ -182,12 +182,16 @@ impl Gdirect {
             .when(two_panes, |d| d.w(px(layout.list_w)).flex_none())
             .when(!two_panes, |d| d.flex_1().min_w_0())
             .h_full()
+            .track_scroll(&self.settings_scroll)
             .overflow_y_scroll();
+        // Alone, the index's cards take the panes' margins, so a pane opens
+        // on cards of the same width.
         let list = list.child(
             div()
                 .w_full()
                 .when(!two_panes, |d| d.max_w(rem(MAX_W)).mx_auto())
-                .p(rem(16.))
+                .px(rem(if two_panes { 16. } else { layout.pad }))
+                .py(rem(16.))
                 .flex()
                 .flex_col()
                 .gap(rem(16.))
@@ -259,20 +263,38 @@ impl Gdirect {
                 .into_any_element()
         };
         // Each pane scrolls on its own, so switching starts at the top; its
-        // header (and the way back) stays above what scrolls.
+        // header (and the way back) stays above what scrolls, with a divider
+        // once the pane scrolls beneath it.
+        let shown = (two_panes || self.pane_open).then_some(self.pane);
+        if self.pane_scrolled != shown {
+            self.pane_scrolled = shown;
+            self.pane_scroll.set_offset(Point::default());
+        }
+        let scrolled = self.pane_scroll.offset().y < px(0.);
         let header = div()
             .flex_none()
             .w_full()
-            .max_w(rem(MAX_W))
-            .when(!two_panes, |d| d.mx_auto())
-            .px(rem(layout.pad))
-            .pt(rem(if two_panes { layout.pad } else { 12. }))
-            .pb(rem(if two_panes { 16. } else { 8. }))
-            .child(header);
+            .border_b_1()
+            .border_color(if scrolled {
+                color(ColorRole::OUTLINE_VARIANT)
+            } else {
+                gpui_kit::transparent_black().into()
+            })
+            .child(
+                div()
+                    .w_full()
+                    .max_w(rem(MAX_W))
+                    .when(!two_panes, |d| d.mx_auto())
+                    .px(rem(layout.pad))
+                    .pt(rem(if two_panes { layout.pad } else { 12. }))
+                    .pb(rem(if two_panes { 16. } else { 8. }))
+                    .child(header),
+            );
         let body = div()
             .id(("settings-detail", self.pane as usize))
             .flex_1()
             .min_h_0()
+            .track_scroll(&self.pane_scroll)
             .overflow_y_scroll()
             .child(
                 div()
@@ -468,14 +490,16 @@ impl Gdirect {
                                 ColorRole::ON_SURFACE,
                                 t("连接数", "Connections per download"),
                             ))
-                            .child(ui::text(
+                            // The range in Roboto: the CJK face draws
+                            // its en dash as a long dash.
+                            .child(ui::latin(ui::text(
                                 TypeRole::BodyMedium,
                                 ColorRole::ON_SURFACE_VARIANT,
                                 t(
                                     "每个文件用多少条连接并行下载，1–16",
                                     "Parallel connections used for each file, 1–16",
                                 ),
-                            )),
+                            ))),
                     )
                     .child(ui::text(
                         TypeRole::HeadlineSmall,
@@ -1113,7 +1137,13 @@ impl Gdirect {
             ui::setting_row(
                 "system_update",
                 format!("gdirect {}", env!("CARGO_PKG_VERSION")),
-                Some(t("桌面客户端 · Material 3", "Desktop client · Material 3").into()),
+                Some(
+                    t(
+                        "Google 云端硬盘桌面客户端",
+                        "Desktop client for Google Drive",
+                    )
+                    .into(),
+                ),
                 Some(
                     // Opens the page; the app does not check by itself.
                     material_button("releases", ButtonVariant::Text)

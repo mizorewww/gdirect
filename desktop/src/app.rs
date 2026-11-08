@@ -156,11 +156,16 @@ pub struct Gdirect {
     /// Bumped by each edit of the search; it runs once typing pauses on the latest.
     pub search_serial: u64,
     pub filters: Filters,
-    /// Where a search started, to return to when it is cleared.
-    pub before_search: Option<Location>,
+    /// Where a search started, as it was shown (its sort), to return to
+    /// when it is cleared.
+    pub before_search: Option<crate::files::Visit>,
     /// The search chip whose menu is open.
     pub chip_menu: Option<&'static str>,
     pub focus_search: bool,
+    /// The folder filter is open: a narrow window shows the field, not its button.
+    pub filter_open: bool,
+    /// The filter field takes focus after the next frame.
+    pub focus_filter: bool,
     /// The search field shows a search that no longer applies; empty it.
     pub clear_search: bool,
     /// The search field is to show this search again (Back to a search).
@@ -208,6 +213,13 @@ pub struct Gdirect {
     /// the bars they scroll beneath.
     pub grid_scroll: ScrollHandle,
     pub routes_scroll: ScrollHandle,
+    /// The settings index's scrolling, kept while a pane is shown alone so
+    /// Back returns to the item it came from.
+    pub settings_scroll: ScrollHandle,
+    /// The settings pane's scrolling, for the divider under its header,
+    /// and the pane it belongs to (none while no pane is shown).
+    pub pane_scroll: ScrollHandle,
+    pub pane_scrolled: Option<Pane>,
     /// The window's focus when nothing in it has any; its key context holds
     /// the global shortcuts.
     pub focus: FocusHandle,
@@ -289,11 +301,17 @@ impl Gdirect {
             cx.subscribe_in(
                 &filter_input,
                 window,
-                |this, state, event: &InputEvent, _, cx| {
-                    if let InputEvent::Change = event {
+                |this, state, event: &InputEvent, _, cx| match event {
+                    InputEvent::Change => {
                         this.filter = state.read(cx).value().to_string();
                         cx.notify();
                     }
+                    // An empty filter left closes back to its button.
+                    InputEvent::Blur if this.filter_open && this.filter.is_empty() => {
+                        this.filter_open = false;
+                        cx.notify();
+                    }
+                    _ => {}
                 },
             ),
             cx.subscribe_in(
@@ -352,6 +370,17 @@ impl Gdirect {
                     cx.notify();
                 }
             }),
+            // The safety net under every button that removes itself (a
+            // field's ×, a chip, the selection bar's actions, Load more):
+            // focus left on an element the frame no longer draws reaches
+            // nothing, so the page takes it back. GPUI reports it only when
+            // the focused element is gone from the whole window, so focus in
+            // a menu or popup drawn outside this view is left alone.
+            cx.on_focus_lost(window, |this, window, cx| {
+                if this.dialog.is_none() {
+                    this.focus_now(window, cx);
+                }
+            }),
             cx.observe_window_appearance(window, |this, window, cx| {
                 if this.settings.theme == Theme::System {
                     this.apply_theme(window, cx);
@@ -392,6 +421,8 @@ impl Gdirect {
             before_search: None,
             chip_menu: None,
             focus_search: false,
+            filter_open: false,
+            focus_filter: false,
             restore_search: None,
             clear_search: false,
             undo: None,
@@ -421,6 +452,9 @@ impl Gdirect {
             rows: UniformListScrollHandle::new(),
             grid_scroll: ScrollHandle::new(),
             routes_scroll: ScrollHandle::new(),
+            settings_scroll: ScrollHandle::new(),
+            pane_scroll: ScrollHandle::new(),
+            pane_scrolled: None,
             focus: cx.focus_handle(),
             files_focus: cx.focus_handle(),
             focus_page: true,
@@ -1213,6 +1247,12 @@ impl Gdirect {
             if !this.accounts.is_empty() {
                 this.go(Page::Files, cx);
                 this.focus_search = true;
+            }
+        }))
+        .on_action(cx.listener(|this, _: &FilterFolder, _, cx| {
+            if !this.accounts.is_empty() {
+                this.go(Page::Files, cx);
+                this.open_filter(cx);
             }
         }))
         .on_action(Self::page_action(cx, |this, _: &ViewList, cx| {

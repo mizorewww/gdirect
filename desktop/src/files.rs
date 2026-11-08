@@ -21,6 +21,9 @@ const BAR_HEIGHT: f32 = 64.;
 
 /// The window width from which the toolbar shows the route chip in words.
 const ROUTE_CHIP: f32 = 760.;
+/// Below this width the folder filter is an icon button that opens into
+/// the field, which then takes the breadcrumb's place.
+const FILTER_FIELD: f32 = 760.;
 
 /// Name, Location, date and size; then the ⋮ button.
 const COLUMNS: [f32; 4] = [180., 160., 112., 56.];
@@ -28,10 +31,13 @@ const COLUMNS: [f32; 4] = [180., 160., 112., 56.];
 const FIRST_PAGE: u32 = 200;
 /// Rows from the end at which the next page is fetched.
 const PREFETCH: usize = 40;
-/// The blank rows after the list's last, enough of them (58 each) to make
-/// [`Gdirect::LISTING_BOTTOM`]'s room. Inert: nothing selects, opens or
+/// The blank rows after the list's last, which make
+/// [`Gdirect::LISTING_BOTTOM`]'s room (the grid leaves the same). Inert: nothing selects, opens or
 /// highlights them, and the keys, Select All and the menus count only files.
 const SPACER_ROWS: usize = 2;
+/// A list row's height, which the spacer rows share (a uniform list's rows
+/// are all one height).
+const ROW_HEIGHT: f32 = 58.;
 /// The grid's tiles' least width, the gap between them and the grid's margin.
 const TILE_MIN: f32 = 176.;
 const GRID_GAP: f32 = 12.;
@@ -415,8 +421,8 @@ impl Gdirect {
                 self.before_search = self
                     .history
                     .last()
-                    .map(|v| v.location.clone())
-                    .filter(|l| l.search().is_none());
+                    .filter(|v| v.location.search().is_none())
+                    .cloned();
             }
             self.location = visit.location;
             self.entered(cx);
@@ -563,6 +569,7 @@ impl Gdirect {
         self.list_error = None;
         self.filter.clear();
         self.clear_filter = true;
+        self.filter_open = false;
         self.chip_menu = None;
         self.rows.scroll_to_item(0, ScrollStrategy::Top);
         self.grid_scroll.set_offset(Point::default());
@@ -615,7 +622,7 @@ impl Gdirect {
             return;
         }
         if self.before_search.is_none() {
-            self.before_search = Some(self.location.clone());
+            self.before_search = Some(self.visit());
         }
         let next = Location::new(Place::Search(spec));
         // Refining a search is one step back, not one per keystroke.
@@ -634,11 +641,14 @@ impl Gdirect {
         if !matches!(self.location.place, Place::Search(_)) {
             return;
         }
-        let back = self
-            .before_search
-            .take()
-            .unwrap_or_else(|| Location::new(Place::MyDrive));
-        self.location = back;
+        // As Back would show it: with the sort it had.
+        let back = self.before_search.take().unwrap_or_else(|| Visit {
+            location: Location::new(Place::MyDrive),
+            sort: (SortKey::Name, true),
+            filters: places::Filters::default(),
+        });
+        self.sort = back.sort;
+        self.location = back.location;
         self.entered(cx);
     }
 
@@ -793,6 +803,17 @@ impl Gdirect {
     fn clear_filter_now(&mut self, cx: &mut Context<Self>) {
         self.filter.clear();
         self.clear_filter = true;
+        self.filter_open = false;
+        cx.notify();
+    }
+
+    /// Opens the folder filter (a button in narrow windows) and gives it the keys.
+    pub fn open_filter(&mut self, cx: &mut Context<Self>) {
+        if self.location.search().is_some() {
+            return;
+        }
+        self.filter_open = true;
+        self.focus_filter = true;
         cx.notify();
     }
 
@@ -1235,8 +1256,48 @@ impl Gdirect {
 
     /// Moves files to the trash at once; the snackbar offers to undo it.
     pub fn trash(&mut self, files: Vec<File>, cx: &mut Context<Self>) {
-        self.selected
-            .retain(|id| !files.iter().any(|f| &f.id == id));
+        let gone: HashSet<String> = files.iter().map(|f| f.id.clone()).collect();
+        // The row after the first one trashed (before it, at the end) takes
+        // the selection, so the keys and the bar carry on from there.
+        let ids: Vec<String> = self.shown().iter().map(|f| f.id.clone()).collect();
+        let next = ids
+            .iter()
+            .position(|id| gone.contains(id))
+            .and_then(|first| {
+                ids[first..]
+                    .iter()
+                    .find(|id| !gone.contains(*id))
+                    .or_else(|| ids[..first].iter().rev().find(|id| !gone.contains(*id)))
+                    .cloned()
+            });
+        let was_selected = self.selected.iter().any(|id| gone.contains(id));
+        self.selected.retain(|id| !gone.contains(id));
+        if was_selected && self.selected.is_empty() {
+            if let Some(next) = next {
+                self.selected = vec![next.clone()];
+                self.anchor = Some(next.clone());
+                self.cursor = Some(next);
+            } else {
+                self.cursor = None;
+                self.anchor = None;
+            }
+        }
+        // The rows leave at once; a listing already on its way, read
+        // before the trash, is dropped so it cannot bring them back.
+        let before = self.entries.len();
+        self.entries.retain(|f| !gone.contains(&f.id));
+        if self.entries.len() != before {
+            self.generation += 1;
+            if let Some(ix) = self
+                .cursor
+                .as_ref()
+                .and_then(|c| self.shown().iter().position(|f| &f.id == c))
+            {
+                self.rows.scroll_to_item(ix, ScrollStrategy::Nearest);
+            }
+        }
+        let all = files.clone();
+        let location = self.location.clone();
         self.operate_with(
             tf!(
                 "正在将 {}移至回收站…",
@@ -1253,7 +1314,17 @@ impl Gdirect {
                 }
                 (done, None)
             },
-            |this, (done, error), cx| {
+            move |this, (done, error), cx| {
+                // What failed comes back at once; the listing that follows
+                // has the last word.
+                if error.is_some() && this.location == location {
+                    let failed = all
+                        .into_iter()
+                        .filter(|f| !done.iter().any(|d: &File| d.id == f.id))
+                        .filter(|f| !this.entries.iter().any(|e| e.id == f.id))
+                        .collect::<Vec<_>>();
+                    this.entries.extend(failed);
+                }
                 let message = match (&done[..], &error) {
                     ([], Some(e)) => return this.say(first_line(e), cx),
                     ([one], None) => tf!("已将“{}”移至回收站", "Moved “{}” to trash", one.name),
@@ -1596,6 +1667,12 @@ impl Gdirect {
                 input.update(cx, |input, cx| input.set_value(text, window, cx));
             });
         }
+        if std::mem::take(&mut self.focus_filter) {
+            let input = self.filter_input.clone();
+            window.on_next_frame(move |window, cx| {
+                input.update(cx, |input, cx| input.focus(window, cx));
+            });
+        }
         if std::mem::take(&mut self.focus_search) {
             let input = self.search_input.clone();
             window.on_next_frame(move |window, cx| {
@@ -1765,8 +1842,14 @@ impl Gdirect {
                                     Symbol::CLOSE,
                                     t("清除搜索", "Clear search"),
                                 )
+                                // The field keeps the keys, as a Mac search
+                                // field does: the × leaves with the text.
                                 .on_click(cx.listener(
-                                    |this, _: &ClickEvent, _, cx| this.clear_search_now(cx),
+                                    |this, _: &ClickEvent, window, cx| {
+                                        this.clear_search_now(cx);
+                                        this.search_input
+                                            .update(cx, |input, cx| input.focus(window, cx));
+                                    },
                                 )),
                             )
                         }),
@@ -2114,6 +2197,11 @@ impl Gdirect {
         let names = self.location.crumbs();
         let last = names.len() - 1;
         let filter_width = if self.wide(860.) { 220. } else { 168. };
+        let searching = self.location.search().is_some();
+        // Narrow windows: the filter is a button, and the field it opens
+        // takes the crumbs' place while it is in use.
+        let filter_button = !searching && !self.wide(FILTER_FIELD);
+        let filter_over = filter_button && (self.filter_open || !self.filter.is_empty());
         let collapsed = self.collapsed_crumbs(&names, filter_width);
         let mut crumbs = div()
             .flex_1()
@@ -2125,9 +2213,18 @@ impl Gdirect {
         for (depth, name) in names.iter().enumerate() {
             if let Some(hidden) = collapsed.clone().filter(|h| h.contains(&depth)) {
                 if depth == hidden.start {
-                    crumbs = crumbs
-                        .child(ui::icon("chevron_right", 24., ColorRole::OUTLINE))
-                        .child(self.render_crumb_menu(&names, hidden, cx));
+                    if depth > 0 {
+                        crumbs = crumbs.child(div().flex_none().flex().child(ui::icon(
+                            "chevron_right",
+                            24.,
+                            ColorRole::OUTLINE,
+                        )));
+                    }
+                    crumbs = crumbs.child(
+                        div()
+                            .flex_none()
+                            .child(self.render_crumb_menu(&names, hidden, cx)),
+                    );
                 }
                 continue;
             }
@@ -2205,34 +2302,45 @@ impl Gdirect {
                 .child(t("清空回收站", "Empty trash"))
         });
         // The search has chips instead; the local filter would read as a second search.
-        let filter = self.location.search().is_none().then(|| {
-            div().flex_none().w(rem(filter_width)).child(
-                SearchField::new(&self.filter_input)
-                    .id("filter")
-                    .field_style(SearchFieldStyle::Surface)
-                    .leading(ui::icon("filter_list", 24., ColorRole::ON_SURFACE_VARIANT))
-                    .when(!self.filter.is_empty(), |field| {
-                        field.trailing(
-                            IconButton::new(
-                                "clear-filter",
-                                Symbol::CLOSE,
-                                t("清除筛选", "Clear filter"),
+        let mut filter = (!searching && (!filter_button || filter_over)).then(|| {
+            div()
+                .when(filter_over, |d| d.flex_1().min_w_0())
+                .when(!filter_over, |d| d.flex_none().w(rem(filter_width)))
+                .child(
+                    SearchField::new(&self.filter_input)
+                        .id("filter")
+                        .field_style(SearchFieldStyle::Surface)
+                        .leading(ui::icon("filter_list", 24., ColorRole::ON_SURFACE_VARIANT))
+                        .when(!self.filter.is_empty(), |field| {
+                            field.trailing(
+                                IconButton::new(
+                                    "clear-filter",
+                                    Symbol::CLOSE,
+                                    t("清除筛选", "Clear filter"),
+                                )
+                                .on_click(cx.listener(
+                                    |this, _: &ClickEvent, window, cx| {
+                                        this.clear_filter_now(cx);
+                                        window.focus(&this.files_focus, cx);
+                                    },
+                                )),
                             )
-                            .on_click(cx.listener(
-                                |this, _: &ClickEvent, window, cx| {
-                                    this.clear_filter_now(cx);
-                                    window.focus(&this.files_focus, cx);
-                                },
-                            )),
-                        )
-                    })
-                    // A compact desktop field, with an outlined field's
-                    // focus: the primary colour, thicker.
-                    .h(rem(44.))
-                    .when(filter_focused, |field| {
-                        field.border_2().border_color(color(ColorRole::PRIMARY))
-                    }),
+                        })
+                        // A compact desktop field, with an outlined field's
+                        // focus: the primary colour, thicker.
+                        .h(rem(44.))
+                        .when(filter_focused, |field| {
+                            field.border_2().border_color(color(ColorRole::PRIMARY))
+                        }),
+                )
+        });
+        let open_filter = (filter_button && !filter_over).then(|| {
+            IconButton::new(
+                "open-filter",
+                Symbol::FILTER_LIST,
+                t("筛选此文件夹", "Filter this folder"),
             )
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.open_filter(cx)))
         });
         div()
             .h(rem(BAR_HEIGHT))
@@ -2242,7 +2350,8 @@ impl Gdirect {
             .gap(rem(8.))
             .pl(rem(16.))
             .pr(rem(16.))
-            .child(crumbs)
+            .when(!filter_over, |d| d.child(crumbs))
+            .when(filter_over, |d| d.children(filter.take()))
             .child(
                 div()
                     .flex_none()
@@ -2250,6 +2359,7 @@ impl Gdirect {
                     .items_center()
                     .gap(rem(8.))
                     .children(filter)
+                    .children(open_filter)
                     .children(empty_trash)
                     .children(paste)
                     .when(
@@ -2289,35 +2399,41 @@ impl Gdirect {
             )
     }
 
-    /// The crumbs a breadcrumb hides behind "…" so the rest fit on one line:
-    /// those after the place, as few as do, keeping the place and the last.
+    /// The crumbs a breadcrumb hides behind "…" so the rest fit on one line.
+    /// The current folder's name comes first: the ancestors after the place
+    /// go first, as few as do, then the place too, and only then does the
+    /// name itself shorten.
     fn collapsed_crumbs(
         &self,
         names: &[String],
         filter_width: f32,
     ) -> Option<std::ops::Range<usize>> {
         let last = names.len() - 1;
-        if last < 2 {
+        if last == 0 {
             return None;
         }
-        // TitleLarge: 22px, about half that for Latin letters; the label's
-        // padding and the chevron before it.
-        let width = |name: &String| -> f32 {
+        // TitleLarge: 22px, under half that for Latin letters; the label's
+        // padding and the chevron (with its gaps) before all but the first.
+        let width = |(depth, name): (usize, &String)| -> f32 {
             name.chars()
-                .map(|c| if c.is_ascii() { 12. } else { 22. })
+                .map(|c| if c.is_ascii() { 10.5 } else { 22. })
                 .sum::<f32>()
                 + 16.
-                + 28.
+                + if depth > 0 { 32. } else { 0. }
         };
         let mut controls = 112. + 16.;
         if self.location.search().is_none() {
-            controls += filter_width + 8.;
+            controls += if self.wide(FILTER_FIELD) {
+                filter_width + 8.
+            } else {
+                40. + 8.
+            };
         }
         if self.grid || !self.show_modified() || !self.show_size() {
             controls += 48.;
         }
         if self.clipboard.is_some() {
-            controls += 200.;
+            controls += if self.wide(860.) { 200. } else { 130. };
         }
         if self.location.trash() {
             controls += 160.;
@@ -2326,18 +2442,26 @@ impl Gdirect {
             controls += 28.;
         }
         let room = self.content_width() - 32. - controls;
-        let widths: Vec<f32> = names.iter().map(width).collect();
+        let widths: Vec<f32> = names.iter().enumerate().map(width).collect();
         let total: f32 = widths.iter().sum();
         if total <= room {
             return None;
         }
-        // Hide 1..end, the "…" taking its own place.
-        let more = 40. + 28.;
-        let mut end = 2;
-        while end < last && widths[0] + more + widths[end..].iter().sum::<f32>() > room {
-            end += 1;
+        // The "…" taking its own place, after a chevron unless it is first.
+        let more = 40. + 32.;
+        // Hide 1..end, keeping the place and as many of the last as fit.
+        if last >= 2 {
+            let mut end = 2;
+            while end < last && widths[0] + more + widths[end..].iter().sum::<f32>() > room {
+                end += 1;
+            }
+            if widths[0] + more + widths[end..].iter().sum::<f32>() <= room {
+                return Some(1..end);
+            }
         }
-        Some(1..end)
+        // Still too long: the place goes too, and "…" holds every ancestor.
+        // (The last crumb's chevron stays; the "…" first has none.)
+        Some(0..last)
     }
 
     fn render_selection(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2358,11 +2482,16 @@ impl Gdirect {
                     .flex_none()
                     .whitespace_nowrap(),
                 )
-                .child(ui::name_line(
-                    TypeRole::TitleMedium,
-                    ColorRole::ON_SURFACE,
-                    one.name.clone(),
-                )),
+                // Cut in the middle, as the grid's names are: the
+                // extension stays in sight.
+                .child(
+                    ui::name_line(
+                        TypeRole::TitleMedium,
+                        ColorRole::ON_SURFACE,
+                        one.name.clone(),
+                    )
+                    .text_ellipsis_middle(),
+                ),
             many => div().flex().min_w_0().child(ui::line(
                 TypeRole::TitleMedium,
                 ColorRole::ON_SURFACE,
@@ -2389,8 +2518,10 @@ impl Gdirect {
             .bg(color(ColorRole::SURFACE_CONTAINER_HIGH))
             .child(
                 action("clear", Symbol::CLOSE, t("取消选择", "Clear selection")).on_click(
-                    cx.listener(|this, _: &ClickEvent, _, cx| {
+                    cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.selected.clear();
+                        // The bar leaves with the selection; the list keeps the keys.
+                        window.focus(&this.files_focus, cx);
                         cx.notify();
                     }),
                 ),
@@ -2403,9 +2534,10 @@ impl Gdirect {
                     MaterialButton::new("restore")
                         .disabled(!can.restore)
                         .icon(Symbol::RESTORE_FROM_TRASH)
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                             let files = this.picked();
                             this.restore(files, cx);
+                            window.focus(&this.files_focus, cx);
                         }))
                         .child(t("恢复", "Restore")),
                 )
@@ -2507,9 +2639,12 @@ impl Gdirect {
                 d.child(
                     action("trash", Symbol::DELETE, t("移至回收站", "Move to trash"))
                         .disabled(!can.trash)
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                             let files = this.picked();
                             this.trash(files, cx);
+                            // The list keeps the keys, on the row that
+                            // took the selection.
+                            window.focus(&this.files_focus, cx);
                         })),
                 )
             })
@@ -2753,7 +2888,10 @@ impl Gdirect {
                                 None if ix == count && more == 1 => {
                                     this.render_more(cx).into_any_element()
                                 }
-                                None => div().id(("spacer", ix)).h(rem(58.)).into_any_element(),
+                                None => div()
+                                    .id(("spacer", ix))
+                                    .h(rem(ROW_HEIGHT))
+                                    .into_any_element(),
                             })
                             .collect::<Vec<_>>()
                     }),
@@ -2769,7 +2907,7 @@ impl Gdirect {
     fn render_more(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         div()
             .id("more")
-            .h(rem(58.))
+            .h(rem(ROW_HEIGHT))
             .flex()
             .items_center()
             .justify_center()
@@ -2780,9 +2918,11 @@ impl Gdirect {
             } else {
                 MaterialButton::new("load-more")
                     .variant(ButtonVariant::Text)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.list_error = None;
                         this.load_more();
+                        // The button gives way to progress; the list keeps the keys.
+                        window.focus(&this.files_focus, cx);
                         cx.notify();
                     }))
                     .child(t("加载更多", "Load more"))
@@ -2846,7 +2986,7 @@ impl Gdirect {
     /// clear of it. Always there, so nothing moves when one appears. The
     /// list makes it of blank rows after its last ([`SPACER_ROWS`]): padding
     /// would shrink the area it draws rows in instead.
-    const LISTING_BOTTOM: f32 = 80.;
+    const LISTING_BOTTOM: f32 = SPACER_ROWS as f32 * ROW_HEIGHT;
 
     /// Whether a file's ⋮ or right-click menu is open.
     fn menu_open(&self, file: &File) -> bool {
@@ -2893,10 +3033,12 @@ impl Gdirect {
                 .child(label)
                 .children(arrow)
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    // A new column starts the way Drive and Finder do:
+                    // names A to Z, dates newest and sizes largest first.
                     this.sort = if this.sort.0 == this_key {
                         (this_key, !this.sort.1)
                     } else {
-                        (this_key, true)
+                        (this_key, this_key == SortKey::Name)
                     };
                     cx.notify();
                 }))
@@ -2969,13 +3111,21 @@ impl Gdirect {
             .flex()
             .items_center()
             .gap(rem(8.))
-            .when_some(name, |d, name| {
-                d.child(ui::icon(icon, 18., ColorRole::ON_SURFACE_VARIANT))
+            .map(|d| match name {
+                Some(name) => d
+                    .child(ui::icon(icon, 18., ColorRole::ON_SURFACE_VARIANT))
                     .child(ui::name_line(
                         TypeRole::BodyMedium,
                         ColorRole::ON_SURFACE_VARIANT,
                         name,
-                    ))
+                    )),
+                // Not known yet (its folder's name is being read): a dash,
+                // not a blank cell.
+                None => d.child(ui::text(
+                    TypeRole::BodyMedium,
+                    ColorRole::ON_SURFACE_VARIANT,
+                    "—",
+                )),
             })
     }
 
@@ -2998,7 +3148,7 @@ impl Gdirect {
         let activate = file.clone();
         div()
             .id(("row", ix))
-            .h(rem(58.))
+            .h(rem(ROW_HEIGHT))
             .when(!above, |d| d.pt(rem(2.)))
             .relative()
             .child(self.file_context_menu(("row-context", ix), file, cx))

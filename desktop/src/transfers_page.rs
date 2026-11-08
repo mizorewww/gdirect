@@ -576,16 +576,25 @@ impl Gdirect {
                     18.,
                     ColorRole::ON_PRIMARY_CONTAINER,
                 ))
-                .child(ui::mono(ip))
-                .child(format!(
-                    "{}· {}",
-                    ms.map(|ms| format!("· {ms} ms ")).unwrap_or_default(),
-                    if sni.is_empty() {
-                        t("真实 SNI", "Real SNI").to_owned()
-                    } else {
-                        tf!("伪装 · {sni}", "Disguised · {sni}")
-                    }
-                ))
+                // One spacing for every separator: the address, then the
+                // facts after it, each after a " · ".
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .whitespace_nowrap()
+                        .child(ui::mono(ip))
+                        .child(format!(
+                            "{} · {}",
+                            ms.map(|ms| format!(" · {}", crate::endpoints::latency(ms)))
+                                .unwrap_or_default(),
+                            if sni.is_empty() {
+                                t("真实 SNI", "Real SNI").to_owned()
+                            } else {
+                                tf!("伪装 · {sni}", "Disguised · {sni}")
+                            }
+                        )),
+                )
         });
         div()
             .rounded(rem(24.))

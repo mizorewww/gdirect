@@ -26,13 +26,7 @@ pub fn route_status(raw: &str) -> (String, bool) {
     let lower = raw.to_lowercase();
     let known = |zh: &'static str, en: &'static str| t(zh, en).to_owned();
     if lower.contains("verified over another network path") {
-        return (
-            known(
-                "网络路径已变化，待重新验证",
-                "Network path changed; recheck pending",
-            ),
-            false,
-        );
+        return (known("待重新验证", "Recheck pending"), false);
     }
     let text = if lower == "no tcp answer" {
         known("无 TCP 响应", "No TCP answer")
@@ -500,16 +494,17 @@ impl Gdirect {
             .flex_none()
             .whitespace_nowrap()
         };
+        // One line: the disguise shortens first, then the address; the
+        // health, latency and count keep their words.
         div()
             .rounded(rem(16.))
             .bg(color(ColorRole::SURFACE_CONTAINER_LOW))
             .px(rem(16.))
             .py(rem(12.))
             .flex()
-            .flex_wrap()
             .items_center()
-            .gap_x(rem(16.))
-            .gap_y(rem(4.))
+            .gap(rem(16.))
+            .overflow_hidden()
             .child(
                 div()
                     .flex()
@@ -517,25 +512,31 @@ impl Gdirect {
                     .items_center()
                     .gap(rem(8.))
                     .child(div().size(rem(8.)).rounded_full().bg(color(dot)))
-                    .child(ui::text(
-                        TypeRole::LabelLarge,
-                        ColorRole::ON_SURFACE_VARIANT,
-                        mode,
-                    )),
+                    .child(
+                        ui::text(TypeRole::LabelLarge, ColorRole::ON_SURFACE_VARIANT, mode)
+                            .whitespace_nowrap(),
+                    ),
             )
             .child(
                 ui::mono(ip)
                     .text_color(color(ColorRole::ON_SURFACE))
-                    .flex_none(),
+                    .min_w(rem(48.))
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .text_ellipsis(),
             )
             .child(fact(ms.map_or("—".into(), latency)))
+            .child(fact(tf!("{usable} 个可直达", "{usable} reachable")))
             .when(!sni.is_empty(), |d| {
-                d.child(fact(tf!("伪装 · {sni}", "Disguised · {sni}")))
+                d.child(
+                    ui::name_line(
+                        TypeRole::BodyMedium,
+                        ColorRole::ON_SURFACE_VARIANT,
+                        tf!("伪装 · {sni}", "Disguised · {sni}"),
+                    )
+                    .flex_1(),
+                )
             })
-            .child(fact({
-                let s = if usable == 1 { "" } else { "es" };
-                tf!("{usable} 个可直达地址", "{usable} reachable address{s}")
-            }))
     }
 
     fn render_scan_progress(&self, state: &ScanState) -> impl IntoElement {
@@ -692,7 +693,16 @@ impl Gdirect {
                         .child(t("TLS 身份", "TLS identity")),
                 )
             })
-            .child(div().flex_1().min_w(rem(120.)).child(t("状态", "Status")))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .pr(rem(8.))
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(t("状态", "Status")),
+            )
             .child(div().w(rem(COLUMNS[3])));
         // Bars compare the listed front ends, on a scale of at least 200 ms.
         let slowest = rows
@@ -800,9 +810,13 @@ impl Gdirect {
                         )
                     })
                     .child(
+                        // Any status shortens to an ellipsis before it
+                        // reaches the pin column.
                         div()
                             .flex_1()
-                            .min_w(rem(120.))
+                            .min_w_0()
+                            .pr(rem(8.))
+                            .overflow_hidden()
                             .flex()
                             .items_center()
                             .gap(rem(8.))
@@ -834,11 +848,20 @@ impl Gdirect {
                                     status,
                                 );
                                 // The engine's own words, in full, on hover.
+                                // The tooltip keeps its trigger's width, so
+                                // the cell's room is set around it: in block
+                                // layout the line fills it and ellipsizes.
                                 d.child(if raw.is_empty() {
                                     line.into_any_element()
                                 } else {
-                                    MaterialTooltip::plain(("route-status", ix), raw)
-                                        .trigger(div().min_w_0().overflow_hidden().child(line))
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .child(
+                                            MaterialTooltip::plain(("route-status", ix), raw)
+                                                .trigger(line),
+                                        )
                                         .into_any_element()
                                 })
                             }),
@@ -899,7 +922,7 @@ mod tests {
         // Retired, not failed: waiting to be checked again.
         assert_eq!(
             route_status("verified over another network path"),
-            ("Network path changed; recheck pending".into(), false)
+            ("Recheck pending".into(), false)
         );
         assert_eq!(
             route_status("operation timed out | forged: operation timed out").0,
