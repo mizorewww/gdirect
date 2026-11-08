@@ -156,6 +156,9 @@ pub struct Gdirect {
     focus_name: bool,
     /// Bumped by each connection attempt; results from older ones are dropped.
     pub session: u64,
+    /// The window's width in logical pixels at the last frame; pages lay out
+    /// for it (see [`Gdirect::wide`]).
+    pub width: f32,
     pub rows: UniformListScrollHandle,
 
     // Transfers
@@ -173,6 +176,8 @@ pub struct Gdirect {
 
     // Settings
     pub pane: Pane,
+    /// A narrow window shows the settings list or one pane; this is the pane.
+    pub pane_open: bool,
     pub mount: Option<MountInfo>,
     pub mount_busy: bool,
     pub connections: Entity<SliderState>,
@@ -291,6 +296,7 @@ impl Gdirect {
             focus_name: false,
             clear_filter: false,
             session: 0,
+            width: 1280.,
             rows: UniformListScrollHandle::new(),
             queues: Queues::default(),
             show_uploads: false,
@@ -301,6 +307,7 @@ impl Gdirect {
             scan_error: None,
             intercepted: false,
             pane: Pane::Transfer,
+            pane_open: false,
             mount: None,
             mount_busy: false,
             connections,
@@ -368,6 +375,11 @@ impl Gdirect {
             .into_iter()
             .filter(|e| e.ip.parse().is_ok_and(|ip| google.contains(ip)))
             .collect();
+    }
+
+    /// Whether the window is at least `px` logical pixels wide.
+    pub fn wide(&self, px: f32) -> bool {
+        self.width >= px
     }
 
     /// Whether a front end verified in the last day is stored to connect through.
@@ -916,6 +928,7 @@ pub const TITLE_BAR: Pixels = px(40.);
 
 impl Render for Gdirect {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.width = f32::from(window.viewport_size().width);
         let labels = CaptionLabels {
             minimize: t("最小化", "Minimize").into(),
             maximize: t("最大化", "Maximize").into(),

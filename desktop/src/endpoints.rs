@@ -507,6 +507,14 @@ impl Gdirect {
             }
             .into_any_element();
         }
+        // Narrow windows drop the TLS column, then the latency bars.
+        let show_tls = self.wide(1040.);
+        let show_bar = self.wide(860.);
+        let (address_w, latency_w) = if show_bar {
+            (COLUMNS[0], COLUMNS[1])
+        } else {
+            (180., 88.)
+        };
         let header = ui::type_role(div(), TypeRole::TitleSmall)
             .flex()
             .items_center()
@@ -516,15 +524,17 @@ impl Gdirect {
             .child(
                 div()
                     .flex_1()
-                    .min_w(rem(COLUMNS[0]))
+                    .min_w(rem(address_w))
                     .child(t("地址", "Address")),
             )
-            .child(div().w(rem(COLUMNS[1])).child(t("延迟", "Latency")))
-            .child(
-                div()
-                    .w(rem(COLUMNS[2]))
-                    .child(t("TLS 身份", "TLS identity")),
-            )
+            .child(div().w(rem(latency_w)).child(t("延迟", "Latency")))
+            .when(show_tls, |d| {
+                d.child(
+                    div()
+                        .w(rem(COLUMNS[2]))
+                        .child(t("TLS 身份", "TLS identity")),
+                )
+            })
             .child(div().flex_1().min_w(rem(120.)).child(t("状态", "Status")))
             .child(div().w(rem(COLUMNS[3])));
         // Bars compare the listed front ends, on a scale of at least 200 ms.
@@ -549,6 +559,7 @@ impl Gdirect {
                 };
                 let bar = e
                     .latency_ms
+                    .filter(|_| show_bar)
                     .map(|ms| ((ms as f32 / slowest).clamp(0.03, 1.), ms < 300));
                 div()
                     .flex()
@@ -561,7 +572,7 @@ impl Gdirect {
                     .child(
                         div()
                             .flex_1()
-                            .min_w(rem(COLUMNS[0]))
+                            .min_w(rem(address_w))
                             .flex()
                             .items_center()
                             .gap(rem(8.))
@@ -574,7 +585,7 @@ impl Gdirect {
                     )
                     .child(
                         div()
-                            .w(rem(COLUMNS[1]))
+                            .w(rem(latency_w))
                             .flex()
                             .items_center()
                             .gap(rem(12.))
@@ -605,20 +616,22 @@ impl Gdirect {
                                 )
                             }),
                     )
-                    .child(
-                        ui::text(
-                            TypeRole::BodyMedium,
-                            ColorRole::ON_SURFACE_VARIANT,
-                            if !ok {
-                                "—".to_owned()
-                            } else if e.sni.is_empty() {
-                                t("真实 SNI", "Real SNI").into()
-                            } else {
-                                tf!("伪装 · {}", "Disguised · {}", e.sni)
-                            },
+                    .when(show_tls, |d| {
+                        d.child(
+                            ui::text(
+                                TypeRole::BodyMedium,
+                                ColorRole::ON_SURFACE_VARIANT,
+                                if !ok {
+                                    "—".to_owned()
+                                } else if e.sni.is_empty() {
+                                    t("真实 SNI", "Real SNI").into()
+                                } else {
+                                    tf!("伪装 · {}", "Disguised · {}", e.sni)
+                                },
+                            )
+                            .w(rem(COLUMNS[2])),
                         )
-                        .w(rem(COLUMNS[2])),
-                    )
+                    })
                     .child(
                         div()
                             .flex_1()

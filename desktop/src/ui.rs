@@ -148,8 +148,10 @@ pub fn setting_row(
     supporting: Option<SharedString>,
     trailing: Option<AnyElement>,
 ) -> AnyElement {
+    // A control that does not fit beside the text wraps below it.
     div()
         .flex()
+        .flex_wrap()
         .items_center()
         .gap(rem(16.))
         .min_h(rem(72.))
@@ -159,7 +161,7 @@ pub fn setting_row(
         .child(
             div()
                 .flex_1()
-                .min_w_0()
+                .min_w(rem(180.))
                 .flex()
                 .flex_col()
                 .gap(rem(2.))
@@ -168,7 +170,9 @@ pub fn setting_row(
                     d.child(text(TypeRole::BodyMedium, ColorRole::ON_SURFACE_VARIANT, s))
                 }),
         )
-        .when_some(trailing, |d, t| d.child(div().flex_none().child(t)))
+        .when_some(trailing, |d, t| {
+            d.child(div().flex_none().ml_auto().child(t))
+        })
         .into_any_element()
 }
 

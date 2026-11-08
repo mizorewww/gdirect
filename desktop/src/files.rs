@@ -535,7 +535,8 @@ impl Gdirect {
                             .monogram(initial)
                             .size(28.),
                     )
-                    .child(account.clone()),
+                    // Narrow windows show the avatar alone.
+                    .when(self.wide(760.), |d| d.child(account.clone())),
             );
         let mut menu = MaterialMenu::new("account-menu").width(280.);
         let count = self.accounts.len();
@@ -567,6 +568,7 @@ impl Gdirect {
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.account_menu = false;
                         this.pane = crate::app::Pane::Account;
+                        this.pane_open = true;
                         this.go(Page::Settings, cx);
                     })),
             );
@@ -581,57 +583,60 @@ impl Gdirect {
             .pl(rem(24.))
             .pr(rem(16.))
             .child(
-                div().flex_1().min_w(rem(240.)).max_w(rem(640.)).child(
+                div().flex_1().min_w(rem(160.)).max_w(rem(640.)).child(
                     SearchField::new(&self.filter_input)
                         .id("filter")
                         .leading(ui::icon("filter_list", 24., ColorRole::ON_SURFACE_VARIANT)),
                 ),
             )
             .child(div().flex_1())
-            .child(match route {
-                Some((ip, ms, _)) => MaterialButton::new("route")
-                    .variant(ButtonVariant::Outlined)
-                    .tone(ButtonTone::Neutral)
-                    .accessibility_label(tf!("当前线路 {ip}", "Current route {ip}"))
-                    .on_click(
-                        cx.listener(|this, _: &ClickEvent, _, cx| this.go(Page::Endpoints, cx)),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(rem(8.))
-                            .child(
-                                div()
-                                    .size(rem(8.))
-                                    .rounded_full()
-                                    .bg(color(ColorRole::SUCCESS)),
-                            )
-                            .child(ui::mono(ip))
-                            .when_some(ms, |d, ms| {
-                                d.child(
+            // The route chip leaves narrow windows; the Routes page has it.
+            .when(self.wide(960.), |d| {
+                d.child(match route {
+                    Some((ip, ms, _)) => MaterialButton::new("route")
+                        .variant(ButtonVariant::Outlined)
+                        .tone(ButtonTone::Neutral)
+                        .accessibility_label(tf!("当前线路 {ip}", "Current route {ip}"))
+                        .on_click(
+                            cx.listener(|this, _: &ClickEvent, _, cx| this.go(Page::Endpoints, cx)),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(rem(8.))
+                                .child(
                                     div()
-                                        .text_color(color(ColorRole::ON_SURFACE_VARIANT))
-                                        .child(format!("{ms} ms")),
+                                        .size(rem(8.))
+                                        .rounded_full()
+                                        .bg(color(ColorRole::SUCCESS)),
                                 )
-                            }),
-                    )
-                    .into_any_element(),
-                None if self.connecting => MaterialButton::new("route")
-                    .variant(ButtonVariant::Outlined)
-                    .tone(ButtonTone::Neutral)
-                    .loading(true, t("正在选择线路", "Choosing a route"))
-                    .child(t("正在选择线路…", "Choosing a route…"))
-                    .into_any_element(),
-                None => MaterialButton::new("route")
-                    .variant(ButtonVariant::Outlined)
-                    .tone(ButtonTone::Neutral)
-                    .icon(Symbol::ERROR)
-                    .on_click(
-                        cx.listener(|this, _: &ClickEvent, _, cx| this.go(Page::Endpoints, cx)),
-                    )
-                    .child(t("未连接", "Not connected"))
-                    .into_any_element(),
+                                .child(ui::mono(ip))
+                                .when_some(ms, |d, ms| {
+                                    d.child(
+                                        div()
+                                            .text_color(color(ColorRole::ON_SURFACE_VARIANT))
+                                            .child(format!("{ms} ms")),
+                                    )
+                                }),
+                        )
+                        .into_any_element(),
+                    None if self.connecting => MaterialButton::new("route")
+                        .variant(ButtonVariant::Outlined)
+                        .tone(ButtonTone::Neutral)
+                        .loading(true, t("正在选择线路", "Choosing a route"))
+                        .child(t("正在选择线路…", "Choosing a route…"))
+                        .into_any_element(),
+                    None => MaterialButton::new("route")
+                        .variant(ButtonVariant::Outlined)
+                        .tone(ButtonTone::Neutral)
+                        .icon(Symbol::ERROR)
+                        .on_click(
+                            cx.listener(|this, _: &ClickEvent, _, cx| this.go(Page::Endpoints, cx)),
+                        )
+                        .child(t("未连接", "Not connected"))
+                        .into_any_element(),
+                })
             })
             .child(
                 MenuPopup::new("account-popup", trigger, menu)
@@ -786,16 +791,20 @@ impl Gdirect {
                         let files = this.picked();
                         this.download(files, cx);
                     }))
-                    .child(tf!(
-                        "下载 · {}",
-                        "Download · {}",
-                        count(
-                            self.settings.connections as usize,
-                            "连接",
-                            "connection",
-                            "connections"
+                    .child(if self.wide(760.) {
+                        tf!(
+                            "下载 · {}",
+                            "Download · {}",
+                            count(
+                                self.settings.connections as usize,
+                                "连接",
+                                "connection",
+                                "connections"
+                            )
                         )
-                    )),
+                    } else {
+                        t("下载", "Download").into()
+                    }),
             )
             .child(
                 action("copy", Symbol::CONTENT_COPY, t("复制", "Copy"))
@@ -933,6 +942,15 @@ impl Gdirect {
             .into_any_element()
     }
 
+    /// The list's columns give way, last first, as the window narrows.
+    fn show_modified(&self) -> bool {
+        self.wide(820.)
+    }
+
+    fn show_size(&self) -> bool {
+        self.wide(640.)
+    }
+
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (key, ascending) = self.sort;
         let column = |id: &'static str, label: &'static str, this_key: SortKey| {
@@ -977,16 +995,20 @@ impl Gdirect {
                 t("名称", "Name"),
                 SortKey::Name,
             )))
-            .child(div().w(rem(COLUMNS[0])).child(column(
-                "sort-modified",
-                t("修改时间", "Modified"),
-                SortKey::Modified,
-            )))
-            .child(div().w(rem(COLUMNS[1])).child(column(
-                "sort-size",
-                t("大小", "Size"),
-                SortKey::Size,
-            )))
+            .when(self.show_modified(), |d| {
+                d.child(div().w(rem(COLUMNS[0])).child(column(
+                    "sort-modified",
+                    t("修改时间", "Modified"),
+                    SortKey::Modified,
+                )))
+            })
+            .when(self.show_size(), |d| {
+                d.child(div().w(rem(COLUMNS[1])).child(column(
+                    "sort-size",
+                    t("大小", "Size"),
+                    SortKey::Size,
+                )))
+            })
             .child(div().w(rem(COLUMNS[2])))
     }
 
@@ -1027,22 +1049,26 @@ impl Gdirect {
                                 d.child(ui::icon(icon, 18., ink))
                             }),
                     )
-                    .child(
-                        ui::text(
-                            TypeRole::BodyMedium,
-                            ColorRole::ON_SURFACE_VARIANT,
-                            format::modified(file.modified_time.as_deref()),
+                    .when(self.show_modified(), |d| {
+                        d.child(
+                            ui::text(
+                                TypeRole::BodyMedium,
+                                ColorRole::ON_SURFACE_VARIANT,
+                                format::modified(file.modified_time.as_deref()),
+                            )
+                            .w(rem(COLUMNS[0])),
                         )
-                        .w(rem(COLUMNS[0])),
-                    )
-                    .child(
-                        ui::text(
-                            TypeRole::BodyMedium,
-                            ColorRole::ON_SURFACE_VARIANT,
-                            format::size(file),
+                    })
+                    .when(self.show_size(), |d| {
+                        d.child(
+                            ui::text(
+                                TypeRole::BodyMedium,
+                                ColorRole::ON_SURFACE_VARIANT,
+                                format::size(file),
+                            )
+                            .w(rem(COLUMNS[1])),
                         )
-                        .w(rem(COLUMNS[1])),
-                    )
+                    })
                     .child(
                         div()
                             .w(rem(COLUMNS[2]))

@@ -148,10 +148,13 @@ impl Gdirect {
                 ),
             ],
         ];
+        // Wide windows show the list beside the pane; narrow ones show one at a
+        // time, with a way back to the list.
+        let two_panes = self.wide(960.);
         let list = div()
             .id("settings-list")
-            .w(rem(360.))
-            .flex_none()
+            .when(two_panes, |d| d.w(rem(360.)).flex_none())
+            .when(!two_panes, |d| d.flex_1())
             .h_full()
             .overflow_y_scroll();
         let list = list.child(
@@ -174,9 +177,10 @@ impl Gdirect {
                         ListItem::new(title, title)
                             .supporting(sub)
                             .leading(ListLeading::Tinted(ui::symbol(icon, true), tint, 40.))
-                            .selected(self.pane == pane)
+                            .selected(two_panes && self.pane == pane)
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                 this.pane = pane;
+                                this.pane_open = true;
                                 this.reload_accounts();
                                 cx.notify();
                             }))
@@ -191,24 +195,51 @@ impl Gdirect {
             Pane::Appearance => self.pane_appearance(cx).into_any_element(),
             Pane::About => self.pane_about(cx).into_any_element(),
         };
-        div().size_full().flex().child(list).child(
+        let back = (!two_panes).then(|| {
             div()
-                .id("settings-detail")
-                .flex_1()
-                .min_w_0()
-                .h_full()
-                .overflow_y_scroll()
-                .bg(color(ColorRole::SURFACE_CONTAINER_LOW))
+                .flex()
+                .items_center()
+                .gap(rem(4.))
+                .ml(rem(-12.))
                 .child(
-                    div()
-                        .max_w(rem(720.))
-                        .p(rem(32.))
-                        .flex()
-                        .flex_col()
-                        .gap(rem(24.))
-                        .child(detail),
-                ),
-        )
+                    IconButton::new(
+                        "settings-back",
+                        Symbol::ARROW_BACK,
+                        t("返回设置", "Back to settings"),
+                    )
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.pane_open = false;
+                        cx.notify();
+                    })),
+                )
+                .child(ui::text(
+                    TypeRole::TitleMedium,
+                    ColorRole::ON_SURFACE_VARIANT,
+                    t("设置", "Settings"),
+                ))
+        });
+        let detail = div()
+            .id("settings-detail")
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .overflow_y_scroll()
+            .bg(color(ColorRole::SURFACE_CONTAINER_LOW))
+            .child(
+                div()
+                    .max_w(rem(720.))
+                    .p(rem(if two_panes { 32. } else { 24. }))
+                    .flex()
+                    .flex_col()
+                    .gap(rem(24.))
+                    .children(back)
+                    .child(detail),
+            );
+        div()
+            .size_full()
+            .flex()
+            .when(two_panes || !self.pane_open, |d| d.child(list))
+            .when(two_panes || self.pane_open, |d| d.child(detail))
     }
 
     fn pane_account(&self, cx: &mut Context<Self>) -> impl IntoElement {
