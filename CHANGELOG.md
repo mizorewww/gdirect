@@ -1,11 +1,5 @@
 # Changelog
 
-## Unreleased
-
-### Fixed
-
-- Downloads under the forged TLS identity kept the real Host header in one process-wide slot, so with several connections a redirect on one could give another the wrong Host header, and with it the OAuth token on a Drive download host. Each connection now keeps its own.
-
 ## 0.12.0
 
 ### Added
@@ -15,6 +9,10 @@
 ### Changed
 
 - Desktop client: the layout adapts to the window width — columns, the toolbar and the endpoint table give way as the window narrows, and settings switch to one pane at a time — and the window can shrink to 600 × 480.
+
+### Fixed
+
+- Downloads under the forged TLS identity kept the real Host header in one process-wide slot, so with several connections a redirect on one could give another the wrong Host header, and with it the OAuth token on a Drive download host. Each connection now keeps its own.
 
 ## 0.11.0
 
