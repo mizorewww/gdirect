@@ -429,12 +429,14 @@ impl Gdirect {
                     .child(account.clone()),
             );
         let mut menu = MaterialMenu::new("account-menu").width(280.);
-        for email in self.accounts.clone() {
+        let count = self.accounts.len();
+        for (i, email) in self.accounts.clone().into_iter().enumerate() {
             let current = Some(&email) == self.account.as_ref();
             menu = menu.item(
                 MaterialMenuItem::new(email.clone())
                     .leading(ui::symbol("account_circle", false))
                     .selected(current)
+                    .divider(i + 1 == count)
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.account_menu = false;
                         this.switch_account(email.clone(), cx);
@@ -445,7 +447,6 @@ impl Gdirect {
             .item(
                 MaterialMenuItem::new("添加账号")
                     .leading(ui::symbol("person_add", false))
-                    .divider(true)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.account_menu = false;
                         this.add_account(cx);
@@ -958,24 +959,19 @@ impl Gdirect {
                     this.yank(false, cx)
                 },
             ))
-            .item(item(
-                "剪切",
-                "content_cut",
-                file.clone(),
-                |this, f, _, cx| {
+            .item(
+                item("剪切", "content_cut", file.clone(), |this, f, _, cx| {
                     this.selected = vec![f.id];
                     this.yank(true, cx)
-                },
-            ))
-            .item(
-                item(
-                    "移至回收站",
-                    "delete",
-                    file.clone(),
-                    |this, f, window, cx| this.open_dialog(Dialog::Trash(vec![f]), window, cx),
-                )
+                })
                 .divider(true),
-            );
+            )
+            .item(item(
+                "移至回收站",
+                "delete",
+                file.clone(),
+                |this, f, window, cx| this.open_dialog(Dialog::Trash(vec![f]), window, cx),
+            ));
         let menu_id = file.id.clone();
         MenuPopup::new(("row-popup", ix), trigger, menu)
             .anchor(Anchor::TopRight)
