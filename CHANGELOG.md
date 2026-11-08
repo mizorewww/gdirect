@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Desktop client: an English interface. It follows the system language (Chinese for Chinese locales, English otherwise) and can be pinned in Settings › Appearance.
+
+### Changed
+
+- Desktop client: the layout adapts to the window width — columns, the toolbar and the endpoint table give way as the window narrows, and settings switch to one pane at a time — and the window can shrink to 600 × 480.
+
 ## 0.11.0
 
 ### Added
