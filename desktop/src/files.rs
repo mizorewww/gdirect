@@ -387,9 +387,12 @@ impl Gdirect {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        // The field ignores a new value while it is being drawn.
         if std::mem::take(&mut self.clear_filter) {
-            self.filter_input
-                .update(cx, |input, cx| input.set_value("", window, cx));
+            let input = self.filter_input.clone();
+            window.on_next_frame(move |window, cx| {
+                input.update(cx, |input, cx| input.set_value("", window, cx));
+            });
         }
         div()
             .size_full()

@@ -70,6 +70,8 @@ impl Gdirect {
         self.path.truncate(1);
         self.entries.clear();
         self.selected.clear();
+        self.filter.clear();
+        self.clear_filter = true;
         self.clipboard = None;
         self.list_error = None;
     }
