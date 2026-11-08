@@ -810,7 +810,9 @@ impl Gdirect {
         let view = scroller.bounds();
         let offset = scroller.offset();
         // Where the tile sits in the scrolled content, and what is in view.
-        let top = grid.origin.y - view.origin.y - offset.y + pitch * (ix / columns) as f32;
+        // Child bounds are laid out unscrolled, so they already are content
+        // positions.
+        let top = grid.origin.y - view.origin.y + pitch * (ix / columns) as f32;
         let bottom = top + pitch - gap;
         let (seen_top, seen_bottom) = (-offset.y, -offset.y + view.size.height);
         let y = if top < seen_top {
@@ -2552,9 +2554,10 @@ impl Gdirect {
     fn render_selection(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let picked = self.picked();
         // The count in the interface's face, the name in user content's.
+        let named = picked.len() == 1 && self.content_width() >= 600.;
         let label = match picked.as_slice() {
             // Named only where the name has room beside the actions.
-            [one] if self.content_width() >= 600. => div()
+            [one] if named => div()
                 .flex()
                 .items_center()
                 .min_w_0()
@@ -2614,7 +2617,13 @@ impl Gdirect {
                     }),
                 ),
             )
-            .child(label.flex_1().min_w(rem(48.)))
+            // A name gives way to the actions; a bare count does not.
+            .child(if named {
+                label.flex_1().min_w(rem(48.))
+            } else {
+                label
+            })
+            .when(!named, |d| d.child(div().flex_1()))
             // The bar keeps the same actions whatever is selected, those
             // that do not apply disabled, so none moves under the pointer.
             .when(in_trash, |d| {
