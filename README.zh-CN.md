@@ -10,7 +10,7 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/files-dark.png">
-  <img alt="gdirect 桌面客户端：列出云盘文件夹，一个文件正在下载，两个在排队" src="docs/images/files-light.png">
+  <img alt="gdirect 桌面客户端：列出云盘文件夹，一个文件正在下载，其余在排队" src="docs/images/files-light.png">
 </picture>
 
 - **直连传输：** 扫描 Google 自己的前端，只用能连通的那些；证书按程序内置的 Google 根证书校验。
@@ -61,7 +61,7 @@ gdirect mount                    # 挂载到 ~/GoogleDrive
 
 ## 桌面客户端（预览）
 
-同一套引擎的 Material 3 窗口：浏览和管理文件、把文件拖进来上传、查看传输队列、扫描和固定线路、切换账号。它和命令行共用登录信息与设置。
+同一套引擎的 Material 3 窗口：浏览和管理文件、把文件拖进来上传、查看传输队列、扫描和固定线路、切换账号。它和命令行共用登录信息与设置，界面语言跟随系统（中文或英文），窄窗口下也能正常使用。
 
 | 传输 | 线路 | 设置 |
 | --- | --- | --- |

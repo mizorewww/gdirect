@@ -9,8 +9,8 @@
 Browse, download, upload and mount your Google Drive from networks where Google is blocked, without a proxy for the transfers themselves. gdirect finds Google front-end IPs that your network can still reach and sends Drive traffic straight to them, with multi-connection, resumable downloads.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/files-dark.png">
-  <img alt="The gdirect desktop client listing a Drive folder, with one file downloading and two queued" src="docs/images/files-light.png">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/files-dark.png">
+  <img alt="The gdirect desktop client listing a Drive folder, with one file downloading and others queued" src="docs/images/en/files-light.png">
 </picture>
 
 - **Direct transfers:** scans Google's own front ends and keeps the ones that answer; certificates are checked against Google's roots built into the binary.
@@ -61,11 +61,11 @@ The first transfer scans for reachable Google IPs, which can take about a minute
 
 ## Desktop app (preview)
 
-The same engine in a Material 3 window: browse and manage files, drag files in to upload, watch the transfer queue, scan and pin endpoints, and switch accounts. It shares the command line's sign-in and settings.
+The same engine in a Material 3 window: browse and manage files, drag files in to upload, watch the transfer queue, scan and pin endpoints, and switch accounts. It shares the command line's sign-in and settings, follows your system's language (English or Chinese), and adapts to narrow windows.
 
-| Transfers | Endpoints | Settings |
+| Transfers | Routes | Settings |
 | --- | --- | --- |
-| ![Transfer queue with finished downloads](docs/images/transfers.png) | ![Endpoint list with latencies](docs/images/endpoints.png) | ![Appearance settings](docs/images/settings.png) |
+| ![Transfer queue with finished downloads](docs/images/en/transfers.png) | ![Routes page with latencies](docs/images/en/endpoints.png) | ![Appearance settings](docs/images/en/settings.png) |
 
 There is no prebuilt package yet; build it from source with gpui-kit-material checked out beside this repository:
 
