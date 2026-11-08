@@ -20,7 +20,7 @@ struct Row {
     fraction: Option<f32>,
     muted: bool,
     detail: String,
-    action: Option<(&'static str, &'static str, Action)>,
+    actions: Vec<(&'static str, &'static str, Action)>,
 }
 
 #[derive(Clone, Copy)]
@@ -70,7 +70,7 @@ impl Gdirect {
                     "已找到 {count} 个文件 · 保存到 {}",
                     format::home(&self.settings.download_dir.join(name))
                 ),
-                action: None,
+                actions: Vec::new(),
             })
             .collect();
         for job in self.queues.downloads.iter().filter(|d| d.state.pending()) {
@@ -79,7 +79,7 @@ impl Gdirect {
             } else {
                 job.size.unwrap_or(0)
             };
-            let (status, ink, detail, action) = match &job.state {
+            let (status, ink, detail, actions) = match &job.state {
                 State::Running => {
                     let speed = job.stats.speed;
                     let left = if speed > 0 && total > job.stats.done {
@@ -104,11 +104,11 @@ impl Gdirect {
                         } else {
                             "正在连接…".into()
                         },
-                        Some((
+                        vec![(
                             "stop_circle",
                             "取消（保留已下载部分）",
                             Action::CancelDownload(job.id),
-                        )),
+                        )],
                     )
                 }
                 State::Queued => (
@@ -121,7 +121,7 @@ impl Gdirect {
                             .unwrap_or_default(),
                         format::home(&job.output)
                     ),
-                    Some(("close", "从队列移除", Action::RemoveDownload(job.id))),
+                    vec![("close", "从队列移除", Action::RemoveDownload(job.id))],
                 ),
                 State::Paused => (
                     "已取消 · 可续传".to_owned(),
@@ -130,13 +130,23 @@ impl Gdirect {
                         "已保留 {} · 继续时从断点开始",
                         format::bytes(job.stats.done)
                     ),
-                    Some(("play_arrow", "继续", Action::ResumeDownload(job.id))),
+                    vec![
+                        ("play_arrow", "继续", Action::ResumeDownload(job.id)),
+                        (
+                            "close",
+                            "从队列移除（已下载部分留在磁盘上）",
+                            Action::RemoveDownload(job.id),
+                        ),
+                    ],
                 ),
                 State::Failed(error) => (
                     "失败".to_owned(),
                     ColorRole::ERROR,
                     error.clone(),
-                    Some(("refresh", "重试", Action::ResumeDownload(job.id))),
+                    vec![
+                        ("refresh", "重试", Action::ResumeDownload(job.id)),
+                        ("close", "从队列移除", Action::RemoveDownload(job.id)),
+                    ],
                 ),
                 State::Done { .. } => unreachable!(),
             };
@@ -153,7 +163,7 @@ impl Gdirect {
                 fraction: Some(job.fraction()),
                 muted: job.state != State::Running,
                 detail,
-                action,
+                actions,
             });
         }
         rows
@@ -166,7 +176,7 @@ impl Gdirect {
             .filter(|u| u.state.pending())
             .map(|job| {
                 let p = &job.progress;
-                let (status, ink, detail, action) = match &job.state {
+                let (status, ink, detail, actions) = match &job.state {
                     State::Running if job.folder => (
                         "上传中",
                         ColorRole::PRIMARY,
@@ -178,7 +188,7 @@ impl Gdirect {
                             format::bytes(p.bytes_total),
                             format::speed(job.speed)
                         ),
-                        None,
+                        Vec::new(),
                     ),
                     State::Running => (
                         "上传中",
@@ -189,7 +199,7 @@ impl Gdirect {
                             format::bytes(p.bytes_total),
                             format::speed(job.speed)
                         ),
-                        None,
+                        Vec::new(),
                     ),
                     State::Queued => (
                         "排队中",
@@ -204,13 +214,13 @@ impl Gdirect {
                                 })
                                 .unwrap_or_default()
                         },
-                        Some(("close", "从队列移除", Action::RemoveUpload(job.id))),
+                        vec![("close", "从队列移除", Action::RemoveUpload(job.id))],
                     ),
                     State::Failed(error) => (
                         "失败",
                         ColorRole::ERROR,
                         error.clone(),
-                        Some(("close", "移除", Action::RemoveUpload(job.id))),
+                        vec![("close", "移除", Action::RemoveUpload(job.id))],
                     ),
                     State::Paused | State::Done { .. } => unreachable!(),
                 };
@@ -228,7 +238,7 @@ impl Gdirect {
                     fraction: Some(job.fraction()),
                     muted: job.state != State::Running,
                     detail,
-                    action,
+                    actions,
                 }
             })
             .collect()
@@ -581,20 +591,23 @@ impl Gdirect {
                         row.detail,
                     )),
             )
-            .when_some(row.action, |d, (icon, label, action)| {
-                let symbol = Symbol::named(icon).unwrap_or(Symbol::CLOSE);
-                d.child(
-                    IconButton::new(
-                        (
-                            "act",
-                            row.key.1 as usize + if row.key.0 == "upload" { 1 << 32 } else { 0 },
-                        ),
-                        symbol,
-                        label,
-                    )
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.act(action, cx))),
-                )
-            })
+            .children(
+                row.actions
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (icon, label, action))| {
+                        let symbol = Symbol::named(icon).unwrap_or(Symbol::CLOSE);
+                        let upload = if row.key.0 == "upload" { 1 << 32 } else { 0 };
+                        IconButton::new(
+                            ("act", (row.key.1 as usize + upload) * 2 + i),
+                            symbol,
+                            label,
+                        )
+                        .on_click(
+                            cx.listener(move |this, _: &ClickEvent, _, cx| this.act(action, cx)),
+                        )
+                    }),
+            )
             .into_any_element()
     }
 
