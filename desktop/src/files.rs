@@ -2,8 +2,9 @@
 use crate::i18n::t;
 use crate::tf;
 use crate::{
-    app::{Dialog, Gdirect, Page, SortKey},
+    app::{Dialog, Gdirect, Page, SortKey, first_line},
     format::{self, Kind},
+    keymap,
     transfers::State,
     ui,
 };
@@ -105,8 +106,12 @@ impl Gdirect {
                     Err(e) => {
                         // A cached listing stays on screen; say why it may be stale.
                         if !this.entries.is_empty() {
+                            let brief = first_line(&e);
                             this.say(
-                                tf!("无法刷新此文件夹：{e}", "Couldn’t refresh this folder: {e}"),
+                                tf!(
+                                    "无法刷新此文件夹：{brief}",
+                                    "Couldn’t refresh this folder: {brief}"
+                                ),
                                 cx,
                             );
                         }
@@ -142,6 +147,8 @@ impl Gdirect {
     fn entered(&mut self, cx: &mut Context<Self>) {
         self.entries.clear();
         self.selected.clear();
+        self.cursor = None;
+        self.anchor = None;
         self.list_error = None;
         self.filter.clear();
         self.clear_filter = true;
@@ -149,13 +156,223 @@ impl Gdirect {
         self.refresh(cx);
     }
 
-    fn toggle(&mut self, id: &str, cx: &mut Context<Self>) {
-        if let Some(i) = self.selected.iter().position(|s| s == id) {
-            self.selected.remove(i);
-        } else {
-            self.selected.push(id.to_owned());
+    /// A click on a row or tile: a plain click selects it alone, Command
+    /// (Control) toggles it, Shift selects the range from the anchor, and a
+    /// double click opens it.
+    fn click(
+        &mut self,
+        file: &File,
+        event: &ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.focus(&self.files_focus, cx);
+        let id = file.id.clone();
+        if event.click_count() >= 2 {
+            self.selected.retain(|s| *s != id);
+            self.activate(file, cx);
+            return;
         }
+        let modifiers = event.modifiers();
+        if modifiers.shift {
+            let anchor = self
+                .anchor
+                .clone()
+                .or_else(|| self.cursor.clone())
+                .unwrap_or_else(|| id.clone());
+            self.select_range(&anchor, &id);
+            self.anchor = Some(anchor);
+        } else if modifiers.secondary(cx) {
+            if let Some(i) = self.selected.iter().position(|s| *s == id) {
+                self.selected.remove(i);
+            } else {
+                self.selected.push(id.clone());
+            }
+            self.anchor = Some(id.clone());
+        } else {
+            self.selected = vec![id.clone()];
+            self.anchor = Some(id.clone());
+        }
+        self.cursor = Some(id);
         cx.notify();
+    }
+
+    /// Selects the shown rows from `from` to `to`, both included.
+    fn select_range(&mut self, from: &str, to: &str) {
+        let ids: Vec<String> = self.shown().iter().map(|f| f.id.clone()).collect();
+        let (Some(a), Some(b)) = (
+            ids.iter().position(|i| i == from),
+            ids.iter().position(|i| i == to),
+        ) else {
+            self.selected = vec![to.to_owned()];
+            return;
+        };
+        self.selected = ids[a.min(b)..=a.max(b)].to_vec();
+    }
+
+    /// Moves the cursor row by `delta`; `extend` grows the selection from
+    /// the anchor instead of selecting the row alone.
+    fn move_cursor(&mut self, delta: isize, extend: bool, cx: &mut Context<Self>) {
+        let ids: Vec<String> = self.shown().iter().map(|f| f.id.clone()).collect();
+        if ids.is_empty() {
+            return;
+        }
+        let current = self
+            .cursor
+            .as_ref()
+            .and_then(|c| ids.iter().position(|i| i == c));
+        let next = match current {
+            Some(i) => (i as isize + delta).clamp(0, ids.len() as isize - 1) as usize,
+            None if delta > 0 => 0,
+            None => ids.len() - 1,
+        };
+        let id = ids[next].clone();
+        if extend {
+            let anchor = self
+                .anchor
+                .clone()
+                .filter(|a| ids.contains(a))
+                .or_else(|| current.map(|i| ids[i].clone()))
+                .unwrap_or_else(|| id.clone());
+            self.select_range(&anchor, &id);
+            self.anchor = Some(anchor);
+        } else {
+            self.selected = vec![id.clone()];
+            self.anchor = Some(id.clone());
+        }
+        self.cursor = Some(id);
+        self.rows.scroll_to_item(next, ScrollStrategy::Nearest);
+        cx.notify();
+    }
+
+    /// Whether the filter field has focus; its text editing keeps the keys.
+    fn typing(&self, window: &Window, cx: &App) -> bool {
+        self.filter_input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
+    }
+
+    fn clear_filter_now(&mut self, cx: &mut Context<Self>) {
+        self.filter.clear();
+        self.clear_filter = true;
+        cx.notify();
+    }
+
+    /// The Files page's shortcuts. Each leaves its key to the filter field
+    /// while that has focus.
+    fn files_actions(root: Stateful<Div>, cx: &mut Context<Self>) -> Stateful<Div> {
+        use keymap::*;
+        root.on_action(cx.listener(|this, _: &SelectAll, window, cx| {
+            if this.typing(window, cx) {
+                return cx.propagate();
+            }
+            this.selected = this.shown().iter().map(|f| f.id.clone()).collect();
+            cx.notify();
+        }))
+        .on_action(cx.listener(|this, _: &Copy, window, cx| {
+            if this.typing(window, cx) {
+                return cx.propagate();
+            }
+            this.yank(false, cx);
+        }))
+        .on_action(cx.listener(|this, _: &Cut, window, cx| {
+            if this.typing(window, cx) {
+                return cx.propagate();
+            }
+            this.yank(true, cx);
+        }))
+        .on_action(cx.listener(|this, _: &Paste, window, cx| {
+            if this.typing(window, cx) {
+                return cx.propagate();
+            }
+            this.paste(cx);
+        }))
+        .on_action(cx.listener(|this, _: &Cancel, window, cx| {
+            // Escape in the filter empties it and hands the keys to the list.
+            if this.typing(window, cx) {
+                this.clear_filter_now(cx);
+                window.focus(&this.files_focus, cx);
+            } else if !this.selected.is_empty() {
+                this.selected.clear();
+                cx.notify();
+            } else if !this.filter.is_empty() {
+                this.clear_filter_now(cx);
+            } else {
+                cx.propagate();
+            }
+        }))
+        .on_action(cx.listener(|this, _: &Open, window, cx| {
+            if this.typing(window, cx) {
+                return cx.propagate();
+            }
+            match this.picked().as_slice() {
+                [] => {}
+                [one] => {
+                    let one = one.clone();
+                    this.selected.clear();
+                    this.activate(&one, cx);
+                }
+                _ => {
+                    let files = this.picked();
+                    this.download(files, cx);
+                }
+            }
+        }))
+        .on_action(cx.listener(|this, _: &Trash, window, cx| {
+            if this.typing(window, cx) {
+                return cx.propagate();
+            }
+            let files = this.picked();
+            if !files.is_empty() {
+                this.open_dialog(Dialog::Trash(files), window, cx);
+            }
+        }))
+        .on_action(cx.listener(|this, _: &Rename, window, cx| {
+            if this.typing(window, cx) {
+                return cx.propagate();
+            }
+            if let [file] = this.picked().as_slice() {
+                this.open_dialog(Dialog::Rename(file.clone()), window, cx);
+            }
+        }))
+        .on_action(cx.listener(|this, _: &Parent, window, cx| {
+            if this.typing(window, cx) {
+                return cx.propagate();
+            }
+            if this.path.len() > 1 {
+                this.back_to(this.path.len() - 2, cx);
+            }
+        }))
+        .on_action(cx.listener(|this, _: &FocusFilter, window, cx| {
+            this.filter_input
+                .update(cx, |input, cx| input.focus(window, cx));
+        }))
+        .on_action(cx.listener(|this, _: &CursorUp, window, cx| {
+            if this.typing(window, cx) {
+                return cx.propagate();
+            }
+            this.move_cursor(-1, false, cx);
+        }))
+        .on_action(cx.listener(|this, _: &CursorDown, window, cx| {
+            // Down from the filter moves into the list.
+            if this.typing(window, cx) {
+                window.focus(&this.files_focus, cx);
+            }
+            this.move_cursor(1, false, cx);
+        }))
+        .on_action(cx.listener(|this, _: &ExtendUp, window, cx| {
+            if this.typing(window, cx) {
+                return cx.propagate();
+            }
+            this.move_cursor(-1, true, cx);
+        }))
+        .on_action(cx.listener(|this, _: &ExtendDown, window, cx| {
+            if this.typing(window, cx) {
+                return cx.propagate();
+            }
+            this.move_cursor(1, true, cx);
+        }))
     }
 
     fn activate(&mut self, file: &File, cx: &mut Context<Self>) {
@@ -243,7 +460,10 @@ impl Gdirect {
                         let (added, _) = this.queues.enqueue(files, this.settings.office, &account);
                         tf!("{name}：已加入 {}", "{name}: queued {}", file_count(added))
                     }
-                    Err(e) => tf!("无法列出 {name}：{e}", "Couldn’t list {name}: {e}"),
+                    Err(e) => {
+                        let e = first_line(&e);
+                        tf!("无法列出 {name}：{e}", "Couldn’t list {name}: {e}")
+                    }
                 };
                 this.say(message, cx);
                 this.pump(cx);
@@ -269,7 +489,7 @@ impl Gdirect {
                 this.busy -= 1;
                 match result {
                     Ok(message) => this.say(message, cx),
-                    Err(e) => this.say(e, cx),
+                    Err(e) => this.say(first_line(&e), cx),
                 }
                 this.refresh(cx);
             },
@@ -488,7 +708,9 @@ impl Gdirect {
                 input.update(cx, |input, cx| input.set_value("", window, cx));
             });
         }
-        div()
+        Self::files_actions(div().id("files"), cx)
+            .track_focus(&self.files_focus)
+            .key_context(keymap::FILES)
             .size_full()
             .flex()
             .flex_col()
@@ -647,6 +869,8 @@ impl Gdirect {
                                 .into_any_element(),
                         })
                     })
+                    // Narrow windows keep a status dot in its place.
+                    .when(!self.wide(960.), |d| d.child(self.render_route_dot(cx)))
                     .child(
                         MenuPopup::new("account-popup", trigger, menu)
                             .anchor(Anchor::TopRight)
@@ -659,8 +883,136 @@ impl Gdirect {
             )
     }
 
+    /// The route chip's stand-in in narrow windows: a dot in the route's
+    /// colour, its route and latency in a tooltip; a click opens Routes.
+    fn render_route_dot(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let (ink, tip): (ColorRole, SharedString) = match self.current_route() {
+            Some((ip, Some(ms), _)) => (
+                ColorRole::SUCCESS,
+                tf!("当前线路 {ip} · {ms} ms", "Route {ip} · {ms} ms").into(),
+            ),
+            Some((ip, None, _)) => (
+                ColorRole::SUCCESS,
+                tf!("当前线路 {ip}", "Route {ip}").into(),
+            ),
+            None if self.connecting => (
+                ColorRole::OUTLINE,
+                t("正在选择线路…", "Choosing a route…").into(),
+            ),
+            None => (ColorRole::ERROR, t("未连接", "Not connected").into()),
+        };
+        let button = div()
+            .id("route-dot")
+            .size(rem(40.))
+            .flex_none()
+            .rounded_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .hover(|s| s.bg(color(ColorRole::ON_SURFACE).opacity(0.08)))
+            .child(div().size(rem(12.)).rounded_full().bg(color(ink)))
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.go(Page::Endpoints, cx)));
+        MaterialTooltip::plain("route-tip", tip).trigger(button)
+    }
+
+    /// Sorting for views without the column headers to click: the grid, and
+    /// lists too narrow for the Modified or Size column.
+    fn render_sort_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let (key, ascending) = self.sort;
+        let trigger = IconButton::new("sort", Symbol::SORT, t("排序", "Sort")).on_click(
+            cx.listener(|this, event: &ClickEvent, _, cx| {
+                if matches!(event, ClickEvent::Keyboard(_)) {
+                    this.sort_menu = !this.sort_menu;
+                    cx.notify();
+                }
+            }),
+        );
+        let item = |label: &'static str, selected: bool, divider: bool, sort: fn(&mut Gdirect)| {
+            MaterialMenuItem::new(label)
+                .selected(selected)
+                .divider(divider)
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.sort_menu = false;
+                    sort(this);
+                    cx.notify();
+                }))
+        };
+        let menu = MaterialMenu::new("sort-menu")
+            .width(200.)
+            .item(item(
+                t("名称", "Name"),
+                key == SortKey::Name,
+                false,
+                |this| this.sort.0 = SortKey::Name,
+            ))
+            .item(item(
+                t("修改时间", "Modified"),
+                key == SortKey::Modified,
+                false,
+                |this| this.sort.0 = SortKey::Modified,
+            ))
+            .item(item(
+                t("大小", "Size"),
+                key == SortKey::Size,
+                true,
+                |this| this.sort.0 = SortKey::Size,
+            ))
+            .item(item(t("升序", "Ascending"), ascending, false, |this| {
+                this.sort.1 = true
+            }))
+            .item(item(t("降序", "Descending"), !ascending, false, |this| {
+                this.sort.1 = false
+            }));
+        MenuPopup::new("sort-popup", trigger, menu)
+            .anchor(Anchor::TopRight)
+            .open(self.sort_menu)
+            .on_open_change(cx.listener(|this, open: &bool, _, cx| {
+                this.sort_menu = *open;
+                cx.notify();
+            }))
+    }
+
+    /// The "…" crumb of a collapsed path: a menu of the ancestors it hides.
+    fn render_crumb_menu(
+        &self,
+        hidden: std::ops::Range<usize>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let trigger = ui::type_role(div(), TypeRole::TitleLarge)
+            .id("crumb-more")
+            .px(rem(8.))
+            .py(rem(4.))
+            .rounded(RADIUS_SMALL)
+            .text_color(color(ColorRole::ON_SURFACE_VARIANT))
+            .cursor_pointer()
+            .hover(|s| s.bg(color(ColorRole::ON_SURFACE).opacity(0.08)))
+            .child("…");
+        let mut menu = MaterialMenu::new("crumb-menu").width(240.);
+        for depth in hidden {
+            let name = self.path[depth].1.clone();
+            menu = menu.item(
+                MaterialMenuItem::new(name)
+                    .leading(ui::symbol("folder", false))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.crumb_menu = false;
+                        this.back_to(depth, cx);
+                    })),
+            );
+        }
+        MenuPopup::new("crumb-popup", trigger, menu)
+            .open(self.crumb_menu)
+            .on_open_change(cx.listener(|this, open: &bool, _, cx| {
+                this.crumb_menu = *open;
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+
     fn render_breadcrumb(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let last = self.path.len() - 1;
+        // Deep paths in narrow windows show the root, "…" and the last two.
+        let collapsed = (!self.wide(760.) && self.path.len() >= 4).then(|| 1..last - 1);
         let mut crumbs = div()
             .flex_1()
             .min_w(rem(120.))
@@ -669,6 +1021,14 @@ impl Gdirect {
             .items_center()
             .gap(rem(4.));
         for (depth, (_, name)) in self.path.iter().enumerate() {
+            if let Some(hidden) = collapsed.clone().filter(|h| h.contains(&depth)) {
+                if depth == hidden.start {
+                    crumbs = crumbs
+                        .child(ui::icon("chevron_right", 24., ColorRole::OUTLINE))
+                        .child(self.render_crumb_menu(hidden, cx));
+                }
+                continue;
+            }
             if depth > 0 {
                 crumbs = crumbs.child(ui::icon("chevron_right", 24., ColorRole::OUTLINE));
             }
@@ -738,6 +1098,10 @@ impl Gdirect {
                     .items_center()
                     .gap(rem(8.))
                     .when_some(paste, |d, b| d.child(b))
+                    .when(
+                        self.grid || !self.show_modified() || !self.show_size(),
+                        |d| d.child(self.render_sort_menu(cx)),
+                    )
                     .when(self.clipboard.is_some(), |d| {
                         d.child(
                             IconButton::new(
@@ -943,6 +1307,7 @@ impl Gdirect {
         let count = shown.len();
         drop(shown);
         let background = self.folder_context_menu(cx);
+        let focus_list = self.focus_list(cx);
         let header = self.render_header(cx);
         div()
             .flex_1()
@@ -950,8 +1315,9 @@ impl Gdirect {
             .flex()
             .flex_col()
             .px(rem(8.))
-            .pb(rem(16.))
+            .pb(rem(self.listing_bottom()))
             .relative()
+            .on_mouse_down(MouseButton::Left, focus_list)
             .child(background)
             .child(header)
             .child(
@@ -993,6 +1359,22 @@ impl Gdirect {
         MaterialContextMenu::new("folder-context", move |_, _| {
             folder_menu("folder-context-menu", paste, view.clone())
         })
+    }
+
+    /// A press in the listing gives the list the keys, from the filter too.
+    fn focus_list(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static {
+        cx.listener(|this, _: &MouseDownEvent, window, cx| {
+            window.focus(&this.files_focus, cx);
+        })
+    }
+
+    /// The listing's bottom padding: a snackbar on screen takes the room
+    /// above the edge, so it never covers the last row.
+    fn listing_bottom(&self) -> f32 {
+        if self.toast.is_some() { 80. } else { 16. }
     }
 
     /// The list's columns give way, last first, as the window narrows.
@@ -1067,8 +1449,9 @@ impl Gdirect {
 
     fn render_row(&self, ix: usize, file: &File, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.selected.contains(&file.id);
+        // A row whose ⋮ menu is open stays highlighted while it is.
+        let menu_open = self.row_menu.as_deref() == Some(file.id.as_str());
         let state = self.file_state(file);
-        let id = file.id.clone();
         let activate = file.clone();
         div()
             .id(("row", ix))
@@ -1081,10 +1464,14 @@ impl Gdirect {
                     .size_full()
                     .flex()
                     .items_center()
-                    .pl(rem(16.))
+                    // The header's padding, so the columns line up under it.
+                    .px(rem(16.))
                     .rounded(rem(28.))
                     .when(selected, |d| d.bg(color(ColorRole::SECONDARY_CONTAINER)))
-                    .when(!selected, |d| {
+                    .when(!selected && menu_open, |d| {
+                        d.bg(color(ColorRole::ON_SURFACE).opacity(0.08))
+                    })
+                    .when(!selected && !menu_open, |d| {
                         d.hover(|s| s.bg(color(ColorRole::ON_SURFACE).opacity(0.06)))
                     })
                     .child(
@@ -1094,7 +1481,7 @@ impl Gdirect {
                             .flex()
                             .items_center()
                             .gap(rem(16.))
-                            .child(ui::kind_tile(Kind::of(file), 32.))
+                            .child(kind_tile(file, 32., selected))
                             .child(ui::line(
                                 TypeRole::BodyLarge,
                                 ColorRole::ON_SURFACE,
@@ -1130,13 +1517,8 @@ impl Gdirect {
                             .child(self.render_row_menu(ix, file, cx)),
                     ),
             )
-            .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
-                if event.click_count() >= 2 {
-                    this.selected.retain(|s| *s != activate.id);
-                    this.activate(&activate, cx);
-                } else {
-                    this.toggle(&id, cx);
-                }
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                this.click(&activate, event, window, cx)
             }))
             .into_any_element()
     }
@@ -1178,13 +1560,14 @@ impl Gdirect {
             .min_h_0()
             .overflow_y_scroll()
             .px(rem(16.))
-            .pb(rem(16.))
+            .pb(rem(self.listing_bottom()))
             .relative()
+            .on_mouse_down(MouseButton::Left, self.focus_list(cx))
             .child(self.folder_context_menu(cx))
             .child(div().flex().flex_wrap().gap(rem(12.)).children(
                 shown.into_iter().enumerate().map(|(ix, file)| {
                     let selected = self.selected.contains(&file.id);
-                    let id = file.id.clone();
+                    let menu_open = self.row_menu.as_deref() == Some(file.id.as_str());
                     let activate = file.clone();
                     let state = self.file_state(file);
                     div()
@@ -1199,10 +1582,14 @@ impl Gdirect {
                         .rounded(rem(16.))
                         .bg(color(if selected {
                             ColorRole::SECONDARY_CONTAINER
+                        } else if menu_open {
+                            ColorRole::SURFACE_CONTAINER_HIGH
                         } else {
                             ColorRole::SURFACE_CONTAINER_LOW
                         }))
-                        .hover(|s| s.bg(color(ColorRole::SURFACE_CONTAINER_HIGH)))
+                        .when(!selected, |d| {
+                            d.hover(|s| s.bg(color(ColorRole::SURFACE_CONTAINER_HIGH)))
+                        })
                         .child(
                             div()
                                 .h(rem(96.))
@@ -1211,7 +1598,31 @@ impl Gdirect {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .child(ui::kind_tile(Kind::of(file), 48.)),
+                                .relative()
+                                .child(ui::kind_tile(Kind::of(file), 48.))
+                                // A selected tile says so in its corner too.
+                                .when(selected, |d| {
+                                    d.child(
+                                        div()
+                                            .absolute()
+                                            .top(rem(8.))
+                                            .left(rem(8.))
+                                            .size(rem(24.))
+                                            .rounded_full()
+                                            .bg(color(ColorRole::PRIMARY))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(ui::icon("check", 18., ColorRole::ON_PRIMARY)),
+                                    )
+                                }),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .top(rem(4.))
+                                .right(rem(4.))
+                                .child(self.render_row_menu(ix, file, cx)),
                         )
                         .child(
                             div()
@@ -1243,17 +1654,20 @@ impl Gdirect {
                                 )
                             },
                         ))
-                        .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
-                            if event.click_count() >= 2 {
-                                this.selected.retain(|s| *s != activate.id);
-                                this.activate(&activate, cx);
-                            } else {
-                                this.toggle(&id, cx);
-                            }
+                        .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                            this.click(&activate, event, window, cx)
                         }))
                 }),
             ))
     }
+}
+
+/// A file's kind tile; on a selected row, whose container is the tile's own
+/// role for folders, it sits on the lowest surface instead.
+fn kind_tile(file: &File, size: f32, selected: bool) -> Div {
+    ui::kind_tile(Kind::of(file), size).when(selected, |d| {
+        d.bg(color(ColorRole::SURFACE_CONTAINER_LOWEST))
+    })
 }
 
 /// A file's actions, for its ⋮ button and its right-click menu.

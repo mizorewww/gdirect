@@ -3,6 +3,7 @@
 use crate::i18n::t;
 use crate::tf;
 use crate::{
+    keymap,
     settings::{Settings, Theme},
     transfers::{self, Queues},
     ui,
@@ -161,6 +162,18 @@ pub struct Gdirect {
     /// for it (see [`Gdirect::wide`]).
     pub width: f32,
     pub rows: UniformListScrollHandle,
+    /// The window's focus when nothing in it has any; its key context holds
+    /// the global shortcuts.
+    pub focus: FocusHandle,
+    /// The Files page's focus: its shortcuts apply while it or the filter has it.
+    pub files_focus: FocusHandle,
+    /// The Files page takes focus on its next frame.
+    pub focus_files: bool,
+    /// The row the arrow keys move from, and the end a range selection grows from.
+    pub cursor: Option<String>,
+    pub anchor: Option<String>,
+    pub sort_menu: bool,
+    pub crumb_menu: bool,
 
     // Transfers
     pub queues: Queues,
@@ -278,6 +291,13 @@ impl Gdirect {
             session: 0,
             width: 1280.,
             rows: UniformListScrollHandle::new(),
+            focus: cx.focus_handle(),
+            files_focus: cx.focus_handle(),
+            focus_files: true,
+            cursor: None,
+            anchor: None,
+            sort_menu: false,
+            crumb_menu: false,
             queues: Queues::default(),
             show_uploads: false,
             listing: Vec::new(),
@@ -296,6 +316,8 @@ impl Gdirect {
         this.reload_accounts();
         this.reload_endpoints();
         this.connect(cx);
+        // The menu bar in the language the settings chose.
+        crate::keymap::set_menus(cx);
         this
     }
 
@@ -381,11 +403,12 @@ impl Gdirect {
 
     /// Text held by components (rather than drawn from `t` each frame)
     /// follows a language switch.
-    fn follow_language(&mut self, window: &mut Window) {
+    fn follow_language(&mut self, window: &mut Window, cx: &mut App) {
         let chinese = crate::i18n::chinese();
         if std::mem::replace(&mut self.drawn_chinese, chinese) == chinese {
             return;
         }
+        crate::keymap::set_menus(cx);
         let input = self.filter_input.clone();
         window.on_next_frame(move |window, cx| {
             input.update(cx, |input, cx| {
@@ -453,10 +476,9 @@ impl Gdirect {
                     // A reconnect that fails keeps the working client; the
                     // listing it dropped is made again through that one.
                     Err(e) if this.api.is_some() => {
-                        this.say(
-                            tf!("无法切换线路：{e:#}", "Couldn’t switch routes: {e:#}"),
-                            cx,
-                        );
+                        // The cause alone; the chain behind it is for the Routes page.
+                        let e = first_line(&format!("{e:#}"));
+                        this.say(tf!("无法切换线路：{e}", "Couldn’t switch routes: {e}"), cx);
                         this.refresh(cx);
                     }
                     Err(e) => this.connect_error = Some(format!("{e:#}")),
@@ -483,6 +505,9 @@ impl Gdirect {
 
     pub fn go(&mut self, page: Page, cx: &mut Context<Self>) {
         self.page = page;
+        if page == Page::Files {
+            self.focus_files = true;
+        }
         if page == Page::Endpoints {
             self.reload_endpoints();
         }
@@ -844,15 +869,96 @@ impl Gdirect {
         }
     }
 
+    /// Keeps focus somewhere in the window, so the shortcuts and the menu
+    /// bar reach the view; the Files page takes it when it is shown.
+    fn manage_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.dialog.is_some() {
+            return;
+        }
+        let handle = if std::mem::take(&mut self.focus_files)
+            && self.page == Page::Files
+            && !self.accounts.is_empty()
+        {
+            self.files_focus.clone()
+        } else if window.focused(cx).is_none() {
+            self.focus.clone()
+        } else {
+            return;
+        };
+        window.on_next_frame(move |window, cx| window.focus(&handle, cx));
+    }
+
+    /// The window-wide commands of the menu bar and the shortcuts.
+    fn on_actions(root: Div, cx: &mut Context<Self>) -> Div {
+        use crate::keymap::*;
+        root.on_action(cx.listener(|this, _: &ShowFiles, _, cx| this.go(Page::Files, cx)))
+            .on_action(cx.listener(|this, _: &ShowTransfers, _, cx| {
+                if !this.accounts.is_empty() {
+                    this.go(Page::Transfers, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ShowRoutes, _, cx| {
+                if !this.accounts.is_empty() {
+                    this.go(Page::Endpoints, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ShowSettings, _, cx| this.go(Page::Settings, cx)))
+            .on_action(cx.listener(|this, _: &OpenSettings, _, cx| this.go(Page::Settings, cx)))
+            .on_action(cx.listener(|this, _: &About, _, cx| {
+                this.pane = Pane::About;
+                this.pane_open = true;
+                this.go(Page::Settings, cx);
+            }))
+            .on_action(cx.listener(|this, _: &Refresh, _, cx| match this.page {
+                Page::Endpoints => {
+                    this.reload_endpoints();
+                    cx.notify();
+                }
+                _ => this.refresh(cx),
+            }))
+            .on_action(cx.listener(|this, _: &NewFolder, window, cx| {
+                if this.api.is_some() {
+                    this.go(Page::Files, cx);
+                    this.open_dialog(Dialog::NewFolder, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &UploadFiles, _, cx| {
+                if this.api.is_some() {
+                    this.choose_upload(false, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &UploadFolder, _, cx| {
+                if this.api.is_some() {
+                    this.choose_upload(true, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ViewList, _, cx| {
+                this.grid = false;
+                this.go(Page::Files, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ViewGrid, _, cx| {
+                this.grid = true;
+                this.go(Page::Files, cx);
+            }))
+            .on_action(|_: &Minimize, window, _| window.minimize_window())
+            .on_action(|_: &Zoom, window, _| window.zoom_window())
+    }
+
     fn render_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let pending = self.queues.pending();
-        let items = Self::nav_items().into_iter().map(|item| {
-            if item.value() == "transfers" && pending > 0 {
-                item.badge(NavBadge::Large(pending.to_string().into()))
-            } else {
-                item
-            }
-        });
+        // Signed out, the welcome screen stands in for Files, and Settings
+        // stays; the other pages need an account.
+        let signed_out = self.accounts.is_empty();
+        let items = Self::nav_items()
+            .into_iter()
+            .filter(|item| !signed_out || matches!(item.value().as_ref(), "files" | "settings"))
+            .map(|item| {
+                if item.value() == "transfers" && pending > 0 {
+                    item.badge(NavBadge::Large(pending.to_string().into()))
+                } else {
+                    item
+                }
+            });
         let signed_in = self.account.is_some();
         let fab = Fab::new("new", Symbol::ADD, t("新建", "New"))
             .color(FabColor::PrimaryContainer)
@@ -916,6 +1022,12 @@ impl Gdirect {
     }
 }
 
+/// The first part of an error chain (`a: b: c` from `{:#}`), for a toast.
+pub fn first_line(error: &str) -> String {
+    let line = error.lines().next().unwrap_or_default();
+    line.split(": ").next().unwrap_or(line).trim().to_owned()
+}
+
 /// Drains the background threads' updates every few frames.
 async fn poll(rx: Receiver<Update>, this: WeakEntity<Gdirect>, cx: &mut AsyncApp) {
     loop {
@@ -948,14 +1060,15 @@ pub const TITLE_BAR: Pixels = px(40.);
 impl Render for Gdirect {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.width = f32::from(window.viewport_size().width);
-        self.follow_language(window);
+        self.follow_language(window, cx);
         let labels = CaptionLabels {
             minimize: t("最小化", "Minimize").into(),
             maximize: t("最大化", "Maximize").into(),
             restore: t("还原", "Restore").into(),
             close: t("关闭", "Close").into(),
         };
-        let content = if self.accounts.is_empty() {
+        self.manage_focus(window, cx);
+        let content = if self.accounts.is_empty() && self.page != Page::Settings {
             self.render_welcome(cx).into_any_element()
         } else {
             match self.page {
@@ -970,7 +1083,9 @@ impl Render for Gdirect {
             .dialog
             .is_some()
             .then(|| self.render_dialog(window, cx).into_any_element());
-        div()
+        Self::on_actions(div(), cx)
+            .track_focus(&self.focus)
+            .key_context(keymap::APP)
             .size_full()
             .flex()
             .flex_col()

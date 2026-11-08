@@ -7,6 +7,7 @@ mod endpoints;
 mod files;
 mod format;
 mod i18n;
+mod keymap;
 mod settings;
 mod settings_page;
 mod transfers;
@@ -49,6 +50,7 @@ fn main() -> anyhow::Result<()> {
                 .expect("bundled fonts");
             gpui_kit::init(cx);
             gpui_kit_material::init(cx);
+            keymap::install(cx);
             let options = WindowOptions {
                 window_min_size: Some(size(px(600.), px(480.))),
                 ..title_bar_window_options("gdirect", app::TITLE_BAR, size(px(1280.), px(820.)), cx)
