@@ -1,6 +1,7 @@
 //! The download and upload queues: each runs one item at a time on its own
 //! thread, as `gdirect browse` does, and reports through the app's channel.
 use crate::format;
+use anyhow::Context as _;
 use chrono::{DateTime, Local};
 use gdirect::{
     api::{Api, File},
@@ -389,8 +390,9 @@ pub fn run_download(
     cancel: Arc<AtomicBool>,
     progress: std::sync::mpsc::Sender<Stats>,
 ) -> anyhow::Result<(String, PathBuf)> {
+    const UNWRITABLE: &str = "无法写入下载目录，请检查它的权限和剩余空间";
     if let Some(dir) = job.output.parent() {
-        std::fs::create_dir_all(dir)?;
+        std::fs::create_dir_all(dir).context(UNWRITABLE)?;
     }
     let md5 = if options.md5 && job.export.is_none() {
         job.file.md5_checksum.clone()
@@ -398,12 +400,15 @@ pub fn run_download(
         None
     };
     let output = output_on_disk(&job.output, md5.as_deref(), &job.file.id)?;
-    std::fs::write(owner(&output), &job.file.id)?;
     let token = api.download_token()?;
     anyhow::ensure!(!cancel.load(Ordering::Relaxed), "已取消");
     // The API client may already have failed over; downloads follow it.
     let (ip, sni, backups) = api.route();
     let existed = output.exists() && !control(&output).exists();
+    // Only a download that writes data can leave a partial file behind.
+    if !existed {
+        std::fs::write(owner(&output), &job.file.id).context(UNWRITABLE)?;
+    }
     let result = download::run(
         download::Args {
             file: job.file.id.clone(),
