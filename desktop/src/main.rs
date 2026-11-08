@@ -16,7 +16,8 @@ mod ui;
 
 use gpui_kit::{prelude::*, *};
 use gpui_kit_material::{icons::Assets, prelude::*, theme};
-use std::borrow::Cow;
+use settings::WindowState;
+use std::{borrow::Cow, cell::Cell, rc::Rc, time::Duration};
 
 fn main() -> anyhow::Result<()> {
     // A pinned background mount runs rclone under `<this binary> mount-helper`.
@@ -50,14 +51,30 @@ fn main() -> anyhow::Result<()> {
                 .expect("bundled fonts");
             gpui_kit::init(cx);
             gpui_kit_material::init(cx);
-            keymap::install(cx);
-            let options = WindowOptions {
-                window_min_size: Some(size(px(600.), px(480.))),
+            let store = gdirect::store::Store::open(&db_path).ok();
+            keymap::install(
+                store
+                    .as_ref()
+                    .map(settings::load_keymap)
+                    .unwrap_or_default(),
+                cx,
+            );
+            let min = size(px(600.), px(480.));
+            let mut options = WindowOptions {
+                window_min_size: Some(min),
                 ..title_bar_window_options("gdirect", app::TITLE_BAR, size(px(1280.), px(820.)), cx)
             };
+            if let Some((bounds, display)) = store
+                .as_ref()
+                .and_then(settings::WindowState::load)
+                .and_then(|saved| restore_bounds(&saved, min, cx))
+            {
+                options.window_bounds = Some(bounds);
+                options.display_id = Some(display);
+            }
             gpui_kit::open_window(options, cx, move |window, cx| {
-                if let Ok(db) = gdirect::store::Store::open(&db_path) {
-                    let settings = settings::Settings::load(&db);
+                if let Some(db) = &store {
+                    let settings = settings::Settings::load(db);
                     i18n::apply(settings.language);
                     theme::init_component_theme(
                         app::Gdirect::initial_scheme(&settings, cx),
@@ -65,11 +82,98 @@ fn main() -> anyhow::Result<()> {
                         cx,
                     );
                 }
-                cx.new(|cx| app::Gdirect::new(db_path, window, cx))
+                let view = cx.new(|cx| app::Gdirect::new(db_path, window, cx));
+                if let Some(db) = store {
+                    save_bounds(&view, db, window, cx);
+                }
+                view
             })
             .expect("open the window");
         });
     Ok(())
+}
+
+/// The saved frame, on the display it was on (or the primary one when that
+/// is gone), kept on screen and at least `min`; None opens the default frame.
+fn restore_bounds(
+    saved: &WindowState,
+    min: Size<Pixels>,
+    cx: &App,
+) -> Option<(WindowBounds, DisplayId)> {
+    let display = saved
+        .display
+        .as_deref()
+        .and_then(|uuid| {
+            cx.displays()
+                .into_iter()
+                .find(|d| d.uuid().is_ok_and(|u| u.to_string() == uuid))
+        })
+        .or_else(|| cx.primary_display())?;
+    let area = display.bounds();
+    let frame = saved.clamped(
+        (
+            area.origin.x.into(),
+            area.origin.y.into(),
+            area.size.width.into(),
+            area.size.height.into(),
+        ),
+        (min.width.into(), min.height.into()),
+    )?;
+    let bounds = Bounds::new(
+        point(px(frame.x), px(frame.y)),
+        size(px(frame.w), px(frame.h)),
+    );
+    let bounds = if frame.maximized {
+        WindowBounds::Maximized(bounds)
+    } else {
+        WindowBounds::Windowed(bounds)
+    };
+    Some((bounds, display.id()))
+}
+
+/// Saves the window's frame half a second after it last moved or resized,
+/// through a connection of its own to the state database.
+fn save_bounds(
+    view: &Entity<app::Gdirect>,
+    db: gdirect::store::Store,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let db = Rc::new(db);
+    let serial = Rc::new(Cell::new(0u64));
+    view.update(cx, |_, cx| {
+        cx.observe_window_bounds(window, move |_, window, cx| {
+            // Full screen is not restored; the frame it returns to is.
+            let (bounds, maximized) = match window.window_bounds() {
+                WindowBounds::Windowed(b) | WindowBounds::Fullscreen(b) => (b, false),
+                WindowBounds::Maximized(b) => (b, true),
+            };
+            let state = WindowState {
+                x: bounds.origin.x.into(),
+                y: bounds.origin.y.into(),
+                w: bounds.size.width.into(),
+                h: bounds.size.height.into(),
+                maximized,
+                display: window
+                    .display(cx)
+                    .and_then(|d| d.uuid().ok())
+                    .map(|u| u.to_string()),
+            };
+            let n = serial.get() + 1;
+            serial.set(n);
+            let (db, serial) = (db.clone(), serial.clone());
+            cx.spawn(async move |_, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(500))
+                    .await;
+                if serial.get() == n {
+                    state.save(&db);
+                }
+            })
+            .detach();
+        })
+        .detach();
+    });
 }
 
 /// `mount-helper --endpoint IP… -- rclone …`, as `gdirect mount-helper`.

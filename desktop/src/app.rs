@@ -59,6 +59,7 @@ pub enum Pane {
     Network,
     Mount,
     Appearance,
+    Shortcuts,
     About,
 }
 

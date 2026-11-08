@@ -3,12 +3,14 @@ use crate::{
     app::{ACCENTS, Dialog, Gdirect, Pane},
     format,
     i18n::{Language, t},
-    settings::{Identity, Theme},
+    keymap::{self, Binding, Section},
+    settings::{self, Identity, Theme},
     tf, ui,
 };
 use gpui_kit::{prelude::*, *};
 use gpui_kit_material::icons::Symbol;
 use gpui_kit_material::prelude::*;
+use std::path::PathBuf;
 
 impl Gdirect {
     fn choose_dir(&mut self, mount: bool, cx: &mut Context<Self>) {
@@ -80,6 +82,11 @@ impl Gdirect {
     /// Takes `&mut self` to keep a pane open once it has been shown; the
     /// caller's `self.render_settings(cx)` borrows mutably on its own.
     pub fn render_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        // Help › Keyboard Shortcuts opens its pane.
+        if keymap::take_open_shortcuts() {
+            self.pane = Pane::Shortcuts;
+            self.pane_open = true;
+        }
         let layout = self.settings_layout();
         let two_panes = layout.two_panes;
         // A pane shown beside the list stays open when the window narrows to
@@ -155,6 +162,12 @@ impl Gdirect {
                     Tint::Orange,
                 ),
                 (
+                    Pane::Shortcuts,
+                    t("查看和修改快捷键", "View and change shortcuts").into(),
+                    "keyboard",
+                    Tint::Pink,
+                ),
+                (
                     Pane::About,
                     format!("gdirect {}", env!("CARGO_PKG_VERSION")),
                     "info",
@@ -209,6 +222,7 @@ impl Gdirect {
             Pane::Network => self.pane_network(cx).into_any_element(),
             Pane::Mount => self.pane_mount(layout.card_w, cx).into_any_element(),
             Pane::Appearance => self.pane_appearance(cx).into_any_element(),
+            Pane::Shortcuts => self.pane_shortcuts(cx),
             Pane::About => self.pane_about(cx).into_any_element(),
         };
         let title = pane_title(self.pane);
@@ -940,6 +954,21 @@ impl Gdirect {
             )
     }
 
+    /// The Keyboard shortcuts pane: a view of its own, kept for the app's
+    /// life, as it records keystrokes with its own focus.
+    fn pane_shortcuts(&self, cx: &mut Context<Self>) -> AnyElement {
+        let view = match cx.try_global::<ShortcutsPane>() {
+            Some(pane) => pane.0.clone(),
+            None => {
+                let db_path = self.db_path.clone();
+                let view = cx.new(|cx| ShortcutsView::new(db_path, cx));
+                cx.set_global(ShortcutsPane(view.clone()));
+                view
+            }
+        };
+        view.into_any_element()
+    }
+
     fn pane_about(&self, _cx: &mut Context<Self>) -> impl IntoElement {
         let db_path = self.db_path.clone();
         ui::group(vec![
@@ -1010,6 +1039,7 @@ fn pane_title(pane: Pane) -> &'static str {
         Pane::Network => t("网络", "Network"),
         Pane::Mount => t("挂载", "Mount"),
         Pane::Appearance => t("外观", "Appearance"),
+        Pane::Shortcuts => t("键盘快捷键", "Keyboard shortcuts"),
         Pane::About => t("关于", "About"),
     }
 }
@@ -1021,4 +1051,476 @@ fn section(label: &'static str) -> Div {
         .flex_col()
         .gap(rem(8.))
         .child(ui::section_label(label))
+}
+
+/// The Keyboard shortcuts pane's view, made the first time it shows.
+struct ShortcutsPane(Entity<ShortcutsView>);
+
+impl Global for ShortcutsPane {}
+
+/// Lists the shortcuts and rebinds them: a click on a binding records the
+/// next keystroke as its new keys.
+pub struct ShortcutsView {
+    db_path: PathBuf,
+    /// Held while recording, so the keystroke comes here.
+    focus: FocusHandle,
+    /// The binding being recorded.
+    recording: Option<String>,
+    /// The last keystroke recorded could not be a shortcut.
+    rejected: bool,
+    /// A recorded keystroke that other bindings already have.
+    conflict: Option<Conflict>,
+    _intercept: Subscription,
+}
+
+struct Conflict {
+    id: String,
+    keys: String,
+    /// The ids of the bindings that have the keys.
+    others: Vec<String>,
+}
+
+impl ShortcutsView {
+    fn new(db_path: PathBuf, cx: &mut Context<Self>) -> Self {
+        // Key bindings are matched before any element's key-down listener,
+        // so a keystroke being recorded is taken ahead of them, before it can
+        // run the command it is bound to now.
+        let view = cx.weak_entity();
+        let intercept = cx.intercept_keystrokes(move |event, window, cx| {
+            let taken = view
+                .update(cx, |view, cx| view.record(&event.keystroke, window, cx))
+                .unwrap_or(false);
+            if taken {
+                cx.stop_propagation();
+            }
+        });
+        Self {
+            db_path,
+            focus: cx.focus_handle(),
+            recording: None,
+            rejected: false,
+            conflict: None,
+            _intercept: intercept,
+        }
+    }
+
+    fn start(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.recording = Some(id);
+        self.rejected = false;
+        self.conflict = None;
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    fn stop(&mut self, cx: &mut Context<Self>) {
+        self.recording = None;
+        self.rejected = false;
+        cx.notify();
+    }
+
+    /// Takes a keystroke while recording; true when it was taken.
+    fn record(
+        &mut self,
+        keystroke: &Keystroke,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(id) = self.recording.clone() else {
+            return false;
+        };
+        if !self.focus.is_focused(window) {
+            self.stop(cx);
+            return false;
+        }
+        if keystroke.key == "escape" && !keystroke.modifiers.modified() {
+            self.stop(cx);
+            return true;
+        }
+        // Modifiers alone wait for the key they go with.
+        if keystroke.is_modifier_key() {
+            return true;
+        }
+        let os = keymap::host_os(cx);
+        let list = keymap::bindings(&keymap::overrides(cx), os);
+        let Some(ix) = list.iter().position(|b| b.id == id) else {
+            self.stop(cx);
+            return true;
+        };
+        if !keymap::accepts(keystroke, list[ix].context) {
+            self.rejected = true;
+            cx.notify();
+            return true;
+        }
+        let Some(keys) = keymap::normalize(&keystroke.unparse(os), os) else {
+            return true;
+        };
+        self.stop(cx);
+        let others: Vec<String> = keymap::conflicts(&list, ix, &keys)
+            .into_iter()
+            .map(|j| list[j].id.clone())
+            .collect();
+        if others.is_empty() {
+            self.commit(
+                |overrides, list| keymap::set(overrides, list, &id, Some(keys)),
+                cx,
+            );
+        } else {
+            self.conflict = Some(Conflict { id, keys, others });
+        }
+        true
+    }
+
+    /// Changes the overrides, stores them and puts them in force.
+    fn commit(
+        &mut self,
+        change: impl FnOnce(&mut settings::KeymapOverrides, &[Binding]),
+        cx: &mut Context<Self>,
+    ) {
+        let mut overrides = keymap::overrides(cx);
+        let list = keymap::bindings(&overrides, keymap::host_os(cx));
+        change(&mut overrides, &list);
+        if let Ok(db) = gdirect::store::Store::open(&self.db_path) {
+            settings::save_keymap(&db, &overrides);
+        }
+        keymap::apply(overrides, cx);
+        cx.notify();
+    }
+
+    /// Gives the conflicting keys to the binding recorded, unsetting the others.
+    fn replace(&mut self, cx: &mut Context<Self>) {
+        let Some(Conflict { id, keys, others }) = self.conflict.take() else {
+            return;
+        };
+        self.commit(
+            |overrides, list| {
+                for other in &others {
+                    keymap::set(overrides, list, other, None);
+                }
+                keymap::set(overrides, list, &id, Some(keys));
+            },
+            cx,
+        );
+    }
+
+    /// One row: an action, its bindings as key caps, and the ways to change them.
+    fn row(
+        &self,
+        ix: usize,
+        bindings: &[&Binding],
+        all: &[Binding],
+        os: OperatingSystem,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let label = bindings[0].label();
+        let changed = bindings.iter().any(|b| b.changed());
+        let set: Vec<&&Binding> = bindings.iter().filter(|b| b.keys.is_some()).collect();
+        // The edit button records the first unset binding, else the first.
+        let target = bindings
+            .iter()
+            .find(|b| b.keys.is_none())
+            .unwrap_or(&bindings[0])
+            .id
+            .clone();
+        let recording = bindings
+            .iter()
+            .any(|b| self.recording.as_deref() == Some(b.id.as_str()));
+        let mut keys = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .justify_end()
+            .gap(rem(6.));
+        if recording {
+            keys = keys.child(
+                ui::pill(
+                    t("按下新的快捷键…", "Press the new shortcut…"),
+                    ColorRole::PRIMARY_CONTAINER,
+                    ColorRole::ON_PRIMARY_CONTAINER,
+                )
+                .py(rem(4.)),
+            );
+        } else if set.is_empty() {
+            let id = target.clone();
+            keys = keys.child(
+                div()
+                    .id(("unset", ix))
+                    .cursor_pointer()
+                    .rounded(rem(8.))
+                    .px(rem(6.))
+                    .py(rem(4.))
+                    .hover(|s| s.bg(color(ColorRole::SURFACE_CONTAINER_HIGH)))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.start(id.clone(), window, cx)
+                    }))
+                    .child(ui::text(
+                        TypeRole::BodyMedium,
+                        ColorRole::ON_SURFACE_VARIANT,
+                        t("未设置", "Not set"),
+                    )),
+            );
+        } else {
+            for (n, b) in set.iter().enumerate() {
+                let id = b.id.clone();
+                let tip: SharedString = tf!(
+                    "点按以更改 {}",
+                    "Click to change {}",
+                    keymap::display(b.keys.as_deref().unwrap_or_default(), os)
+                )
+                .into();
+                let chip = div()
+                    .id(("keys", ix * 16 + n))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .gap(rem(3.))
+                    .rounded(rem(8.))
+                    .px(rem(4.))
+                    .py(rem(3.))
+                    .hover(|s| s.bg(color(ColorRole::SURFACE_CONTAINER_HIGH)))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.start(id.clone(), window, cx)
+                    }))
+                    .child(key_caps(b.keys.as_deref().unwrap_or_default(), os));
+                keys = keys
+                    .child(MaterialTooltip::plain(("keys-tip", ix * 16 + n), tip).trigger(chip));
+            }
+        }
+        let reset_ids: Vec<String> = bindings.iter().map(|b| b.id.clone()).collect();
+        let line = div()
+            .flex()
+            .items_center()
+            .gap(rem(12.))
+            .min_h(rem(56.))
+            .pl(rem(20.))
+            .pr(rem(8.))
+            .py(rem(6.))
+            .child(
+                ui::text(TypeRole::BodyLarge, ColorRole::ON_SURFACE, label)
+                    .flex_1()
+                    .min_w(rem(120.)),
+            )
+            .child(keys)
+            .when(changed && !recording, |d| {
+                d.child(
+                    material_button(("reset", ix), ButtonVariant::Text)
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.conflict = None;
+                            let ids = reset_ids.clone();
+                            this.commit(
+                                |overrides, _| {
+                                    for id in &ids {
+                                        overrides.remove(id);
+                                    }
+                                },
+                                cx,
+                            );
+                        }))
+                        .child(t("重置", "Reset")),
+                )
+            })
+            .child(if recording {
+                IconButton::new(("cancel-record", ix), Symbol::CLOSE, t("取消", "Cancel"))
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.stop(cx)))
+                    .into_any_element()
+            } else {
+                IconButton::new(
+                    ("edit", ix),
+                    ui::symbol("edit", false),
+                    tf!("更改“{}”的快捷键", "Change the shortcut for “{}”", label),
+                )
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    this.start(target.clone(), window, cx)
+                }))
+                .into_any_element()
+            });
+        let rejected = recording && self.rejected;
+        let conflict = self
+            .conflict
+            .as_ref()
+            .filter(|c| bindings.iter().any(|b| b.id == c.id));
+        div()
+            .flex()
+            .flex_col()
+            .child(line)
+            .when(rejected, |d| {
+                d.child(
+                    ui::text(
+                        TypeRole::BodySmall,
+                        ColorRole::ERROR,
+                        if os == OperatingSystem::Mac {
+                            t(
+                                "快捷键要包含 ⌘、⌃ 或 ⌥，或者是功能键。按 Esc 取消",
+                                "A shortcut needs ⌘, ⌃ or ⌥, or a function key. Press Esc to cancel",
+                            )
+                        } else {
+                            t(
+                                "快捷键要包含 Ctrl 或 Alt，或者是功能键。按 Esc 取消",
+                                "A shortcut needs Ctrl or Alt, or a function key. Press Esc to cancel",
+                            )
+                        },
+                    )
+                    .px(rem(20.))
+                    .pb(rem(10.)),
+                )
+            })
+            .when_some(conflict, |d, c| {
+                let names: Vec<&str> = c
+                    .others
+                    .iter()
+                    .filter_map(|id| all.iter().find(|b| &b.id == id))
+                    .map(|b| b.label())
+                    .collect();
+                let names = names.join(t("”、“", "”, “"));
+                let keys = keymap::display(&c.keys, os);
+                d.child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap(rem(8.))
+                        .mx(rem(12.))
+                        .mb(rem(12.))
+                        .pl(rem(12.))
+                        .pr(rem(4.))
+                        .py(rem(4.))
+                        .rounded(rem(12.))
+                        .bg(color(ColorRole::ERROR_CONTAINER))
+                        .child(ui::icon("warning", 20., ColorRole::ON_ERROR_CONTAINER))
+                        .child(
+                            ui::text(
+                                TypeRole::BodyMedium,
+                                ColorRole::ON_ERROR_CONTAINER,
+                                tf!("{keys} 已被“{names}”使用", "{keys} is already used by “{names}”"),
+                            )
+                            .flex_1()
+                            .min_w(rem(160.)),
+                        )
+                        .child(
+                            material_button(("conflict-cancel", ix), ButtonVariant::Text)
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.conflict = None;
+                                    cx.notify();
+                                }))
+                                .child(t("取消", "Cancel")),
+                        )
+                        .child(
+                            material_button(("conflict-replace", ix), ButtonVariant::Tonal)
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.replace(cx)))
+                                .child(t("替换", "Replace")),
+                        ),
+                )
+            })
+            .into_any_element()
+    }
+}
+
+impl Render for ShortcutsView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Focus that went elsewhere ends the recording.
+        if self.recording.is_some() && !self.focus.is_focused(window) {
+            self.recording = None;
+            self.rejected = false;
+        }
+        let os = keymap::host_os(cx);
+        let overrides = keymap::overrides(cx);
+        let all = keymap::bindings(&overrides, os);
+        let mut row_ix = 0;
+        let sections: Vec<AnyElement> = Section::ALL
+            .into_iter()
+            .filter_map(|kind| {
+                // An action's bindings share a row, in the table's order.
+                let mut rows: Vec<Vec<&Binding>> = Vec::new();
+                for b in all.iter().filter(|b| b.section == kind) {
+                    match rows.iter_mut().find(|r| {
+                        r[0].action.partial_eq(b.action.as_ref()) && r[0].context == b.context
+                    }) {
+                        Some(row) => row.push(b),
+                        None => rows.push(vec![b]),
+                    }
+                }
+                if rows.is_empty() {
+                    return None;
+                }
+                let rows: Vec<AnyElement> = rows
+                    .iter()
+                    .map(|row| {
+                        row_ix += 1;
+                        self.row(row_ix, row, &all, os, cx)
+                    })
+                    .collect();
+                Some(
+                    section(kind.label())
+                        .child(ui::group(rows))
+                        .into_any_element(),
+                )
+            })
+            .collect();
+        div()
+            .track_focus(&self.focus)
+            .flex()
+            .flex_col()
+            .gap(rem(24.))
+            .children(sections)
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_between()
+                    .gap(rem(12.))
+                    .child(
+                        ui::footnote(t(
+                            "文本框里的编辑快捷键（复制、粘贴、撤销等）不受影响。",
+                            "Editing shortcuts in text fields (copy, paste, undo…) are not affected.",
+                        ))
+                        .flex_1()
+                        .min_w(rem(200.)),
+                    )
+                    .child(
+                        MaterialButton::new("restore-keys")
+                            .variant(ButtonVariant::Outlined)
+                            .icon(Symbol::RESTART_ALT)
+                            .disabled(overrides.is_empty())
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.conflict = None;
+                                this.recording = None;
+                                this.commit(|overrides, _| overrides.clear(), cx);
+                            }))
+                            .child(t("全部恢复默认", "Restore all defaults")),
+                    ),
+            )
+    }
+}
+
+/// A keystroke as key caps: small rounded mono chips, joined by + off a Mac.
+fn key_caps(keys: &str, os: OperatingSystem) -> Div {
+    let mac = os == OperatingSystem::Mac;
+    let caps = keymap::caps(keys, os);
+    let count = caps.len();
+    let mut row = div().flex().items_center().gap(rem(3.));
+    for (i, cap) in caps.into_iter().enumerate() {
+        row = row.child(
+            ui::mono(cap)
+                .flex_none()
+                .min_w(rem(24.))
+                .h(rem(24.))
+                .px(rem(6.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(rem(6.))
+                .bg(color(ColorRole::SURFACE_CONTAINER_HIGH))
+                .border_1()
+                .border_color(color(ColorRole::OUTLINE_VARIANT))
+                .text_color(color(ColorRole::ON_SURFACE)),
+        );
+        if !mac && i + 1 < count {
+            row = row.child(ui::text(
+                TypeRole::LabelMedium,
+                ColorRole::ON_SURFACE_VARIANT,
+                "+",
+            ));
+        }
+    }
+    row
 }

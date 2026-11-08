@@ -1,8 +1,12 @@
 //! Keyboard shortcuts and the application menus: every binding is one row of
-//! [`key_bindings`], which a shortcuts page can list.
-use crate::i18n::t;
+//! [`key_bindings`], which Settings › Keyboard shortcuts lists and lets the
+//! user change. Changes are stored as overrides of the defaults.
+use crate::{i18n::t, settings::KeymapOverrides};
 use gpui_kit::*;
-use std::rc::Rc;
+use std::{
+    rc::Rc,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 /// The text field's editing commands; the file list answers the clipboard
 /// ones and Select All for its files when it has focus.
@@ -30,6 +34,7 @@ actions!(
         Refresh,
         Minimize,
         Zoom,
+        ShowShortcuts,
     ]
 );
 
@@ -64,11 +69,12 @@ pub enum Os {
 }
 
 impl Os {
-    pub fn current(self) -> bool {
+    /// Whether the binding applies on `os`.
+    pub fn on(self, os: OperatingSystem) -> bool {
         match self {
             Os::All => true,
-            Os::Mac => cfg!(target_os = "macos"),
-            Os::Other => !cfg!(target_os = "macos"),
+            Os::Mac => os == OperatingSystem::Mac,
+            Os::Other => os != OperatingSystem::Mac,
         }
     }
 }
@@ -79,18 +85,17 @@ pub struct Shortcut {
     /// The default keystroke; `secondary-` is Command on macOS, Control elsewhere.
     pub keys: &'static str,
     /// What it does, in Chinese and English.
-    #[allow(dead_code)] // For the keyboard shortcuts page.
     pub label: (&'static str, &'static str),
     /// The key context it applies in; `None` is everywhere.
     pub context: Option<&'static str>,
     pub os: Os,
 }
 
-#[allow(dead_code)] // For the keyboard shortcuts page.
 impl Shortcut {
-    /// What it does, in the current language.
-    pub fn label(&self) -> &'static str {
-        t(self.label.0, self.label.1)
+    /// The binding's stable name in the stored overrides: its action and its
+    /// default keystroke, which tell apart an action's several bindings.
+    pub fn id(&self) -> String {
+        format!("{} {}", self.action.name(), self.keys)
     }
 }
 
@@ -137,6 +142,14 @@ pub fn key_bindings() -> Vec<Shortcut> {
             All,
         ),
         row(Minimize, "cmd-m", "最小化", "Minimize", None, Mac),
+        row(
+            ShowShortcuts,
+            "secondary-/",
+            "键盘快捷键",
+            "Keyboard shortcuts",
+            None,
+            All,
+        ),
         // Files menu
         row(
             NewFolder,
@@ -248,24 +261,334 @@ pub fn key_bindings() -> Vec<Shortcut> {
     ]
 }
 
-/// Registers [`key_bindings`] for this platform.
-pub fn bind(cx: &mut App) {
-    let bindings: Vec<KeyBinding> = key_bindings()
+/// Where the shortcuts page lists a binding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Section {
+    Global,
+    Window,
+    Files,
+}
+
+impl Section {
+    pub const ALL: [Section; 3] = [Section::Global, Section::Window, Section::Files];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Section::Global => t("全局", "Global"),
+            Section::Window => t("窗口", "Window"),
+            Section::Files => t("文件", "Files"),
+        }
+    }
+}
+
+/// One binding as it stands: its default and the keystroke it has now.
+pub struct Binding {
+    /// See [`Shortcut::id`].
+    pub id: String,
+    pub action: Box<dyn Action>,
+    pub label: (&'static str, &'static str),
+    pub context: Option<&'static str>,
+    pub section: Section,
+    /// The default keystroke, spelled for this platform (`cmd-,`).
+    pub default: String,
+    /// The keystroke now, spelled the same way; None when unset.
+    pub keys: Option<String>,
+}
+
+impl Binding {
+    pub fn label(&self) -> &'static str {
+        t(self.label.0, self.label.1)
+    }
+
+    /// Whether the user changed it.
+    pub fn changed(&self) -> bool {
+        self.keys.as_deref() != Some(self.default.as_str())
+    }
+}
+
+/// The host platform, as keystrokes are parsed for it.
+pub fn host_os(cx: &App) -> OperatingSystem {
+    cx.platform_info().os
+}
+
+/// A keystroke in one spelling for `os`: `secondary-` resolved, modifiers in
+/// a fixed order, the key in lower case.
+pub fn normalize(keys: &str, os: OperatingSystem) -> Option<String> {
+    Keystroke::parse_with_os(keys, os)
+        .ok()
+        .filter(|keystroke| !keystroke.key.is_empty())
+        .map(|keystroke| keystroke.unparse(os))
+}
+
+/// The key caps of a keystroke: macOS symbols (⌃⌥⇧⌘) on a Mac, words
+/// (Ctrl, Shift) elsewhere, then the key.
+pub fn caps(keys: &str, os: OperatingSystem) -> Vec<String> {
+    let Ok(keystroke) = Keystroke::parse_with_os(keys, os) else {
+        return vec![keys.to_owned()];
+    };
+    let m = keystroke.modifiers;
+    let mac = os == OperatingSystem::Mac;
+    let mut caps: Vec<String> = Vec::new();
+    let mut push = |on: bool, cap: &str| {
+        if on {
+            caps.push(cap.to_owned());
+        }
+    };
+    if mac {
+        // Apple's order: Control, Option, Shift, Command.
+        push(m.function, "fn");
+        push(m.control, "⌃");
+        push(m.alt, "⌥");
+        push(m.shift, "⇧");
+        push(m.platform, "⌘");
+    } else {
+        push(m.control, "Ctrl");
+        push(m.alt, "Alt");
+        push(m.shift, "Shift");
+        push(
+            m.platform,
+            if os == OperatingSystem::Windows {
+                "Win"
+            } else {
+                "Super"
+            },
+        );
+        push(m.function, "Fn");
+    }
+    caps.push(key_cap(&keystroke.key, mac));
+    caps
+}
+
+/// A keystroke as one string: `⇧⌘N` on a Mac, `Ctrl+Shift+N` elsewhere.
+pub fn display(keys: &str, os: OperatingSystem) -> String {
+    let caps = caps(keys, os);
+    if os == OperatingSystem::Mac {
+        caps.concat()
+    } else {
+        caps.join("+")
+    }
+}
+
+fn key_cap(key: &str, mac: bool) -> String {
+    let named = match (key, mac) {
+        ("backspace", true) => "⌫",
+        ("backspace", false) => "Backspace",
+        ("delete", true) => "⌦",
+        ("delete", false) => "Delete",
+        ("enter", true) => "↩",
+        ("enter", false) => "Enter",
+        ("escape", _) => "Esc",
+        ("tab", true) => "⇥",
+        ("tab", false) => "Tab",
+        ("space", _) => "Space",
+        ("up", true) => "↑",
+        ("down", true) => "↓",
+        ("left", true) => "←",
+        ("right", true) => "→",
+        ("up", false) => "Up",
+        ("down", false) => "Down",
+        ("left", false) => "Left",
+        ("right", false) => "Right",
+        ("pageup", true) => "⇞",
+        ("pagedown", true) => "⇟",
+        ("pageup", false) => "PgUp",
+        ("pagedown", false) => "PgDn",
+        ("home", true) => "↖",
+        ("end", true) => "↘",
+        ("home", false) => "Home",
+        ("end", false) => "End",
+        _ => "",
+    };
+    if !named.is_empty() {
+        return named.to_owned();
+    }
+    let mut chars = key.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+/// Every binding on `os`, with the user's overrides applied.
+pub fn bindings(overrides: &KeymapOverrides, os: OperatingSystem) -> Vec<Binding> {
+    key_bindings()
         .into_iter()
-        .filter(|s| s.os.current())
-        .filter_map(|s| {
-            let context = s
+        .filter(|s| s.os.on(os))
+        .map(|s| {
+            let id = s.id();
+            let default = normalize(s.keys, os).unwrap_or_else(|| s.keys.to_owned());
+            let keys = match overrides.get(&id) {
+                Some(keys) if keys.is_empty() => None,
+                // One that no longer parses falls back to the default.
+                Some(keys) => Some(normalize(keys, os).unwrap_or_else(|| default.clone())),
+                None => Some(default.clone()),
+            };
+            let section = match (s.context, s.action.name()) {
+                (Some(_), _) => Section::Files,
+                (None, name)
+                    if [CloseWindow.name(), Minimize.name(), Zoom.name()].contains(&name) =>
+                {
+                    Section::Window
+                }
+                (None, _) => Section::Global,
+            };
+            Binding {
+                id,
+                action: s.action,
+                label: s.label,
+                context: s.context,
+                section,
+                default,
+                keys,
+            }
+        })
+        .collect()
+}
+
+/// The bindings, other than `list[ix]`, that already answer `keys` where
+/// `list[ix]` applies: in its own key context, or everywhere. A binding for
+/// everywhere clashes with those of every context.
+pub fn conflicts(list: &[Binding], ix: usize, keys: &str) -> Vec<usize> {
+    let context = list[ix].context;
+    list.iter()
+        .enumerate()
+        .filter(|&(j, b)| {
+            j != ix
+                && b.keys.as_deref() == Some(keys)
+                && (b.context == context || b.context.is_none() || context.is_none())
+        })
+        .map(|(j, _)| j)
+        .collect()
+}
+
+/// Gives the binding `id` the keystroke `keys` (None unsets it) in the
+/// overrides; one back at its default is no override at all.
+pub fn set(overrides: &mut KeymapOverrides, list: &[Binding], id: &str, keys: Option<String>) {
+    let Some(binding) = list.iter().find(|b| b.id == id) else {
+        return;
+    };
+    match keys {
+        Some(keys) if keys == binding.default => {
+            overrides.remove(id);
+        }
+        keys => {
+            overrides.insert(id.to_owned(), keys.unwrap_or_default());
+        }
+    }
+}
+
+/// Whether a keystroke recorded for a binding in `context` may become one.
+/// It needs a modifier other than Shift, so typing never triggers it; a
+/// function key will do anywhere, and the named keys a list answers (Enter,
+/// Delete, the arrows…) will do in a context such as the file list.
+pub fn accepts(keystroke: &Keystroke, context: Option<&str>) -> bool {
+    if keystroke.is_modifier_key() || keystroke.key.is_empty() {
+        return false;
+    }
+    let m = keystroke.modifiers;
+    if m.platform || m.control || m.alt || m.function {
+        return true;
+    }
+    let key = keystroke.key.as_str();
+    let function_key =
+        key.len() >= 2 && key.starts_with('f') && key[1..].chars().all(|c| c.is_ascii_digit());
+    let named = matches!(
+        key,
+        "enter"
+            | "delete"
+            | "backspace"
+            | "up"
+            | "down"
+            | "left"
+            | "right"
+            | "home"
+            | "end"
+            | "pageup"
+            | "pagedown"
+    );
+    function_key || (named && context.is_some())
+}
+
+/// The overrides in force and the key bindings installed from them.
+#[derive(Default)]
+struct Installed {
+    overrides: KeymapOverrides,
+    bindings: Vec<KeyBinding>,
+}
+
+impl Global for Installed {}
+
+/// The overrides in force.
+pub fn overrides(cx: &App) -> KeymapOverrides {
+    cx.try_global::<Installed>()
+        .map(|i| i.overrides.clone())
+        .unwrap_or_default()
+}
+
+/// Puts `overrides` in force at once: the key bindings and the menus' keys.
+pub fn apply(overrides: KeymapOverrides, cx: &mut App) {
+    cx.default_global::<Installed>().overrides = overrides;
+    bind(cx);
+    set_menus(cx);
+}
+
+/// Registers [`key_bindings`] for this platform with the overrides in force,
+/// replacing those registered before.
+///
+/// GPUI can only clear the whole keymap, which also holds the text fields',
+/// dialogs' and menus' bindings that `gpui_kit::init` and
+/// `gpui_kit_material::init` registered. So the keymap is read back first,
+/// this module's previous bindings taken out of it one for one, and the rest
+/// put back, in their order, before ours: everyone else's bindings survive,
+/// whenever they were registered, and ours keep the precedence that being
+/// added last gives them.
+pub fn bind(cx: &mut App) {
+    let previous = std::mem::take(&mut cx.default_global::<Installed>().bindings);
+    let mut kept: Vec<KeyBinding> = cx.key_bindings().borrow().bindings().cloned().collect();
+    for old in &previous {
+        if let Some(ix) = kept.iter().rposition(|b| same_binding(b, old)) {
+            kept.remove(ix);
+        }
+    }
+    let os = host_os(cx);
+    let overrides = overrides(cx);
+    let ours: Vec<KeyBinding> = bindings(&overrides, os)
+        .into_iter()
+        .filter_map(|b| {
+            let keys = b.keys?;
+            let context = b
                 .context
                 .and_then(|c| KeyBindingContextPredicate::parse(c).ok())
                 .map(Rc::new);
-            KeyBinding::load(s.keys, s.action, context, false, None, cx).ok()
+            KeyBinding::load(&keys, b.action, context, false, None, cx).ok()
         })
         .collect();
-    cx.bind_keys(bindings);
+    if !previous.is_empty() {
+        cx.clear_key_bindings();
+        cx.bind_keys(kept);
+    }
+    cx.bind_keys(ours.iter().cloned());
+    cx.default_global::<Installed>().bindings = ours;
 }
 
-/// Application commands that need no window: quitting and hiding.
-pub fn install(cx: &mut App) {
+fn same_binding(a: &KeyBinding, b: &KeyBinding) -> bool {
+    a.keystrokes() == b.keystrokes()
+        && a.predicate() == b.predicate()
+        && a.action().partial_eq(b.action())
+}
+
+/// Set by [`ShowShortcuts`]; the settings page takes it to open its
+/// Keyboard shortcuts pane.
+static OPEN_SHORTCUTS: AtomicBool = AtomicBool::new(false);
+
+/// Whether Keyboard Shortcuts was chosen since the last call.
+pub fn take_open_shortcuts() -> bool {
+    OPEN_SHORTCUTS.swap(false, Ordering::Relaxed)
+}
+
+/// Application commands that need no window: quitting and hiding. Binds the
+/// keys with the stored `overrides` and builds the menus.
+pub fn install(overrides: KeymapOverrides, cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
@@ -277,6 +600,23 @@ pub fn install(cx: &mut App) {
                 let _ = window.update(cx, |_, window, _| window.remove_window());
             });
         }
+    });
+    // Settings › Keyboard shortcuts: the window shows Settings, which then
+    // opens the pane.
+    cx.on_action(|_: &ShowShortcuts, cx| {
+        OPEN_SHORTCUTS.store(true, Ordering::Relaxed);
+        // A menu chosen while the app is inactive has no active window.
+        if let Some(window) = cx.active_window().or_else(|| cx.windows().first().copied()) {
+            cx.defer(move |cx| {
+                let _ = window.update(cx, |_, window, cx| {
+                    window.dispatch_action(Box::new(ShowSettings), cx)
+                });
+            });
+        }
+    });
+    cx.set_global(Installed {
+        overrides,
+        bindings: Vec::new(),
     });
     bind(cx);
     set_menus(cx);
@@ -328,19 +668,29 @@ pub fn set_menus(cx: &mut App) {
             MenuItem::action(t("最小化", "Minimize"), Minimize),
             MenuItem::action(t("缩放", "Zoom"), Zoom),
         ]),
+        Menu::new(t("帮助", "Help")).items([MenuItem::action(
+            t("键盘快捷键", "Keyboard Shortcuts"),
+            ShowShortcuts,
+        )]),
     ]);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::key_bindings;
+    use super::{
+        FILES, KeymapOverrides, accepts, bindings, caps, conflicts, display, key_bindings,
+        normalize, set,
+    };
     use gpui_kit::{Keystroke, OperatingSystem};
+
+    const MAC: OperatingSystem = OperatingSystem::Mac;
+    const WIN: OperatingSystem = OperatingSystem::Windows;
 
     /// Every default keystroke parses on both platform families.
     #[test]
     fn keystrokes_parse() {
         for s in key_bindings() {
-            for os in [OperatingSystem::Mac, OperatingSystem::Windows] {
+            for os in [MAC, WIN] {
                 assert!(
                     Keystroke::parse_with_os(s.keys, os).is_ok(),
                     "{} does not parse",
@@ -348,5 +698,121 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// No two bindings share an id, and no two defaults clash.
+    #[test]
+    fn defaults_are_distinct() {
+        for os in [MAC, WIN, OperatingSystem::Linux] {
+            let list = bindings(&KeymapOverrides::new(), os);
+            let mut ids: Vec<&str> = list.iter().map(|b| b.id.as_str()).collect();
+            ids.sort();
+            ids.dedup();
+            assert_eq!(ids.len(), list.len());
+            for (ix, b) in list.iter().enumerate() {
+                assert!(
+                    conflicts(&list, ix, b.keys.as_deref().unwrap()).is_empty(),
+                    "{} clashes on {os:?}",
+                    b.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn formats_key_caps() {
+        assert_eq!(caps("secondary-shift-n", MAC), ["⇧", "⌘", "N"]);
+        assert_eq!(display("secondary-shift-n", MAC), "⇧⌘N");
+        assert_eq!(display("secondary-shift-n", WIN), "Ctrl+Shift+N");
+        assert_eq!(display("cmd-alt-h", MAC), "⌥⌘H");
+        assert_eq!(display("ctrl-alt-shift-cmd-k", MAC), "⌃⌥⇧⌘K");
+        assert_eq!(display("alt-up", WIN), "Alt+Up");
+        assert_eq!(display("cmd-up", MAC), "⌘↑");
+        assert_eq!(display("secondary-backspace", MAC), "⌘⌫");
+        assert_eq!(display("secondary-,", WIN), "Ctrl+,");
+        assert_eq!(display("f2", WIN), "F2");
+        assert_eq!(display("escape", MAC), "Esc");
+        assert_eq!(display("secondary-/", MAC), "⌘/");
+    }
+
+    #[test]
+    fn normalizes_spellings() {
+        assert_eq!(normalize("secondary-,", MAC).as_deref(), Some("cmd-,"));
+        assert_eq!(normalize("secondary-,", WIN).as_deref(), Some("ctrl-,"));
+        assert_eq!(normalize("shift-cmd-N", MAC), normalize("cmd-shift-n", MAC));
+        assert_eq!(normalize("", MAC), None);
+    }
+
+    #[test]
+    fn overrides_apply_and_reset() {
+        let mut overrides = KeymapOverrides::new();
+        let list = bindings(&overrides, MAC);
+        let refresh = "gdirect::Refresh secondary-r";
+        let rename = "files::Rename f2";
+        set(&mut overrides, &list, refresh, Some("cmd-shift-r".into()));
+        set(&mut overrides, &list, rename, None);
+        assert_eq!(overrides[refresh], "cmd-shift-r");
+        assert_eq!(overrides[rename], "");
+        let list = bindings(&overrides, MAC);
+        let find = |id: &str| list.iter().find(|b| b.id == id).unwrap();
+        assert_eq!(find(refresh).keys.as_deref(), Some("cmd-shift-r"));
+        assert!(find(refresh).changed());
+        assert_eq!(find(rename).keys, None);
+        // Back at the default: no override left.
+        set(&mut overrides, &list, refresh, Some("cmd-r".into()));
+        assert!(!overrides.contains_key(refresh));
+        // An unknown id changes nothing.
+        set(&mut overrides, &list, "nope", None);
+        assert!(!overrides.contains_key("nope"));
+    }
+
+    #[test]
+    fn detects_conflicts() {
+        let list = bindings(&KeymapOverrides::new(), MAC);
+        let ix = |id: &str| list.iter().position(|b| b.id == id).unwrap();
+        let ids = |found: Vec<usize>| -> Vec<String> {
+            found.into_iter().map(|j| list[j].id.clone()).collect()
+        };
+        // A global binding taking another global one's keys.
+        let refresh = ix("gdirect::Refresh secondary-r");
+        assert_eq!(
+            ids(conflicts(&list, refresh, "cmd-1")),
+            ["gdirect::ShowFiles secondary-1"]
+        );
+        // A file-list binding taking a global one's keys clashes too…
+        let rename = ix("files::Rename f2");
+        assert_eq!(
+            ids(conflicts(&list, rename, "cmd-u")),
+            ["gdirect::UploadFiles secondary-u"]
+        );
+        // …and a global one a file-list binding's.
+        assert_eq!(ids(conflicts(&list, refresh, "f2")), ["files::Rename f2"]);
+        // Free keys, and its own keys, clash with nothing.
+        assert!(conflicts(&list, refresh, "cmd-shift-k").is_empty());
+        assert!(conflicts(&list, refresh, "cmd-r").is_empty());
+        // An unset binding holds no keys.
+        let mut overrides = KeymapOverrides::new();
+        set(
+            &mut overrides,
+            &list,
+            "gdirect::ShowFiles secondary-1",
+            None,
+        );
+        let list = bindings(&overrides, MAC);
+        assert!(conflicts(&list, refresh, "cmd-1").is_empty());
+    }
+
+    #[test]
+    fn accepts_only_safe_keystrokes() {
+        let key = |s: &str| Keystroke::parse_with_os(s, MAC).unwrap();
+        assert!(accepts(&key("cmd-k"), None));
+        assert!(accepts(&key("ctrl-alt-k"), None));
+        assert!(accepts(&key("f6"), None));
+        assert!(accepts(&key("enter"), Some(FILES)));
+        assert!(!accepts(&key("enter"), None));
+        assert!(!accepts(&key("k"), Some(FILES)));
+        assert!(!accepts(&key("shift-k"), None));
+        assert!(!accepts(&key("shift"), None));
+        assert!(!accepts(&key("f"), None));
     }
 }

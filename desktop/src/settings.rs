@@ -157,3 +157,185 @@ impl Settings {
         let _ = db.set("connections", &self.connections.to_string());
     }
 }
+
+/// The keyboard shortcuts the user changed: binding id → keystroke, where an
+/// empty keystroke leaves the binding unset. Kept as one JSON object.
+pub type KeymapOverrides = std::collections::BTreeMap<String, String>;
+
+const KEYMAP: &str = "desktop.keymap";
+
+pub fn load_keymap(db: &Store) -> KeymapOverrides {
+    db.setting(KEYMAP)
+        .ok()
+        .flatten()
+        .map(|json| parse_keymap(&json))
+        .unwrap_or_default()
+}
+
+pub fn save_keymap(db: &Store, overrides: &KeymapOverrides) {
+    let _ = if overrides.is_empty() {
+        db.unset(KEYMAP)
+    } else {
+        db.set(KEYMAP, &serialize_keymap(overrides))
+    };
+}
+
+/// Reads the stored overrides; anything that is not an object of strings is
+/// skipped rather than failing the whole map.
+pub fn parse_keymap(json: &str) -> KeymapOverrides {
+    match serde_json::from_str::<serde_json::Value>(json) {
+        Ok(serde_json::Value::Object(map)) => map
+            .into_iter()
+            .filter_map(|(id, keys)| Some((id, keys.as_str()?.to_owned())))
+            .collect(),
+        _ => KeymapOverrides::new(),
+    }
+}
+
+pub fn serialize_keymap(overrides: &KeymapOverrides) -> String {
+    serde_json::to_string(overrides).unwrap_or_else(|_| "{}".into())
+}
+
+/// The main window's last frame, in the coordinates of the display it was on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WindowState {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub maximized: bool,
+    /// The display's UUID, when the platform has one.
+    pub display: Option<String>,
+}
+
+const WINDOW: &str = "desktop.window";
+
+impl WindowState {
+    pub fn load(db: &Store) -> Option<Self> {
+        Self::parse(&db.setting(WINDOW).ok().flatten()?)
+    }
+
+    pub fn save(&self, db: &Store) {
+        let _ = db.set(WINDOW, &self.serialize());
+    }
+
+    pub fn parse(json: &str) -> Option<Self> {
+        let v: serde_json::Value = serde_json::from_str(json).ok()?;
+        let num = |key: &str| {
+            v.get(key)
+                .and_then(|n| n.as_f64())
+                .map(|n| n as f32)
+                .filter(|n| n.is_finite())
+        };
+        Some(Self {
+            x: num("x")?,
+            y: num("y")?,
+            w: num("w")?,
+            h: num("h")?,
+            maximized: v
+                .get("maximized")
+                .and_then(|m| m.as_bool())
+                .unwrap_or(false),
+            display: v.get("display").and_then(|d| d.as_str()).map(str::to_owned),
+        })
+    }
+
+    pub fn serialize(&self) -> String {
+        serde_json::json!({
+            "x": self.x,
+            "y": self.y,
+            "w": self.w,
+            "h": self.h,
+            "maximized": self.maximized,
+            "display": self.display,
+        })
+        .to_string()
+    }
+
+    /// The frame moved and shrunk onto a display of `display` = (x, y, w, h),
+    /// at least `min` = (w, h) in size; None when too little of it would show
+    /// there to grab the title bar.
+    pub fn clamped(&self, display: (f32, f32, f32, f32), min: (f32, f32)) -> Option<Self> {
+        let (dx, dy, dw, dh) = display;
+        // Enough of the title bar on screen to drag the window back.
+        let visible_w = (self.x + self.w).min(dx + dw) - self.x.max(dx);
+        let visible_h = (self.y + self.h).min(dy + dh) - self.y.max(dy);
+        if visible_w < 100. || visible_h < 40. || dw < 1. || dh < 1. {
+            return None;
+        }
+        let w = self.w.max(min.0).min(dw.max(min.0));
+        let h = self.h.max(min.1).min(dh.max(min.1));
+        let x = self.x.clamp(dx, (dx + dw - w).max(dx));
+        let y = self.y.clamp(dy, (dy + dh - h).max(dy));
+        Some(Self {
+            x,
+            y,
+            w,
+            h,
+            ..self.clone()
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keymap_round_trips() {
+        let mut map = KeymapOverrides::new();
+        map.insert("gdirect::Refresh secondary-r".into(), "cmd-shift-r".into());
+        map.insert("files::Rename f2".into(), String::new());
+        assert_eq!(parse_keymap(&serialize_keymap(&map)), map);
+    }
+
+    #[test]
+    fn keymap_skips_junk() {
+        assert!(parse_keymap("not json").is_empty());
+        assert!(parse_keymap("[1, 2]").is_empty());
+        let map = parse_keymap(r#"{"a": "cmd-k", "b": 3, "c": null}"#);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map["a"], "cmd-k");
+    }
+
+    #[test]
+    fn window_round_trips() {
+        let state = WindowState {
+            x: 10.,
+            y: 20.,
+            w: 1000.,
+            h: 700.,
+            maximized: true,
+            display: Some("abc".into()),
+        };
+        assert_eq!(WindowState::parse(&state.serialize()), Some(state));
+        assert_eq!(WindowState::parse(r#"{"x": 1}"#), None);
+    }
+
+    #[test]
+    fn window_is_clamped_onto_the_display() {
+        let display = (0., 0., 1440., 900.);
+        let min = (600., 480.);
+        let state = |x, y, w, h| WindowState {
+            x,
+            y,
+            w,
+            h,
+            maximized: false,
+            display: None,
+        };
+        // Fits: unchanged.
+        let fits = state(100., 50., 1000., 700.);
+        assert_eq!(fits.clamped(display, min), Some(fits.clone()));
+        // Too small, and hanging off the right: grown and pulled back.
+        let c = state(1200., 100., 300., 200.)
+            .clamped(display, min)
+            .unwrap();
+        assert_eq!((c.x, c.y, c.w, c.h), (840., 100., 600., 480.));
+        // Bigger than the display: shrunk to it.
+        let c = state(0., 0., 3000., 2000.).clamped(display, min).unwrap();
+        assert_eq!((c.x, c.y, c.w, c.h), (0., 0., 1440., 900.));
+        // Off screen entirely.
+        assert_eq!(state(3000., 50., 800., 600.).clamped(display, min), None);
+    }
+}
