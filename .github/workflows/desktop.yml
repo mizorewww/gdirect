@@ -158,10 +158,11 @@ jobs:
           repository: mizorewww/gpui-kit-material
           ref: ${{ steps.kit.outputs.rev }}
           path: gpui-kit-material
-      # The engine's libaria2 is built with MinGW, so the client is too.
-      - uses: dtolnay/rust-toolchain@stable
+      # The engine's libaria2 is built with MinGW, so the client is too, build
+      # scripts included: MinGW objects do not link with MSVC's link.exe.
+      - uses: dtolnay/rust-toolchain@master
         with:
-          targets: x86_64-pc-windows-gnu
+          toolchain: stable-x86_64-pc-windows-gnu
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
