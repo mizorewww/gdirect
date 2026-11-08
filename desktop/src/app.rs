@@ -394,6 +394,12 @@ impl Gdirect {
                         this.refresh(cx);
                         this.pump(cx);
                     }
+                    // A reconnect that fails keeps the working client; the
+                    // listing it dropped is made again through that one.
+                    Err(e) if this.api.is_some() => {
+                        this.say(format!("无法切换线路：{e:#}"), cx);
+                        this.refresh(cx);
+                    }
                     Err(e) => this.connect_error = Some(format!("{e:#}")),
                 }
                 cx.notify();
