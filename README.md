@@ -67,13 +67,9 @@ The same engine in a Material 3 window: browse and manage files, drag files in t
 | --- | --- | --- |
 | ![Transfer queue with finished downloads](docs/images/en/transfers.png) | ![Routes page with latencies](docs/images/en/endpoints.png) | ![Appearance settings](docs/images/en/settings.png) |
 
-There is no prebuilt package yet; build it from source with gpui-kit-material checked out beside this repository:
+**macOS:** download `gdirect-desktop-…-aarch64-apple-darwin.zip` (Apple silicon) or `…-x86_64-apple-darwin.zip` (Intel) from the [releases page](https://github.com/mizorewww/gdirect/releases/latest), unzip it and move `gdirect.app` to Applications. The app is not notarized: the first time, open it, then allow it under System Settings › Privacy & Security › Open Anyway.
 
-```sh
-git clone https://github.com/mizorewww/gpui-kit-material.git ../gpui-kit-material
-./scripts/build-libaria2.sh
-cargo run --release --manifest-path desktop/Cargo.toml
-```
+On Linux and Windows, build it from source — see [Building from source](docs/building.md#desktop-client).
 
 ## Documentation
 

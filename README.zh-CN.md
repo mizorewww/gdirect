@@ -67,13 +67,9 @@ gdirect mount                    # 挂载到 ~/GoogleDrive
 | --- | --- | --- |
 | ![传输队列和已完成的下载](docs/images/transfers.png) | ![线路列表和延迟](docs/images/endpoints.png) | ![外观设置](docs/images/settings.png) |
 
-暂时没有预编译包，需要把 gpui-kit-material 克隆到本仓库旁边后从源码编译：
+**macOS：** 在 [Releases](https://github.com/mizorewww/gdirect/releases/latest) 下载 `gdirect-desktop-…-aarch64-apple-darwin.zip`（Apple 芯片）或 `…-x86_64-apple-darwin.zip`（Intel），解压后把 `gdirect.app` 拖进“应用程序”。应用没有经过公证：第一次打开后，到“系统设置 › 隐私与安全性”里点“仍要打开”。
 
-```sh
-git clone https://github.com/mizorewww/gpui-kit-material.git ../gpui-kit-material
-./scripts/build-libaria2.sh
-cargo run --release --manifest-path desktop/Cargo.toml
-```
+Linux 和 Windows 需要从源码编译，见[从源码编译](docs/building.zh-CN.md#桌面客户端)。
 
 ## 文档
 

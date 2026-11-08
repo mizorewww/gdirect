@@ -26,9 +26,12 @@ Windows 需要使用 MinGW GNU 工具链编译，步骤如下：
 
 ```sh
 git clone https://github.com/mizorewww/gpui-kit-material.git ../gpui-kit-material
+git -C ../gpui-kit-material checkout "$(cat desktop/gpui-kit-material.rev)"
 ./scripts/build-libaria2.sh
 cargo run --release --manifest-path desktop/Cargo.toml
 ```
+
+`desktop/gpui-kit-material.rev` 记录了本客户端编译和发布所对应的 gpui-kit-material 提交。在 `desktop/` 里执行 `cargo build --release --target aarch64-apple-darwin` 后，`python3 scripts/package-desktop.py --target aarch64-apple-darwin` 会把它打包成发布用的 macOS 应用。
 
 `--db PATH` 使用另一个数据文件，和命令行的 `--db` 一样。
 

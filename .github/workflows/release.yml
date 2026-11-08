@@ -175,9 +175,76 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  desktop:
+    name: Build desktop ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    env:
+      OPENSSL_STATIC: '1'
+    steps:
+      # The desktop client builds against gpui-kit-material checked out beside
+      # this repository, at the revision desktop/gpui-kit-material.rev pins.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          path: gdirect
+      - id: kit
+        run: echo "rev=$(tr -d '[:space:]' < gdirect/desktop/gpui-kit-material.rev)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: mizorewww/gpui-kit-material
+          ref: ${{ steps.kit.outputs.rev }}
+          path: gpui-kit-material
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install native dependencies
+        run: |
+          brew install openssl@3
+          echo "OPENSSL_PREFIX=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-desktop-${{ matrix.target }}
+          workspaces: gdirect/desktop -> target
+      - uses: actions/cache@v4
+        with:
+          path: gdirect/target/libaria2
+          key: aria2-v2-${{ matrix.os }}-${{ matrix.target }}-${{ hashFiles('gdirect/scripts/build-libaria2.sh', 'gdirect/vendor/**') }}
+      - working-directory: gdirect
+        run: test -f target/libaria2/lib/libaria2.a || ./scripts/build-libaria2.sh
+      - working-directory: gdirect/desktop
+        run: cargo test --locked --target ${{ matrix.target }}
+      - working-directory: gdirect/desktop
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Check portable linkage
+        working-directory: gdirect/desktop
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          otool -L "target/$TARGET/release/gdirect-desktop" | tee /tmp/dependencies.txt
+          if grep -E 'lib(ssl|crypto)|/opt/homebrew|/usr/local/opt' /tmp/dependencies.txt; then exit 1; fi
+      - working-directory: gdirect
+        run: python3 scripts/package-desktop.py --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-desktop-${{ matrix.target }}
+          path: gdirect/dist/*
+          if-no-files-found: error
+
   publish:
     name: Publish complete release
-    needs: [unix, windows]
+    needs: [unix, windows, desktop]
     if: startsWith(github.ref, 'refs/tags/v') || startsWith(inputs.tag, 'v')
     runs-on: ubuntu-22.04
     permissions:
@@ -206,6 +273,8 @@ jobs:
           for target in targets:
               ext = 'zip' if 'windows' in target else 'tar.gz'
               assert pathlib.Path(f'dist/gdirect-{version}-{target}.{ext}').is_file()
+          for target in ['aarch64-apple-darwin', 'x86_64-apple-darwin']:
+              assert pathlib.Path(f'dist/gdirect-desktop-{version}-{target}.zip').is_file()
           PY
           cd dist
           cat ./*.sha256 | tr -d '\r' > SHA256SUMS
@@ -216,7 +285,9 @@ jobs:
         run: |
           mkdir -p source/target/vendor
           git archive HEAD | tar -x -C source
-          curl -fL --retry 3 https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0.tar.xz -o source/target/vendor/aria2-1.37.0.tar.xz
+          # The same tarball as scripts/build-libaria2.sh fetches, with its fallback.
+          curl -fL --retry 3 https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0.tar.xz -o source/target/vendor/aria2-1.37.0.tar.xz \
+            || curl -fL --retry 3 https://src.fedoraproject.org/repo/pkgs/aria2/aria2-1.37.0.tar.xz/sha512/df3b8b4de8fa8d78f203ea00c059e43585e18a229009f202e42e6a9e59db67d09df0dbba8a016e99ed73c82f59e4f8b26f86c2288afdbb96a6807cbe2c56e6b3/aria2-1.37.0.tar.xz -o source/target/vendor/aria2-1.37.0.tar.xz
           echo '60a420ad7085eb616cb6e2bdf0a7206d68ff3d37fb5a956dc44242eb2f79b66b  source/target/vendor/aria2-1.37.0.tar.xz' | sha256sum -c -
           tar -czf "dist/gdirect-${TAG#v}-source.tar.gz" -C source .
           cd dist

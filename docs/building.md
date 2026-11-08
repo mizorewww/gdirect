@@ -21,9 +21,12 @@ Windows builds use the MinGW GNU toolchain. In an MSYS2 MINGW64 shell, install `
 
 ```sh
 git clone https://github.com/mizorewww/gpui-kit-material.git ../gpui-kit-material
+git -C ../gpui-kit-material checkout "$(cat desktop/gpui-kit-material.rev)"
 ./scripts/build-libaria2.sh
 cargo run --release --manifest-path desktop/Cargo.toml
 ```
+
+`desktop/gpui-kit-material.rev` is the gpui-kit-material commit this client is built and released against. `python3 scripts/package-desktop.py --target aarch64-apple-darwin` turns a release build (`cargo build --release --target aarch64-apple-darwin` in `desktop/`) into the macOS app bundle the releases ship.
 
 `--db PATH` uses another state file, as the command line's `--db` does.
 

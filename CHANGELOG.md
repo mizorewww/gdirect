@@ -4,6 +4,7 @@
 
 ### Added
 
+- Desktop client for macOS on the release page: `gdirect-desktop-<version>-aarch64-apple-darwin.zip` and `…-x86_64-apple-darwin.zip` hold a `gdirect.app` (not notarized; allow it once in System Settings). Linux and Windows still build it from source.
 - Desktop client: an English interface. It follows the system language (Chinese for Chinese locales, English otherwise) and can be pinned in Settings › Appearance.
 
 ### Changed
