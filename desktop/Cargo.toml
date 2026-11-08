@@ -20,7 +20,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 serde_json = "1"
 # gpui-kit-material is not on crates.io yet: the sibling checkout, at the Kit
 # revision it is audited against. Its Material Symbols come from crates.io.
-gpui-kit = { git = "https://github.com/longbridge/gpui-kit", rev = "8dfdd49de27c0726dd052fb2cfd2b0807d17980b" }
+gpui-kit = { git = "https://github.com/longbridge/gpui-kit", rev = "8da4e005258ac0aac9a6a332cce746eeaafa08a8" }
 gpui-kit-material = { path = "../../gpui-kit-material/crates/material" }
 gpui-material-symbols = { version = "0.1", default-features = false, features = ["gpui-kit"] }
 
@@ -36,7 +36,8 @@ opt-level = 3
 # is built and tested with (the patch set of its workspace root).
 [patch.crates-io]
 gpui-kit = { path = "../../gpui-kit-material/vendor/gpui-kit" }
-gpui-base = { path = "../../gpui-kit-material/vendor/gpui-base" }
+# Base is Kit main's, as gpui-kit-material takes it.
+gpui-base = { git = "https://github.com/longbridge/gpui-kit", rev = "8da4e005258ac0aac9a6a332cce746eeaafa08a8" }
 gpui-pre = { path = "../../gpui-kit-material/vendor/gpui-pre" }
 gpui-pre-apple = { path = "../../gpui-kit-material/vendor/gpui-pre-apple" }
 gpui-pre-web = { path = "../../gpui-kit-material/vendor/gpui-pre-web" }
@@ -50,4 +51,3 @@ gpui-fast-windows = { path = "../../gpui-kit-material/vendor/gpui-fast-windows" 
 
 [patch."https://github.com/longbridge/gpui-kit"]
 gpui-kit = { path = "../../gpui-kit-material/vendor/gpui-kit" }
-gpui-base = { path = "../../gpui-kit-material/vendor/gpui-base" }
