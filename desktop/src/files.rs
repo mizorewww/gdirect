@@ -143,9 +143,11 @@ impl Gdirect {
         let dir = self.settings.download_dir.clone();
         let (folders, files): (Vec<File>, Vec<File>) = files.into_iter().partition(File::folder);
         if !files.is_empty() {
+            let account = self.account.clone().unwrap_or_default();
             let (added, skipped) = self.queues.enqueue(
                 files.into_iter().map(|f| (f, dir.clone())).collect(),
                 self.settings.office,
+                &account,
             );
             let message = match (added, skipped) {
                 (0, _) => "没有可下载的文件：已在队列中，或无法下载".to_owned(),
@@ -166,6 +168,7 @@ impl Gdirect {
         let Some(api) = self.api.clone() else {
             return;
         };
+        let account = self.account.clone().unwrap_or_default();
         let name = folder.name.clone();
         self.listing.push((name.clone(), 0));
         let tx = self.sender();
@@ -197,7 +200,7 @@ impl Gdirect {
                 let message = match result {
                     Ok(files) if files.is_empty() => format!("{name} 里没有文件"),
                     Ok(files) => {
-                        let (added, _) = this.queues.enqueue(files, this.settings.office);
+                        let (added, _) = this.queues.enqueue(files, this.settings.office, &account);
                         format!("{name}：已加入 {added} 个文件")
                     }
                     Err(e) => format!("无法列出 {name}：{e}"),
@@ -352,13 +355,16 @@ impl Gdirect {
     }
 
     pub fn upload(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let Some(account) = self.account.clone() else {
+            return;
+        };
         if self.api.is_none() || paths.is_empty() {
             return;
         }
         let parent = self.path.last().unwrap().clone();
         let n = paths.len();
         for path in paths {
-            self.queues.enqueue_upload(path, parent.clone());
+            self.queues.enqueue_upload(path, parent.clone(), &account);
         }
         self.say(format!("已加入上传队列 · {n} 项 → {}", parent.1), cx);
         self.pump(cx);

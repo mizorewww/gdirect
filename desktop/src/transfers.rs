@@ -41,6 +41,8 @@ impl State {
 
 pub struct Download {
     pub id: u64,
+    /// The account that queued it; it runs only while that account is active.
+    pub account: String,
     pub file: File,
     pub output: PathBuf,
     /// The export MIME type of a Google document.
@@ -69,6 +71,7 @@ impl Download {
 
 pub struct Upload {
     pub id: u64,
+    pub account: String,
     pub path: PathBuf,
     pub folder: bool,
     /// Destination folder id and name.
@@ -168,14 +171,23 @@ impl Queues {
     }
 
     /// Queues files into their directories; returns how many were added and skipped.
-    pub fn enqueue(&mut self, files: Vec<(File, PathBuf)>, office: bool) -> (usize, usize) {
+    pub fn enqueue(
+        &mut self,
+        files: Vec<(File, PathBuf)>,
+        office: bool,
+        account: &str,
+    ) -> (usize, usize) {
         let (mut added, mut skipped) = (0, 0);
         for (file, dir) in files {
             if file.folder() || !file.downloadable() {
                 skipped += 1;
                 continue;
             }
-            if let Some(i) = self.downloads.iter().position(|d| d.file.id == file.id) {
+            if let Some(i) = self
+                .downloads
+                .iter()
+                .position(|d| d.file.id == file.id && d.account == account)
+            {
                 if matches!(self.downloads[i].state, State::Queued | State::Running) {
                     skipped += 1;
                     continue;
@@ -195,6 +207,7 @@ impl Queues {
             let id = self.id();
             self.downloads.push(Download {
                 id,
+                account: account.to_owned(),
                 output: self.output_for(&dir, &name, &file.id),
                 export: export.map(|(mime, _)| mime.to_owned()),
                 size: file.size.as_ref().and_then(|s| s.parse().ok()),
@@ -209,10 +222,11 @@ impl Queues {
         (added, skipped)
     }
 
-    pub fn enqueue_upload(&mut self, path: PathBuf, parent: (String, String)) {
+    pub fn enqueue_upload(&mut self, path: PathBuf, parent: (String, String), account: &str) {
         let id = self.id();
         self.uploads.push(Upload {
             id,
+            account: account.to_owned(),
             folder: path.is_dir(),
             path,
             parent,
@@ -295,26 +309,29 @@ impl Queues {
         }
     }
 
-    /// The next queued download, marked running; the caller starts it.
-    pub fn next_download(&mut self) -> Option<&mut Download> {
+    /// The account's next queued download, marked running; the caller starts it.
+    pub fn next_download(&mut self, account: &str) -> Option<&mut Download> {
         if self.active_download().is_some() {
             return None;
         }
         let job = self
             .downloads
             .iter_mut()
-            .find(|d| d.state == State::Queued)?;
+            .find(|d| d.state == State::Queued && d.account == account)?;
         job.state = State::Running;
         job.stats = Stats::default();
         job.started = Some(Instant::now());
         Some(job)
     }
 
-    pub fn next_upload(&mut self) -> Option<&mut Upload> {
+    pub fn next_upload(&mut self, account: &str) -> Option<&mut Upload> {
         if self.active_upload().is_some() {
             return None;
         }
-        let job = self.uploads.iter_mut().find(|u| u.state == State::Queued)?;
+        let job = self
+            .uploads
+            .iter_mut()
+            .find(|u| u.state == State::Queued && u.account == account)?;
         job.state = State::Running;
         job.speed = 0;
         job.sampled = None;

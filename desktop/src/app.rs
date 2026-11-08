@@ -586,7 +586,7 @@ impl Gdirect {
 
     /// Starts the next queued download and upload when their lanes are free.
     pub fn pump(&mut self, _cx: &mut Context<Self>) {
-        let Some(api) = self.api.clone() else {
+        let (Some(api), Some(account)) = (self.api.clone(), self.account.clone()) else {
             return;
         };
         let options = transfers::Options {
@@ -598,12 +598,13 @@ impl Gdirect {
             },
             ca_cert: self.settings.ca_cert.clone(),
         };
-        if let Some(job) = self.queues.next_download() {
+        if let Some(job) = self.queues.next_download(&account) {
             let id = job.id;
             let cancel = Arc::new(AtomicBool::new(false));
             job.cancel = Some(cancel.clone());
             let snapshot = transfers::Download {
                 id,
+                account: account.clone(),
                 file: job.file.clone(),
                 output: job.output.clone(),
                 export: job.export.clone(),
@@ -659,7 +660,7 @@ impl Gdirect {
                 },
             );
         }
-        if let Some(job) = self.queues.next_upload() {
+        if let Some(job) = self.queues.next_upload(&account) {
             let id = job.id;
             let path = job.path.clone();
             let parent = job.parent.0.clone();

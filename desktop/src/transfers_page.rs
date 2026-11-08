@@ -53,6 +53,15 @@ impl Gdirect {
         cx.notify();
     }
 
+    /// A queued item's status: it runs only while its account is active.
+    fn waiting_for(&self, account: &str) -> String {
+        if self.account.as_deref() == Some(account) {
+            "排队中".into()
+        } else {
+            format!("等待切换到 {account}")
+        }
+    }
+
     fn download_rows(&self) -> Vec<Row> {
         let mut rows: Vec<Row> = self
             .listing
@@ -112,7 +121,7 @@ impl Gdirect {
                     )
                 }
                 State::Queued => (
-                    "排队中".to_owned(),
+                    self.waiting_for(&job.account),
                     ColorRole::ON_SURFACE_VARIANT,
                     format!(
                         "{}保存到 {}",
@@ -178,7 +187,7 @@ impl Gdirect {
                 let p = &job.progress;
                 let (status, ink, detail, actions) = match &job.state {
                     State::Running if job.folder => (
-                        "上传中",
+                        "上传中".to_owned(),
                         ColorRole::PRIMARY,
                         format!(
                             "{} / {} 个文件 · {} / {} · {} · 中断后重新上传即可续传",
@@ -191,7 +200,7 @@ impl Gdirect {
                         Vec::new(),
                     ),
                     State::Running => (
-                        "上传中",
+                        "上传中".to_owned(),
                         ColorRole::PRIMARY,
                         format!(
                             "{} / {} · {}",
@@ -202,7 +211,7 @@ impl Gdirect {
                         Vec::new(),
                     ),
                     State::Queued => (
-                        "排队中",
+                        self.waiting_for(&job.account),
                         ColorRole::ON_SURFACE_VARIANT,
                         if job.folder {
                             "递归上传，保留目录结构".to_owned()
@@ -217,7 +226,7 @@ impl Gdirect {
                         vec![("close", "从队列移除", Action::RemoveUpload(job.id))],
                     ),
                     State::Failed(error) => (
-                        "失败",
+                        "失败".to_owned(),
                         ColorRole::ERROR,
                         error.clone(),
                         vec![("close", "移除", Action::RemoveUpload(job.id))],
@@ -233,7 +242,7 @@ impl Gdirect {
                         if job.folder { "/" } else { "" },
                         job.parent.1
                     ),
-                    status: status.into(),
+                    status,
                     status_ink: ink,
                     fraction: Some(job.fraction()),
                     muted: job.state != State::Running,
