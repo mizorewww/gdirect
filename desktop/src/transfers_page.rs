@@ -49,7 +49,11 @@ impl Gdirect {
                 }
                 self.pump(cx);
             }
-            Action::RemoveDownload(id) => self.queues.downloads.retain(|d| d.id != id),
+            // A running job is cancelled first; its row must stay until it ends.
+            Action::RemoveDownload(id) => self
+                .queues
+                .downloads
+                .retain(|d| d.id != id || d.state == State::Running),
             Action::CancelUpload(id) => {
                 if let Some(job) = self.queues.upload(id)
                     && let Some(cancel) = &job.cancel
@@ -63,7 +67,10 @@ impl Gdirect {
                 }
                 self.pump(cx);
             }
-            Action::RemoveUpload(id) => self.queues.uploads.retain(|u| u.id != id),
+            Action::RemoveUpload(id) => self
+                .queues
+                .uploads
+                .retain(|u| u.id != id || u.state == State::Running),
         }
         cx.notify();
     }
