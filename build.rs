@@ -65,12 +65,21 @@ fn main() {
         }
     }
     if static_ssl && os == "macos" {
-        // Darwin's -l search can prefer a dylib even for Rust static native libraries.
+        // Darwin's -l search can prefer a dylib even for Rust static native
+        // libraries, so link from a directory that holds only the archives.
+        // Unlike a link argument, a library travels with the library crate to
+        // every binary built on it (the desktop client too).
         let ssl = ssl
             .as_ref()
             .expect("OPENSSL_PREFIX is required for macOS release builds");
-        println!("cargo:rustc-link-arg={ssl}/lib/libssl.a");
-        println!("cargo:rustc-link-arg={ssl}/lib/libcrypto.a");
+        let dir = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("openssl-static");
+        std::fs::create_dir_all(&dir).unwrap();
+        for lib in ["libssl.a", "libcrypto.a"] {
+            std::fs::copy(format!("{ssl}/lib/{lib}"), dir.join(lib)).unwrap();
+        }
+        println!("cargo:rustc-link-search=native={}", dir.display());
+        println!("cargo:rustc-link-lib=static=ssl");
+        println!("cargo:rustc-link-lib=static=crypto");
     } else {
         let linkage = if static_ssl { "static=" } else { "" };
         println!("cargo:rustc-link-lib={linkage}ssl");
