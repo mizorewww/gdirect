@@ -345,12 +345,22 @@ fn control(path: &Path) -> PathBuf {
     PathBuf::from(format!("{}.aria2", path.display()))
 }
 
-/// Where a download goes on disk: its queued path, unless an unrelated file
-/// is already there. A finished copy with the same MD5 stays (the engine
-/// skips it), and a partial one with its aria2 control file resumes.
-fn output_on_disk(path: &Path, md5: Option<&str>) -> anyhow::Result<PathBuf> {
+/// Beside a partial download: the Drive id of the file it belongs to.
+fn owner(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.gdirect", path.display()))
+}
+
+/// Where a download goes on disk: its queued path, unless something else is
+/// already there. A finished copy with the same MD5 stays (the engine skips
+/// it), a partial download of this same file resumes, and anything else, such
+/// as another file's partial download, gets a "name (n)" path.
+fn output_on_disk(path: &Path, md5: Option<&str>, file_id: &str) -> anyhow::Result<PathBuf> {
     let usable = |p: &Path| -> anyhow::Result<bool> {
-        Ok(!p.exists() || control(p).exists() || download::matches_md5(p, md5)?)
+        Ok(if control(p).exists() {
+            std::fs::read_to_string(owner(p)).is_ok_and(|id| id == file_id)
+        } else {
+            !p.exists() || download::matches_md5(p, md5)?
+        })
     };
     if usable(path)? {
         return Ok(path.to_owned());
@@ -387,7 +397,8 @@ pub fn run_download(
     } else {
         None
     };
-    let output = output_on_disk(&job.output, md5.as_deref())?;
+    let output = output_on_disk(&job.output, md5.as_deref(), &job.file.id)?;
+    std::fs::write(owner(&output), &job.file.id)?;
     let token = api.download_token()?;
     anyhow::ensure!(!cancel.load(Ordering::Relaxed), "已取消");
     // The API client may already have failed over; downloads follow it.
@@ -418,6 +429,7 @@ pub fn run_download(
         "已取消，已下载的部分会保留"
     );
     result?;
+    let _ = std::fs::remove_file(owner(&output));
     let size = output
         .metadata()
         .map(|m| format::bytes(m.len()))
@@ -530,21 +542,26 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("report.pdf");
         // Nothing there yet: the queued path.
-        assert_eq!(output_on_disk(&path, None).unwrap(), path);
+        assert_eq!(output_on_disk(&path, None, "a").unwrap(), path);
         // An unrelated file: the next free name.
         std::fs::write(&path, b"other").unwrap();
         assert_eq!(
-            output_on_disk(&path, Some("00000000000000000000000000000000")).unwrap(),
+            output_on_disk(&path, Some("00000000000000000000000000000000"), "a").unwrap(),
             dir.join("report (2).pdf")
         );
         // The same file (MD5 of "other"): kept, so the engine skips it.
         assert_eq!(
-            output_on_disk(&path, Some("795f3202b17cb6bc3d4b771d8c6c9eaf")).unwrap(),
+            output_on_disk(&path, Some("795f3202b17cb6bc3d4b771d8c6c9eaf"), "a").unwrap(),
             path
         );
-        // A partial download resumes in place.
+        // A partial download resumes in place, but only for its own file.
         std::fs::write(control(&path), b"").unwrap();
-        assert_eq!(output_on_disk(&path, None).unwrap(), path);
+        std::fs::write(owner(&path), "a").unwrap();
+        assert_eq!(output_on_disk(&path, None, "a").unwrap(), path);
+        assert_eq!(
+            output_on_disk(&path, None, "b").unwrap(),
+            dir.join("report (2).pdf")
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
