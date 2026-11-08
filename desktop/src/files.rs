@@ -930,13 +930,19 @@ impl Gdirect {
                     ),
                 )
             };
-            return div().flex_1().child(body).into_any_element();
+            return div()
+                .flex_1()
+                .relative()
+                .child(self.folder_context_menu(cx))
+                .child(body)
+                .into_any_element();
         }
         if self.grid {
             return self.render_grid(shown, cx).into_any_element();
         }
         let count = shown.len();
         drop(shown);
+        let background = self.folder_context_menu(cx);
         let header = self.render_header(cx);
         div()
             .flex_1()
@@ -945,6 +951,8 @@ impl Gdirect {
             .flex_col()
             .px(rem(8.))
             .pb(rem(16.))
+            .relative()
+            .child(background)
             .child(header)
             .child(
                 uniform_list(
@@ -961,6 +969,30 @@ impl Gdirect {
                 .flex_1(),
             )
             .into_any_element()
+    }
+
+    /// A right click on a file opens the same menu as its ⋮ button.
+    fn file_context_menu(
+        &self,
+        id: impl Into<ElementId>,
+        file: &File,
+        cx: &mut Context<Self>,
+    ) -> MaterialContextMenu {
+        let id: ElementId = id.into();
+        let (file, view) = (file.clone(), cx.entity().downgrade());
+        let menu_id = ElementId::from((id.clone(), "menu"));
+        MaterialContextMenu::new(id, move |_, _| {
+            file_menu(menu_id.clone(), &file, view.clone())
+        })
+    }
+
+    /// A right click on a folder's empty space offers what + does, and paste.
+    fn folder_context_menu(&self, cx: &mut Context<Self>) -> MaterialContextMenu {
+        let paste = self.clipboard.is_some();
+        let view = cx.entity().downgrade();
+        MaterialContextMenu::new("folder-context", move |_, _| {
+            folder_menu("folder-context-menu", paste, view.clone())
+        })
     }
 
     /// The list's columns give way, last first, as the window narrows.
@@ -1042,6 +1074,8 @@ impl Gdirect {
             .id(("row", ix))
             .h(rem(58.))
             .pt(rem(2.))
+            .relative()
+            .child(self.file_context_menu(("row-context", ix), file, cx))
             .child(
                 div()
                     .size_full()
@@ -1126,75 +1160,7 @@ impl Gdirect {
                 cx.notify();
             }
         }));
-        let item =
-            |label: &'static str,
-             icon: &'static str,
-             f: File,
-             act: fn(&mut Gdirect, File, &mut Window, &mut Context<Gdirect>)| {
-                MaterialMenuItem::new(label)
-                    .leading(ui::symbol(icon, false))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        this.row_menu = None;
-                        act(this, f.clone(), window, cx);
-                    }))
-            };
-        let menu = MaterialMenu::new(("row-menu", ix))
-            .width(200.)
-            .item(item(
-                if file.folder() {
-                    t("打开", "Open")
-                } else {
-                    t("下载", "Download")
-                },
-                if file.folder() {
-                    "folder_open"
-                } else {
-                    "download"
-                },
-                file.clone(),
-                |this, f, _, cx| this.activate(&f, cx),
-            ))
-            .when(file.folder(), |m| {
-                m.item(item(
-                    t("下载整个文件夹", "Download folder"),
-                    "download",
-                    file.clone(),
-                    |this, f, _, cx| this.download(vec![f], cx),
-                ))
-            })
-            .item(item(
-                t("重命名", "Rename"),
-                "edit",
-                file.clone(),
-                |this, f, window, cx| this.open_dialog(Dialog::Rename(f), window, cx),
-            ))
-            .item(item(
-                t("复制", "Copy"),
-                "content_copy",
-                file.clone(),
-                |this, f, _, cx| {
-                    this.selected = vec![f.id];
-                    this.yank(false, cx)
-                },
-            ))
-            .item(
-                item(
-                    t("剪切", "Cut"),
-                    "content_cut",
-                    file.clone(),
-                    |this, f, _, cx| {
-                        this.selected = vec![f.id];
-                        this.yank(true, cx)
-                    },
-                )
-                .divider(true),
-            )
-            .item(item(
-                t("移至回收站", "Move to trash"),
-                "delete",
-                file.clone(),
-                |this, f, window, cx| this.open_dialog(Dialog::Trash(vec![f]), window, cx),
-            ));
+        let menu = file_menu(("row-menu", ix), file, cx.entity().downgrade());
         let menu_id = file.id.clone();
         MenuPopup::new(("row-popup", ix), trigger, menu)
             .anchor(Anchor::TopRight)
@@ -1213,6 +1179,8 @@ impl Gdirect {
             .overflow_y_scroll()
             .px(rem(16.))
             .pb(rem(16.))
+            .relative()
+            .child(self.folder_context_menu(cx))
             .child(div().flex().flex_wrap().gap(rem(12.)).children(
                 shown.into_iter().enumerate().map(|(ix, file)| {
                     let selected = self.selected.contains(&file.id);
@@ -1221,6 +1189,8 @@ impl Gdirect {
                     let state = self.file_state(file);
                     div()
                         .id(("tile", ix))
+                        .relative()
+                        .child(self.file_context_menu(("tile-context", ix), file, cx))
                         .w(rem(176.))
                         .p(rem(12.))
                         .flex()
@@ -1284,4 +1254,109 @@ impl Gdirect {
                 }),
             ))
     }
+}
+
+/// A file's actions, for its ⋮ button and its right-click menu.
+fn file_menu(id: impl Into<ElementId>, file: &File, view: WeakEntity<Gdirect>) -> MaterialMenu {
+    let item = |label: &'static str,
+                icon: &'static str,
+                act: fn(&mut Gdirect, File, &mut Window, &mut Context<Gdirect>)| {
+        let (view, file) = (view.clone(), file.clone());
+        MaterialMenuItem::new(label)
+            .leading(ui::symbol(icon, false))
+            .on_click(move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                let _ = view.update(cx, |this, cx| {
+                    this.row_menu = None;
+                    act(this, file.clone(), window, cx);
+                });
+            })
+    };
+    let folder = file.folder();
+    MaterialMenu::new(id)
+        .width(200.)
+        .item(if folder {
+            item(t("打开", "Open"), "folder_open", |this, f, _, cx| {
+                this.activate(&f, cx)
+            })
+        } else {
+            item(t("下载", "Download"), "download", |this, f, _, cx| {
+                this.activate(&f, cx)
+            })
+        })
+        .when(folder, |m| {
+            m.item(item(
+                t("下载整个文件夹", "Download folder"),
+                "download",
+                |this, f, _, cx| this.download(vec![f], cx),
+            ))
+        })
+        .item(item(
+            t("重命名", "Rename"),
+            "edit",
+            |this, f, window, cx| this.open_dialog(Dialog::Rename(f), window, cx),
+        ))
+        .item(item(
+            t("复制", "Copy"),
+            "content_copy",
+            |this, f, _, cx| {
+                this.selected = vec![f.id];
+                this.yank(false, cx)
+            },
+        ))
+        .item(
+            item(t("剪切", "Cut"), "content_cut", |this, f, _, cx| {
+                this.selected = vec![f.id];
+                this.yank(true, cx)
+            })
+            .divider(true),
+        )
+        .item(item(
+            t("移至回收站", "Move to trash"),
+            "delete",
+            |this, f, window, cx| this.open_dialog(Dialog::Trash(vec![f]), window, cx),
+        ))
+}
+
+/// The current folder's actions, for a right click on its empty space.
+fn folder_menu(id: impl Into<ElementId>, paste: bool, view: WeakEntity<Gdirect>) -> MaterialMenu {
+    let item = |label: &'static str,
+                icon: &'static str,
+                act: fn(&mut Gdirect, &mut Window, &mut Context<Gdirect>)| {
+        let view = view.clone();
+        MaterialMenuItem::new(label)
+            .leading(ui::symbol(icon, false))
+            .on_click(move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                let _ = view.update(cx, |this, cx| act(this, window, cx));
+            })
+    };
+    MaterialMenu::new(id)
+        .width(220.)
+        .item(item(
+            t("新建文件夹", "New folder"),
+            "create_new_folder",
+            |this, window, cx| this.open_dialog(Dialog::NewFolder, window, cx),
+        ))
+        .item(item(
+            t("上传文件…", "Upload files…"),
+            "upload_file",
+            |this, _, cx| this.choose_upload(false, cx),
+        ))
+        .item(
+            item(
+                t("上传文件夹…", "Upload folder…"),
+                "drive_folder_upload",
+                |this, _, cx| this.choose_upload(true, cx),
+            )
+            .divider(true),
+        )
+        .when(paste, |m| {
+            m.item(item(
+                t("粘贴到此处", "Paste here"),
+                "content_paste",
+                |this, _, cx| this.paste(cx),
+            ))
+        })
+        .item(item(t("刷新", "Refresh"), "refresh", |this, _, cx| {
+            this.refresh(cx)
+        }))
 }
