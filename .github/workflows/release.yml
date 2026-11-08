@@ -258,17 +258,55 @@ jobs:
           fi
           gh release upload "$TAG" dist/*.tar.gz dist/*.zip dist/*.msi dist/SHA256SUMS --clobber
           gh release edit "$TAG" --draft=false --latest
-      - name: Update Homebrew tap in main
+      - name: Update Homebrew tap and AUR PKGBUILDs in main
         env:
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           git fetch origin main
           git checkout -B main origin/main
           python3 scripts/update-homebrew.py --version "${TAG#v}" --checksums dist/SHA256SUMS
+          python3 scripts/update-aur.py --version "${TAG#v}" --checksums dist/SHA256SUMS
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add Formula/gdirect.rb Casks/gdirect-desktop.rb
+          git add Formula/gdirect.rb Casks/gdirect-desktop.rb packaging/aur
           if ! git diff --cached --quiet; then
-            git commit -m "brew: update gdirect and gdirect-desktop to ${TAG#v}"
+            git commit -m "packaging: update Homebrew and AUR to ${TAG#v}"
             git push origin HEAD:main
           fi
+
+  aur:
+    name: Publish to AUR
+    needs: [publish]
+    if: startsWith(github.ref, 'refs/tags/v') || startsWith(inputs.tag, 'v')
+    runs-on: ubuntu-latest
+    container: archlinux:base
+    steps:
+      - name: Install dependencies
+        run: |
+          pacman -Sy --noconfirm git openssh python sudo binutils
+          id builder &>/dev/null || useradd -m builder
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Setup AUR SSH (builder)
+        env:
+          AUR_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          install -dm700 -o builder -g builder /home/builder/.ssh
+          printf '%s\n' "$AUR_KEY" > /home/builder/.ssh/aur_key
+          chmod 600 /home/builder/.ssh/aur_key
+          chown builder:builder /home/builder/.ssh/aur_key
+          ssh-keyscan -t ed25519 aur.archlinux.org > /home/builder/.ssh/known_hosts 2>/dev/null || true
+          chown builder:builder /home/builder/.ssh/known_hosts
+          chown -R builder:builder .
+      - name: Update AUR packages (as builder)
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          su builder -s /bin/bash -c "
+            export GIT_SSH_COMMAND='ssh -i /home/builder/.ssh/aur_key -o User=aur -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/home/builder/.ssh/known_hosts -o IdentitiesOnly=yes'
+            export HOME=/home/builder
+            git config --global user.name 'mizorewww (ci)'
+            git config --global user.email 'mizorewww@users.noreply.github.com'
+            python3 scripts/update-aur.py --version '${TAG#v}' --push
+          "

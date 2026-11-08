@@ -37,6 +37,8 @@ curl -fsSL https://raw.githubusercontent.com/mizorewww/gdirect/main/scripts/inst
 # or Homebrew (Homebrew 7 asks you to trust a tap before installing from it)
 brew tap mizorewww/gdirect https://github.com/mizorewww/gdirect && brew trust mizorewww/gdirect
 brew install mizorewww/gdirect/gdirect
+# or Arch Linux (AUR)
+paru -S gdirect-bin # or yay -S gdirect-bin (use gdirect-git to build from VCS)
 ```
 
 ```powershell
@@ -80,7 +82,7 @@ Download it with the buttons at the top, or from the [releases page](https://git
 
 - **macOS:** unzip and move `gdirect.app` to Applications, or, with the tap added and trusted as in [Quick start](#quick-start), `brew install --cask mizorewww/gdirect/gdirect-desktop`. The app is not notarized: the first time, open it, then allow it under System Settings › Privacy & Security › Open Anyway.
 - **Windows:** run `gdirect-desktop-windows-x64.msi`; gdirect appears in the Start menu. Windows SmartScreen may warn that the publisher is unknown: choose More info › Run anyway.
-- **Linux (x86_64, glibc 2.35+):** unpack the tarball and run `./install.sh` inside it for a menu entry, or start `gdirect-desktop` directly.
+- **Linux (x86_64, glibc 2.35+):** unpack the tarball and run `./install.sh` inside it for a menu entry, or start `gdirect-desktop` directly. On Arch Linux, install via AUR: `paru -S gdirect-desktop-bin` (or `gdirect-desktop-git`).
 
 To build it yourself, see [Building from source](docs/building.md#desktop-client).
 
