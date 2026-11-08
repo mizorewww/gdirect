@@ -363,8 +363,20 @@ impl Gdirect {
 
     pub fn render_transfers(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let uploads = self.show_uploads;
-        let dl_count = self.listing.len() + self.queues.downloads.len();
-        let up_count = self.queues.uploads.len();
+        // The tabs count what is still to do; finished items are listed below.
+        let dl_count = self.listing.len()
+            + self
+                .queues
+                .downloads
+                .iter()
+                .filter(|d| d.state.pending())
+                .count();
+        let up_count = self
+            .queues
+            .uploads
+            .iter()
+            .filter(|u| u.state.pending())
+            .count();
         let rows = if uploads {
             self.upload_rows()
         } else {
@@ -882,11 +894,12 @@ fn done_row(
                                 .size(rem(16.))
                                 .color(color(ColorRole::SUCCESS)),
                         )
-                        .child(ui::line(
-                            TypeRole::BodyMedium,
-                            ColorRole::ON_SURFACE_VARIANT,
-                            detail,
-                        )),
+                        // The note can be long (a skipped download says why); it wraps.
+                        .child(
+                            ui::text(TypeRole::BodyMedium, ColorRole::ON_SURFACE_VARIANT, detail)
+                                .flex_1()
+                                .min_w_0(),
+                        ),
                 ),
         )
         .child(primary)
