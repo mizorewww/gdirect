@@ -107,7 +107,22 @@ jobs:
         with:
           targets: x86_64-pc-windows-gnu
           components: rustfmt, clippy
-      - uses: msys2/setup-msys2@v2
+      # MSYS2's package mirrors time out now and then; try once more.
+      - id: msys2
+        uses: msys2/setup-msys2@v2
+        continue-on-error: true
+        with:
+          msystem: MINGW64
+          path-type: inherit
+          update: true
+          install: >-
+            make patch tar xz diffutils
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-python
+      - if: steps.msys2.outcome == 'failure'
+        uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
           path-type: inherit
