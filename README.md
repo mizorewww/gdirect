@@ -194,3 +194,15 @@ cargo install --path . --locked
 ```
 
 Windows builds use the MinGW GNU toolchain. In an MSYS2 MINGW64 shell, install `make patch tar xz mingw-w64-x86_64-gcc mingw-w64-x86_64-openssl mingw-w64-x86_64-pkgconf`, run `rustup target add x86_64-pc-windows-gnu`, set `OPENSSL_PREFIX=$(cygpath -m /mingw64)`, then run the two commands above with `--target x86_64-pc-windows-gnu` added to `cargo install`.
+
+### Desktop client (preview)
+
+`desktop/` holds a Material 3 desktop client built on [gpui-kit-material](https://github.com/mizorewww/gpui-kit-material): files, transfers, endpoints and settings in one window, on the same engine and SQLite state as the command line. It is its own Cargo workspace, so the command-line build never compiles the GUI. Until gpui-kit-material is on crates.io it needs that repository checked out beside this one, with Rust 1.98+:
+
+```sh
+git clone https://github.com/mizorewww/gpui-kit-material.git ../gpui-kit-material
+./scripts/build-libaria2.sh
+cargo run --release --manifest-path desktop/Cargo.toml
+```
+
+`--db PATH` uses another state file, as the command line's `--db` does.

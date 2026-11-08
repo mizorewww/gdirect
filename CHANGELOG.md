@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- A desktop client (preview) in `desktop/`, built with gpui-kit-material and Material Symbols: browse, filter, sort and manage files (new folder, rename, copy, move, trash), queue downloads and uploads (drag files in to upload) with live progress, scan and pin endpoints, and manage accounts, mount, download options and appearance. It shares the command line's engine and state. See "Build from source".
+
+### Changed
+
+- The engine is now a library crate (`gdirect`) that the command and the desktop client both use; `scan` reports its progress through events and can be stopped between batches.
+
 ## 0.10.0
 
 ### Removed
