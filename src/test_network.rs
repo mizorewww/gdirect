@@ -25,6 +25,9 @@ fn serve(
         while !stop.load(Ordering::Relaxed) && Instant::now() < deadline {
             match listener.accept() {
                 Ok((mut stream, _)) => {
+                    // BSD sockets inherit the listener's non-blocking mode, and a
+                    // read before the request arrives would fail with WouldBlock.
+                    stream.set_nonblocking(false).unwrap();
                     stream
                         .set_read_timeout(Some(Duration::from_secs(3)))
                         .unwrap();
