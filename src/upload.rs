@@ -852,10 +852,12 @@ mod tests {
         use std::{ffi::OsString, os::unix::ffi::OsStringExt};
         let dir = TempDir::new();
         let not_utf8 = dir.path().join(OsString::from_vec(vec![b'f', 0xff]));
-        fs::write(&not_utf8, b"x").unwrap();
-        let error = scan_root(dir.path(), "root".into()).unwrap_err();
-        assert!(format!("{error:#}").contains("not valid UTF-8"));
-        fs::remove_file(&not_utf8).unwrap();
+        // APFS refuses names that are not UTF-8, so only some file systems can test them.
+        if fs::write(&not_utf8, b"x").is_ok() {
+            let error = scan_root(dir.path(), "root".into()).unwrap_err();
+            assert!(format!("{error:#}").contains("not valid UTF-8"));
+            fs::remove_file(&not_utf8).unwrap();
+        }
         fs::write(dir.path().join("bad\nname"), b"x").unwrap();
         let error = scan_root(dir.path(), "root".into()).unwrap_err();
         assert!(format!("{error:#}").contains("control character"));
