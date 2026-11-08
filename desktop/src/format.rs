@@ -105,11 +105,37 @@ impl Kind {
             Self::GoogleDoc
         } else if mime == "application/pdf" || ext == "pdf" {
             Self::Pdf
-        } else if mime.starts_with("image/") {
+        // Drive often stores a generic MIME type; the extension decides then.
+        } else if mime.starts_with("image/")
+            || matches!(
+                ext.as_str(),
+                "png"
+                    | "jpg"
+                    | "jpeg"
+                    | "gif"
+                    | "webp"
+                    | "heic"
+                    | "heif"
+                    | "bmp"
+                    | "tif"
+                    | "tiff"
+                    | "svg"
+            )
+        {
             Self::Image
-        } else if mime.starts_with("video/") {
+        } else if mime.starts_with("video/")
+            || matches!(
+                ext.as_str(),
+                "mp4" | "mov" | "mkv" | "avi" | "webm" | "m4v" | "wmv"
+            )
+        {
             Self::Video
-        } else if mime.starts_with("audio/") {
+        } else if mime.starts_with("audio/")
+            || matches!(
+                ext.as_str(),
+                "mp3" | "flac" | "wav" | "m4a" | "aac" | "ogg" | "opus" | "aiff"
+            )
+        {
             Self::Audio
         } else if mime.contains("spreadsheet") || matches!(ext.as_str(), "xlsx" | "xls" | "csv") {
             Self::Sheet
@@ -197,6 +223,26 @@ pub fn home(path: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kinds_fall_back_to_the_extension() {
+        assert_eq!(
+            Kind::from_mime("application/octet-stream", "主题曲.flac"),
+            Kind::Audio
+        );
+        assert_eq!(
+            Kind::from_mime("application/octet-stream", "a.MOV"),
+            Kind::Video
+        );
+        assert_eq!(
+            Kind::from_mime("application/octet-stream", "b.heic"),
+            Kind::Image
+        );
+        assert_eq!(
+            Kind::from_mime("application/octet-stream", "c.bin"),
+            Kind::Other
+        );
+    }
 
     #[test]
     fn sizes_read_in_decimal_units() {
