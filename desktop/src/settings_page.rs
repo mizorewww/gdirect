@@ -742,6 +742,25 @@ impl Gdirect {
                             .into_any_element(),
                     ),
                 ),
+                {
+                    // The rclone a mount would run, found the way the engine finds it.
+                    let rclone = gdirect::mount::rclone();
+                    let found = rclone.is_absolute();
+                    ui::setting_row(
+                        if found { "check_circle" } else { "error" },
+                        "rclone",
+                        Some(if found {
+                            format::home(&rclone).into()
+                        } else {
+                            t(
+                                "未找到。macOS 用 brew install rclone 安装，或者用 gdirect 安装脚本的 --with-mount。",
+                                "Not found. On macOS run brew install rclone, or use the gdirect installer with --with-mount.",
+                            )
+                            .into()
+                        }),
+                        None,
+                    )
+                },
             ]))
             .child(ui::text(
                 TypeRole::BodySmall,
