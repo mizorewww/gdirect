@@ -261,11 +261,13 @@ impl Query {
             100,
         )
     }
+    /// The trash, latest first. Drive rejects `trashedTime` as a sort key;
+    /// recency is the closest it accepts.
     pub fn trash() -> Self {
         Self::new(
             "trashed = true".into(),
             Corpora::User,
-            Some("trashedTime desc"),
+            Some("recency desc"),
             1000,
         )
     }
@@ -1154,7 +1156,8 @@ mod tests {
         assert_eq!(q.page_size, 100);
         let q = Query::trash();
         assert_eq!(q.q, "trashed = true");
-        assert_eq!(q.order_by.as_deref(), Some("trashedTime desc"));
+        // Drive answers 400 Invalid Value to orderBy=trashedTime.
+        assert_eq!(q.order_by.as_deref(), Some("recency desc"));
     }
     #[test]
     fn query_params_name_corpora_and_shared_drives() {
