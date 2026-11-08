@@ -195,71 +195,9 @@ jobs:
           if-no-files-found: error
 
   desktop:
-    name: Build desktop ${{ matrix.target }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-15
-            target: aarch64-apple-darwin
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 75
-    env:
-      OPENSSL_STATIC: '1'
-    steps:
-      # The desktop client builds against gpui-kit-material checked out beside
-      # this repository, at the revision desktop/gpui-kit-material.rev pins.
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.tag || github.ref }}
-          path: gdirect
-      - id: kit
-        run: echo "rev=$(tr -d '[:space:]' < gdirect/desktop/gpui-kit-material.rev)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
-        with:
-          repository: mizorewww/gpui-kit-material
-          ref: ${{ steps.kit.outputs.rev }}
-          path: gpui-kit-material
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Install native dependencies
-        run: |
-          brew install openssl@3
-          echo "OPENSSL_PREFIX=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: release-desktop-${{ matrix.target }}
-          workspaces: gdirect/desktop -> target
-      - uses: actions/cache@v4
-        with:
-          path: gdirect/target/libaria2
-          key: aria2-v2-${{ matrix.os }}-${{ matrix.target }}-${{ hashFiles('gdirect/scripts/build-libaria2.sh', 'gdirect/vendor/**') }}
-      - working-directory: gdirect
-        run: test -f target/libaria2/lib/libaria2.a || ./scripts/build-libaria2.sh
-      - working-directory: gdirect/desktop
-        run: cargo test --locked --target ${{ matrix.target }}
-      - working-directory: gdirect/desktop
-        run: cargo build --release --locked --target ${{ matrix.target }}
-      - name: Check portable linkage
-        working-directory: gdirect/desktop
-        env:
-          TARGET: ${{ matrix.target }}
-        run: |
-          otool -L "target/$TARGET/release/gdirect-desktop" | tee /tmp/dependencies.txt
-          if grep -E 'lib(ssl|crypto)|/opt/homebrew|/usr/local/opt' /tmp/dependencies.txt; then exit 1; fi
-      - working-directory: gdirect
-        run: python3 scripts/package-desktop.py --target ${{ matrix.target }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-desktop-${{ matrix.target }}
-          path: gdirect/dist/*
-          if-no-files-found: error
+    uses: ./.github/workflows/desktop.yml
+    with:
+      ref: ${{ inputs.tag || github.ref }}
 
   publish:
     name: Publish complete release
@@ -277,7 +215,6 @@ jobs:
           python-version: '3.12'
       - uses: actions/download-artifact@v5
         with:
-          pattern: release-*
           path: dist
           merge-multiple: true
       - name: Validate version, checksums and complete asset set
@@ -292,8 +229,8 @@ jobs:
           for target in targets:
               ext = 'zip' if 'windows' in target else 'tar.gz'
               assert pathlib.Path(f'dist/gdirect-{version}-{target}.{ext}').is_file()
-          for target in ['aarch64-apple-darwin', 'x86_64-apple-darwin']:
-              assert pathlib.Path(f'dist/gdirect-desktop-{version}-{target}.zip').is_file()
+          for name in ['macos-arm64.zip', 'macos-x64.zip', 'linux-x64.tar.gz', 'windows-x64.msi']:
+              assert pathlib.Path(f'dist/gdirect-desktop-{name}').is_file(), name
           PY
           cd dist
           cat ./*.sha256 | tr -d '\r' > SHA256SUMS
@@ -319,7 +256,7 @@ jobs:
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --verify-tag --draft --title "gdirect $TAG" --generate-notes
           fi
-          gh release upload "$TAG" dist/*.tar.gz dist/*.zip dist/SHA256SUMS --clobber
+          gh release upload "$TAG" dist/*.tar.gz dist/*.zip dist/*.msi dist/SHA256SUMS --clobber
           gh release edit "$TAG" --draft=false --latest
       - name: Update Homebrew tap in main
         env:
@@ -330,8 +267,8 @@ jobs:
           python3 scripts/update-homebrew.py --version "${TAG#v}" --checksums dist/SHA256SUMS
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add Formula/gdirect.rb
+          git add Formula/gdirect.rb Casks/gdirect-desktop.rb
           if ! git diff --cached --quiet; then
-            git commit -m "brew: update gdirect to ${TAG#v}"
+            git commit -m "brew: update gdirect and gdirect-desktop to ${TAG#v}"
             git push origin HEAD:main
           fi

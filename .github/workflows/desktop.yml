@@ -1,0 +1,249 @@
+name: Desktop
+# Builds and packages the desktop client for macOS, Linux and Windows. The
+# release workflow calls it; run it by hand for a build-only check.
+on:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: Desktop ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    env:
+      OPENSSL_STATIC: '1'
+    steps:
+      # The client builds against gpui-kit-material checked out beside this
+      # repository, at the revision desktop/gpui-kit-material.rev pins.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          path: gdirect
+      - id: kit
+        run: echo "rev=$(tr -d '[:space:]' < gdirect/desktop/gpui-kit-material.rev)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: mizorewww/gpui-kit-material
+          ref: ${{ steps.kit.outputs.rev }}
+          path: gpui-kit-material
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install native dependencies
+        run: |
+          brew install openssl@3
+          echo "OPENSSL_PREFIX=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-${{ matrix.target }}
+          workspaces: gdirect/desktop -> target
+      - uses: actions/cache@v4
+        with:
+          path: gdirect/target/libaria2
+          key: aria2-v2-${{ matrix.os }}-${{ matrix.target }}-${{ hashFiles('gdirect/scripts/build-libaria2.sh', 'gdirect/vendor/**') }}
+      - working-directory: gdirect
+        run: test -f target/libaria2/lib/libaria2.a || ./scripts/build-libaria2.sh
+      - working-directory: gdirect/desktop
+        run: cargo test --locked --target ${{ matrix.target }}
+      - working-directory: gdirect/desktop
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Check portable linkage
+        working-directory: gdirect/desktop
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          otool -L "target/$TARGET/release/gdirect-desktop" | tee /tmp/dependencies.txt
+          if grep -E 'lib(ssl|crypto)|/opt/homebrew|/usr/local/opt' /tmp/dependencies.txt; then exit 1; fi
+      - working-directory: gdirect
+        run: python3 scripts/package-desktop.py --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.target }}
+          path: gdirect/dist/*
+          if-no-files-found: error
+
+  linux:
+    name: Desktop x86_64-unknown-linux-gnu
+    # The oldest supported glibc, as for the command line.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 75
+    env:
+      OPENSSL_STATIC: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          path: gdirect
+      - id: kit
+        run: echo "rev=$(tr -d '[:space:]' < gdirect/desktop/gpui-kit-material.rev)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: mizorewww/gpui-kit-material
+          ref: ${{ steps.kit.outputs.rev }}
+          path: gpui-kit-material
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
+            libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-linux
+          workspaces: gdirect/desktop -> target
+      - uses: actions/cache@v4
+        with:
+          path: gdirect/target/libaria2
+          key: aria2-v2-ubuntu-22.04-x86_64-unknown-linux-gnu-${{ hashFiles('gdirect/scripts/build-libaria2.sh', 'gdirect/vendor/**') }}
+      - working-directory: gdirect
+        run: test -f target/libaria2/lib/libaria2.a || ./scripts/build-libaria2.sh
+      - working-directory: gdirect/desktop
+        run: cargo test --locked --target x86_64-unknown-linux-gnu
+      - working-directory: gdirect/desktop
+        run: cargo build --release --locked --target x86_64-unknown-linux-gnu
+      - name: Check portable linkage
+        working-directory: gdirect/desktop
+        run: |
+          ldd target/x86_64-unknown-linux-gnu/release/gdirect-desktop | tee /tmp/dependencies.txt
+          if grep -E 'lib(ssl|crypto)' /tmp/dependencies.txt; then exit 1; fi
+      - working-directory: gdirect
+        run: python3 scripts/package-desktop.py --target x86_64-unknown-linux-gnu
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-x86_64-unknown-linux-gnu
+          path: gdirect/dist/*
+          if-no-files-found: error
+
+  windows:
+    name: Desktop x86_64-pc-windows-gnu
+    runs-on: windows-2025
+    timeout-minutes: 90
+    env:
+      OPENSSL_STATIC: '1'
+      CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: gcc
+      CC: gcc
+      CXX: g++
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          path: gdirect
+      - id: kit
+        shell: bash
+        run: echo "rev=$(tr -d '[:space:]' < gdirect/desktop/gpui-kit-material.rev)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: mizorewww/gpui-kit-material
+          ref: ${{ steps.kit.outputs.rev }}
+          path: gpui-kit-material
+      # The engine's libaria2 is built with MinGW, so the client is too.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # MSYS2's package mirrors time out now and then; try once more.
+      - id: msys2
+        uses: msys2/setup-msys2@v2
+        continue-on-error: true
+        with:
+          msystem: MINGW64
+          path-type: inherit
+          update: true
+          install: >-
+            make patch tar xz diffutils
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-pkgconf
+      - if: steps.msys2.outcome == 'failure'
+        name: Remove the partial MSYS2 install
+        shell: pwsh
+        run: Remove-Item -Recurse -Force "$env:RUNNER_TEMP\msys64" -ErrorAction SilentlyContinue
+      - if: steps.msys2.outcome == 'failure'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          path-type: inherit
+          update: true
+          install: >-
+            make patch tar xz diffutils
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-pkgconf
+      - name: Configure OpenSSL prefix
+        shell: msys2 {0}
+        run: echo "OPENSSL_PREFIX=$(cygpath -m /mingw64)" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-windows-gnu
+          workspaces: gdirect/desktop -> target
+      - uses: actions/cache@v4
+        with:
+          path: gdirect/target/libaria2
+          key: aria2-v2-windows-gnu-${{ hashFiles('gdirect/scripts/build-libaria2.sh', 'gdirect/vendor/**') }}
+      - shell: msys2 {0}
+        working-directory: gdirect
+        run: test -f target/libaria2/lib/libaria2.a || ./scripts/build-libaria2.sh
+      - shell: msys2 {0}
+        working-directory: gdirect/desktop
+        run: cargo build --release --locked --target x86_64-pc-windows-gnu
+      - name: Check portable linkage
+        shell: msys2 {0}
+        working-directory: gdirect/desktop
+        run: |
+          set -euo pipefail
+          objdump -p target/x86_64-pc-windows-gnu/release/gdirect-desktop.exe | grep 'DLL Name:' | tee /tmp/dependencies.txt
+          if grep -Ei 'libgcc|libstdc|libwinpthread|libssl|libcrypto|msys-' /tmp/dependencies.txt; then exit 1; fi
+      - name: Install WiX
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+      - name: Build the installer
+        shell: pwsh
+        working-directory: gdirect
+        run: python scripts/package-desktop.py --target x86_64-pc-windows-gnu
+      - name: Install, start and remove the MSI
+        shell: pwsh
+        working-directory: gdirect
+        run: |
+          $msi = Resolve-Path dist/gdirect-desktop-windows-x64.msi
+          $p = Start-Process msiexec -ArgumentList "/i `"$msi`" /qn /l*v install.log" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content install.log -Tail 50; throw "install failed: $($p.ExitCode)" }
+          $exe = "$env:ProgramFiles\gdirect\gdirect-desktop.exe"
+          if (-not (Test-Path $exe)) { throw 'gdirect-desktop.exe was not installed' }
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          $version = & $exe --version | Out-String
+          if ($version -notmatch '^gdirect-desktop ') { throw "unexpected --version output: $version" }
+          if (-not (Test-Path "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\gdirect.lnk")) { throw 'no Start menu shortcut' }
+          $p = Start-Process msiexec -ArgumentList "/x `"$msi`" /qn" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "uninstall failed: $($p.ExitCode)" }
+          if (Test-Path $exe) { throw 'uninstall left gdirect-desktop.exe behind' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-x86_64-pc-windows-gnu
+          path: gdirect/dist/*
+          if-no-files-found: error
