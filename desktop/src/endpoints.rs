@@ -181,10 +181,15 @@ impl Gdirect {
                             .child("导入候选 IP"),
                     )
                     .child(if scanning {
+                        let stopping = self
+                            .scan
+                            .as_ref()
+                            .is_some_and(|(cancel, _)| cancel.load(Ordering::Relaxed));
                         MaterialButton::new("scan")
                             .icon(Symbol::STOP)
+                            .disabled(stopping)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.stop_scan(cx)))
-                            .child("停止扫描")
+                            .child(if stopping { "正在停止…" } else { "停止扫描" })
                     } else {
                         MaterialButton::new("scan")
                             .icon(Symbol::RADAR)
