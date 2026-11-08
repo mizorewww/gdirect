@@ -203,17 +203,19 @@ impl Gdirect {
                 .children(groups.into_iter().map(|group| {
                     segmented_list(group.into_iter().map(|(pane, sub, icon, tint)| {
                         let title = pane_title(pane);
-                        // Tinted segments on the surface, so each group reads
-                        // as a card, as the panes' groups do.
+                        // Card segments on the surface, as the panes' groups are.
                         ListItem::new(title, title)
-                            .container(ColorRole::SURFACE_CONTAINER_LOW)
+                            .container(ui::card())
                             .supporting(sub)
                             .leading(ListLeading::Tinted(ui::symbol(icon, true), tint, 40.))
                             .selected(two_panes && self.pane == pane)
-                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                                 this.pane = pane;
                                 this.pane_open = true;
                                 this.reload_accounts();
+                                // The item leaves the tree with the list: the
+                                // page keeps the keys (Back, the menu bar).
+                                this.focus_now(window, cx);
                                 cx.notify();
                             }))
                     }))
@@ -245,40 +247,65 @@ impl Gdirect {
                         Symbol::ARROW_BACK,
                         t("返回设置", "Back to settings"),
                     )
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.pane_open = false;
-                        cx.notify();
-                    })),
+                    .on_click(cx.listener(
+                        |this, _: &ClickEvent, window, cx| {
+                            this.pane_open = false;
+                            this.focus_now(window, cx);
+                            cx.notify();
+                        },
+                    )),
                 )
                 .child(ui::line(TypeRole::TitleLarge, ColorRole::ON_SURFACE, title))
                 .into_any_element()
         };
-        // Each pane scrolls on its own, so switching starts at the top.
-        let detail = div()
+        // Each pane scrolls on its own, so switching starts at the top; its
+        // header (and the way back) stays above what scrolls.
+        let header = div()
+            .flex_none()
+            .w_full()
+            .max_w(rem(MAX_W))
+            .when(!two_panes, |d| d.mx_auto())
+            .px(rem(layout.pad))
+            .pt(rem(if two_panes { layout.pad } else { 12. }))
+            .pb(rem(if two_panes { 16. } else { 8. }))
+            .child(header);
+        let body = div()
             .id(("settings-detail", self.pane as usize))
             .flex_1()
-            .min_w_0()
-            .h_full()
+            .min_h_0()
             .overflow_y_scroll()
-            .bg(color(ColorRole::SURFACE_CONTAINER_LOW))
             .child(
                 div()
                     .w_full()
                     .max_w(rem(MAX_W))
                     .when(!two_panes, |d| d.mx_auto())
-                    .p(rem(layout.pad))
-                    .when(!two_panes, |d| d.pt(rem(12.)))
-                    .flex()
-                    .flex_col()
-                    .gap(rem(if two_panes { 24. } else { 16. }))
-                    .child(header)
+                    .px(rem(layout.pad))
+                    .pt(rem(8.))
+                    .pb(rem(layout.pad))
                     .child(detail),
             );
+        let detail = div()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .flex()
+            .flex_col()
+            .bg(color(ColorRole::SURFACE))
+            .child(header)
+            .child(body);
         div()
             .size_full()
             .flex()
             .when(two_panes || !self.pane_open, |d| d.child(list))
             .when(two_panes || self.pane_open, |d| d.child(detail))
+    }
+
+    /// Whether a pane is shown alone, which Back, Escape and the Settings
+    /// rail item close to show the list.
+    pub fn settings_pane_alone(&self) -> bool {
+        self.page == crate::app::Page::Settings
+            && self.pane_open
+            && !self.settings_layout().two_panes
     }
 
     fn pane_account(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -870,28 +897,51 @@ impl Gdirect {
     /// The rclone row when there is none: how to install it, the command
     /// in monospace with a button that copies it.
     fn rclone_missing(&self, cx: &mut Context<Self>) -> AnyElement {
-        let (how, command) = if cfg!(target_os = "macos") {
+        use ui::Face::{Interface, Mono};
+        // Commands and flags in monospace, as the command under them is.
+        let (how, command): (Vec<(&str, ui::Face)>, &str) = if cfg!(target_os = "macos") {
             (
-                t(
-                    "未找到，挂载前需要安装。用 Homebrew 安装，或者用 gdirect 安装脚本的 --with-mount：",
-                    "Not found; mounting needs it. Install it with Homebrew, or use the gdirect installer with --with-mount:",
-                ),
+                vec![
+                    (
+                        t(
+                            "未找到，挂载前需要安装。用 Homebrew 安装，或者用 gdirect 安装脚本的 ",
+                            "Not found; mounting needs it. Install it with Homebrew, or use the gdirect installer with ",
+                        ),
+                        Interface,
+                    ),
+                    ("--with-mount", Mono),
+                    (t("：", ":"), Interface),
+                ],
                 "brew install rclone",
             )
         } else if cfg!(target_os = "windows") {
             (
-                t(
-                    "未找到，挂载前需要安装。用 winget 安装，或者用 Scoop（scoop install rclone）：",
-                    "Not found; mounting needs it. Install it with winget, or with Scoop (scoop install rclone):",
-                ),
+                vec![
+                    (
+                        t(
+                            "未找到，挂载前需要安装。用 winget 安装，或者用 Scoop（",
+                            "Not found; mounting needs it. Install it with winget, or with Scoop (",
+                        ),
+                        Interface,
+                    ),
+                    ("scoop install rclone", Mono),
+                    (t("）：", "):"), Interface),
+                ],
                 "winget install Rclone.Rclone",
             )
         } else {
             (
-                t(
-                    "未找到，挂载前需要安装。发行版的软件包常常早于 1.75.2，可以用 rclone 官方脚本安装，或者用 gdirect 安装脚本的 --with-mount：",
-                    "Not found; mounting needs it. Distribution packages are often older than 1.75.2, so install it with rclone’s script, or use the gdirect installer with --with-mount:",
-                ),
+                vec![
+                    (
+                        t(
+                            "未找到，挂载前需要安装。发行版的软件包常常早于 1.75.2，可以用 rclone 官方脚本安装，或者用 gdirect 安装脚本的 ",
+                            "Not found; mounting needs it. Distribution packages are often older than 1.75.2, so install it with rclone’s script, or use the gdirect installer with ",
+                        ),
+                        Interface,
+                    ),
+                    ("--with-mount", Mono),
+                    (t("：", ":"), Interface),
+                ],
                 "sudo -v ; curl https://rclone.org/install.sh | sudo bash",
             )
         };
@@ -927,13 +977,11 @@ impl Gdirect {
                 div()
                     .flex()
                     .flex_col()
-                    // The installer's flag keeps its hyphens (Roboto); the
-                    // full-width punctuation falls back to the CJK face.
-                    .child(ui::latin(ui::text(
+                    .child(ui::rich(
                         TypeRole::BodyMedium,
                         ColorRole::ON_SURFACE_VARIANT,
-                        how,
-                    )))
+                        &how,
+                    ))
                     .child(command_line)
                     .into_any_element(),
             ),
@@ -1143,6 +1191,14 @@ fn section(label: &'static str) -> Div {
 /// The Keyboard shortcuts pane's view, made the first time it shows.
 struct ShortcutsPane(Entity<ShortcutsView>);
 
+/// A shortcut is being recorded, which takes Escape before anything else.
+static RECORDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the Keyboard shortcuts pane is recording a keystroke.
+pub fn recording_shortcut() -> bool {
+    RECORDING.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 impl Global for ShortcutsPane {}
 
 /// Lists the shortcuts and rebinds them: a click on a binding records the
@@ -1192,6 +1248,7 @@ impl ShortcutsView {
     }
 
     fn start(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        RECORDING.store(true, std::sync::atomic::Ordering::Relaxed);
         self.recording = Some(id);
         self.rejected = false;
         self.conflict = None;
@@ -1200,6 +1257,7 @@ impl ShortcutsView {
     }
 
     fn stop(&mut self, cx: &mut Context<Self>) {
+        RECORDING.store(false, std::sync::atomic::Ordering::Relaxed);
         self.recording = None;
         self.rejected = false;
         cx.notify();
@@ -1564,8 +1622,8 @@ impl Render for ShortcutsView {
                     .gap(rem(12.))
                     .child(
                         ui::footnote(t(
-                            "文本编辑快捷键（复制、粘贴、撤销等）不受影响。",
-                            "Text-editing shortcuts (copy, paste, undo…) aren’t affected.",
+                            "文本框中的编辑快捷键（复制、粘贴、撤销等）不受这里的设置影响。",
+                            "Editing shortcuts inside text fields (copy, paste, undo…) aren’t affected by these settings.",
                         ))
                         .flex_1()
                         .min_w(rem(200.)),
@@ -1603,7 +1661,12 @@ fn key_caps(keys: &str, os: OperatingSystem) -> Div {
                 .items_center()
                 .justify_center()
                 .rounded(rem(6.))
-                .bg(color(ColorRole::SURFACE_CONTAINER_HIGHEST))
+                // A step above the card it sits on: in dark, the brightest surface.
+                .bg(color(if gpui_kit_material::theme::is_dark() {
+                    ColorRole::SURFACE_BRIGHT
+                } else {
+                    ColorRole::SURFACE_CONTAINER_HIGHEST
+                }))
                 .border_1()
                 .border_color(color(ColorRole::OUTLINE_VARIANT))
                 .text_color(color(ColorRole::ON_SURFACE)),

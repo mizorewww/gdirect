@@ -72,6 +72,15 @@ pub fn search_placeholder() -> &'static str {
 }
 
 /// What the snackbar's Undo reverses.
+/// A location in Back and Forward's history, with how it was shown.
+#[derive(Clone, Debug)]
+pub struct Visit {
+    pub location: Location,
+    pub sort: (SortKey, bool),
+    /// A search's chips, which its spec keeps only as a query.
+    pub filters: places::Filters,
+}
+
 pub enum Undoable {
     /// Files moved to the trash.
     Untrash(Vec<File>),
@@ -239,6 +248,17 @@ impl Gdirect {
     /// Selects the items waiting for the listing (see
     /// [`Gdirect::pending_select`]) that it has, and scrolls to the first.
     fn select_pending(&mut self) {
+        if std::mem::take(&mut self.cursor_first)
+            && self.pending_select.is_empty()
+            && self.cursor.is_none()
+            && let Some(first) = self.shown().first().map(|f| f.id.clone())
+        {
+            // The ring only: a selection would cover the breadcrumb with the
+            // selection bar. The first arrow selects the row it is on.
+            self.cursor = Some(first);
+            self.keyboard_cursor = true;
+            return;
+        }
         let want = std::mem::take(&mut self.pending_select);
         let found: Vec<String> = want
             .into_iter()
@@ -347,16 +367,15 @@ impl Gdirect {
 
     /// Shows the top of a place.
     pub fn go_place(&mut self, place: Place, cx: &mut Context<Self>) {
-        // Lists in time order start with the latest.
-        self.sort = match place {
+        // Lists in time order start with the latest. (History keeps the
+        // sort of the place being left, so it changes after.)
+        let sort = match place {
             Place::Recent | Place::Shared | Place::Trash => (SortKey::Modified, false),
             _ => (SortKey::Name, true),
         };
-        self.set_location(Location::new(place), cx);
-    }
-
-    fn set_location(&mut self, location: Location, cx: &mut Context<Self>) {
+        let location = Location::new(place);
         self.remember(&location);
+        self.sort = sort;
         self.arrive(location, cx);
     }
 
@@ -372,13 +391,49 @@ impl Gdirect {
         self.go(Page::Files, cx);
     }
 
+    /// The location on screen as history keeps it: with its sort, and a
+    /// search's chips.
+    fn visit(&self) -> Visit {
+        Visit {
+            location: self.location.clone(),
+            sort: self.sort,
+            filters: self.filters,
+        }
+    }
+
+    /// Shows a location Back or Forward returns to, as it was left: its
+    /// sort, and a search's text and chips.
+    fn revisit(&mut self, visit: Visit, cx: &mut Context<Self>) {
+        self.sort = visit.sort;
+        if let Place::Search(spec) = &visit.location.place {
+            self.filters = visit.filters;
+            self.clear_search = false;
+            self.restore_search = Some(spec.text.clone());
+            self.search_serial += 1;
+            // Clearing it goes back to where it started: the step before it.
+            if self.location.search().is_none() {
+                self.before_search = self
+                    .history
+                    .last()
+                    .map(|v| v.location.clone())
+                    .filter(|l| l.search().is_none());
+            }
+            self.location = visit.location;
+            self.entered(cx);
+            self.go(Page::Files, cx);
+        } else {
+            self.restore_search = None;
+            self.arrive(visit.location, cx);
+        }
+    }
+
     /// Records the location being left for `next`, for Back.
     fn remember(&mut self, next: &Location) {
         if *next == self.location {
             return;
         }
-        if self.history.last() != Some(&self.location) {
-            self.history.push(self.location.clone());
+        if self.history.last().map(|v| &v.location) != Some(&self.location) {
+            self.history.push(self.visit());
             if self.history.len() > 100 {
                 self.history.remove(0);
             }
@@ -392,17 +447,17 @@ impl Gdirect {
             return self.go(Page::Files, cx);
         };
         // Back up to a folder above selects the one it came from, as going up does.
-        let from = (previous.place == self.location.place
-            && self.location.path.starts_with(&previous.path))
+        let from = (previous.location.place == self.location.place
+            && self.location.path.starts_with(&previous.location.path))
         .then(|| {
             self.location
                 .path
-                .get(previous.path.len())
+                .get(previous.location.path.len())
                 .map(|c| c.id.clone())
         })
         .flatten();
-        self.future.push(self.location.clone());
-        self.arrive(previous, cx);
+        self.future.push(self.visit());
+        self.revisit(previous, cx);
         self.pending_select.extend(from);
     }
 
@@ -411,8 +466,8 @@ impl Gdirect {
         let Some(next) = self.future.pop() else {
             return self.go(Page::Files, cx);
         };
-        self.history.push(self.location.clone());
-        self.arrive(next, cx);
+        self.history.push(self.visit());
+        self.revisit(next, cx);
     }
 
     /// A place chosen from the Go menu or its shortcut.
@@ -428,11 +483,14 @@ impl Gdirect {
             self.reveal(folder.clone(), cx);
             return;
         }
+        let by_keyboard = std::mem::take(&mut self.keyboard_open);
         let mut next = self.location.clone();
         next.enter(folder);
         self.remember(&next);
         self.location = next;
         self.entered(cx);
+        // Opened from the keyboard, the keys go on in the folder's first row.
+        self.cursor_first = by_keyboard;
     }
 
     /// Goes up to breadcrumb `depth`, with the folder it came from selected.
@@ -485,9 +543,10 @@ impl Gdirect {
                 if this.root_id.is_none() {
                     this.root_id = root.clone();
                 }
-                this.sort = (SortKey::Name, true);
                 let location = places::located(&folder, chain, root.as_deref(), &this.drives);
-                this.set_location(location, cx);
+                this.remember(&location);
+                this.sort = (SortKey::Name, true);
+                this.arrive(location, cx);
             },
         );
         cx.notify();
@@ -500,11 +559,13 @@ impl Gdirect {
         self.cursor = None;
         self.anchor = None;
         self.pending_select.clear();
+        self.cursor_first = false;
         self.list_error = None;
         self.filter.clear();
         self.clear_filter = true;
         self.chip_menu = None;
         self.rows.scroll_to_item(0, ScrollStrategy::Top);
+        self.grid_scroll.set_offset(Point::default());
         self.refresh(cx);
     }
 
@@ -556,14 +617,12 @@ impl Gdirect {
         if self.before_search.is_none() {
             self.before_search = Some(self.location.clone());
         }
-        // Full-text results come in relevance order; keep it.
-        if self.location.search().is_none() {
-            self.sort = (SortKey::Name, true);
-        }
         let next = Location::new(Place::Search(spec));
         // Refining a search is one step back, not one per keystroke.
         if self.location.search().is_none() {
             self.remember(&next);
+            // Full-text results come in relevance order; keep it.
+            self.sort = (SortKey::Name, true);
         }
         self.location = next;
         self.entered(cx);
@@ -611,6 +670,7 @@ impl Gdirect {
     ) {
         window.focus(&self.files_focus, cx);
         self.keyboard_cursor = false;
+        self.keyboard_open = false;
         let id = file.id.clone();
         if event.click_count() >= 2 {
             self.selected.retain(|s| *s != id);
@@ -665,7 +725,11 @@ impl Gdirect {
             .cursor
             .as_ref()
             .and_then(|c| ids.iter().position(|i| i == c));
+        // A cursor on a row nothing selects (a folder just opened from the
+        // keyboard) selects that row first.
+        let unselected = current.is_some_and(|i| !self.selected.contains(&ids[i]));
         let next = match current {
+            Some(i) if unselected && !extend => i,
             Some(i) => (i as isize + delta).clamp(0, ids.len() as isize - 1) as usize,
             None if delta > 0 => 0,
             None => ids.len() - 1,
@@ -687,6 +751,25 @@ impl Gdirect {
         self.cursor = Some(id);
         self.keyboard_cursor = true;
         self.rows.scroll_to_item(next, ScrollStrategy::Nearest);
+        cx.notify();
+    }
+
+    /// Home and End: the cursor to the first or last row, selecting it.
+    fn move_cursor_to_end(&mut self, last: bool, cx: &mut Context<Self>) {
+        let ids: Vec<String> = self.shown().iter().map(|f| f.id.clone()).collect();
+        let Some(ix) = (if last {
+            ids.len().checked_sub(1)
+        } else {
+            (!ids.is_empty()).then_some(0)
+        }) else {
+            return;
+        };
+        let id = ids[ix].clone();
+        self.selected = vec![id.clone()];
+        self.anchor = Some(id.clone());
+        self.cursor = Some(id);
+        self.keyboard_cursor = true;
+        self.rows.scroll_to_item(ix, ScrollStrategy::Nearest);
         cx.notify();
     }
 
@@ -777,6 +860,7 @@ impl Gdirect {
                 [one] => {
                     let one = one.clone();
                     this.selected.clear();
+                    this.keyboard_open = true;
                     this.activate(&one, cx);
                 }
                 _ => {
@@ -826,6 +910,8 @@ impl Gdirect {
             }
             let depth = this.location.path.len();
             if depth > 0 {
+                // The folder it came from gets the keyboard's cursor.
+                this.keyboard_cursor = true;
                 this.back_to(depth - 1, cx);
             }
         }))
@@ -841,6 +927,18 @@ impl Gdirect {
                 window.focus(&this.files_focus, cx);
             }
             this.move_cursor(1, false, cx);
+        }))
+        .on_action(cx.listener(|this, _: &CursorFirst, window, cx| {
+            if this.typing(window, cx) {
+                return cx.propagate();
+            }
+            this.move_cursor_to_end(false, cx);
+        }))
+        .on_action(cx.listener(|this, _: &CursorLast, window, cx| {
+            if this.typing(window, cx) {
+                return cx.propagate();
+            }
+            this.move_cursor_to_end(true, cx);
         }))
         .on_action(cx.listener(|this, _: &ExtendUp, window, cx| {
             if this.typing(window, cx) {
@@ -1492,6 +1590,12 @@ impl Gdirect {
                 input.update(cx, |input, cx| input.set_value("", window, cx));
             });
         }
+        if let Some(text) = self.restore_search.take() {
+            let input = self.search_input.clone();
+            window.on_next_frame(move |window, cx| {
+                input.update(cx, |input, cx| input.set_value(text, window, cx));
+            });
+        }
         if std::mem::take(&mut self.focus_search) {
             let input = self.search_input.clone();
             window.on_next_frame(move |window, cx| {
@@ -1545,8 +1649,8 @@ impl Gdirect {
                             TypeRole::BodyMedium,
                             ColorRole::ON_SURFACE_VARIANT,
                             t(
-                                "回收站中的项目会在 30 天后被永久删除",
-                                "Items in trash are deleted forever after 30 days",
+                                "移到回收站的项目会在 30 天后被永久删除。",
+                                "Items in the trash are deleted forever after 30 days.",
                             ),
                         )
                         .px(rem(24.))
@@ -1704,7 +1808,8 @@ impl Gdirect {
                                                     .text_color(color(
                                                         ColorRole::ON_SURFACE_VARIANT,
                                                     ))
-                                                    .child(format!("{ms} ms")),
+                                                    .whitespace_nowrap()
+                                                    .child(crate::endpoints::latency(ms)),
                                             )
                                         }),
                                 )
@@ -1751,17 +1856,19 @@ impl Gdirect {
     /// colour and its latency in short, the route in a tooltip; a click
     /// opens Routes.
     fn render_route_dot(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let latency = self.current_route().and_then(|(_, ms, _)| ms).map(|ms| {
-            if ms < 1000 {
-                format!("{ms} ms")
-            } else {
-                format!("{:.1} s", ms as f32 / 1000.)
-            }
-        });
+        let latency = self
+            .current_route()
+            .and_then(|(_, ms, _)| ms)
+            .map(crate::endpoints::latency);
         let (ink, tip): (ColorRole, SharedString) = match self.current_route() {
             Some((ip, Some(ms), _)) => (
                 format::latency_role(Some(ms)),
-                tf!("当前线路 {ip} · {ms} ms", "Route {ip} · {ms} ms").into(),
+                tf!(
+                    "当前线路 {ip} · {}",
+                    "Route {ip} · {}",
+                    crate::endpoints::latency(ms)
+                )
+                .into(),
             ),
             Some((ip, None, _)) => (
                 ColorRole::SUCCESS,
@@ -1780,6 +1887,9 @@ impl Gdirect {
             .gap(rem(8.))
             .flex_none()
             .rounded_full()
+            // Outlined, as the wide window's route chip is.
+            .border_1()
+            .border_color(color(ColorRole::OUTLINE))
             .flex()
             .items_center()
             .justify_center()
@@ -2232,11 +2342,35 @@ impl Gdirect {
 
     fn render_selection(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let picked = self.picked();
-        let label: SharedString = match picked.as_slice() {
-            [one] => tf!("已选择 1 项 · {}", "1 selected · {}", one.name).into(),
-            many => tf!("已选择 {} 项", "{} selected", many.len()).into(),
+        // The count in the interface's face, the name in user content's.
+        let label = match picked.as_slice() {
+            [one] => div()
+                .flex()
+                .items_center()
+                .min_w_0()
+                .overflow_hidden()
+                .child(
+                    ui::text(
+                        TypeRole::TitleMedium,
+                        ColorRole::ON_SURFACE,
+                        t("已选择 1 项 · ", "1 selected · "),
+                    )
+                    .flex_none()
+                    .whitespace_nowrap(),
+                )
+                .child(ui::name_line(
+                    TypeRole::TitleMedium,
+                    ColorRole::ON_SURFACE,
+                    one.name.clone(),
+                )),
+            many => div().flex().min_w_0().child(ui::line(
+                TypeRole::TitleMedium,
+                ColorRole::ON_SURFACE,
+                tf!("已选择 {} 项", "{} selected", many.len()),
+            )),
         };
-        let can = Actions::all(&picked, self.location.trash());
+        let in_trash = self.location.trash();
+        let can = Actions::all(&picked, in_trash);
         let single = picked.len() == 1;
         let starred = picked.iter().all(|f| f.starred);
         let action = |id: &'static str, symbol: Symbol, label: &'static str| {
@@ -2261,14 +2395,13 @@ impl Gdirect {
                     }),
                 ),
             )
-            .child(
-                ui::line(TypeRole::TitleMedium, ColorRole::ON_SURFACE, label)
-                    .flex_1()
-                    .min_w(rem(48.)),
-            )
-            .when(can.restore, |d| {
+            .child(label.flex_1().min_w(rem(48.)))
+            // The bar keeps the same actions whatever is selected, those
+            // that do not apply disabled, so none moves under the pointer.
+            .when(in_trash, |d| {
                 d.child(
                     MaterialButton::new("restore")
+                        .disabled(!can.restore)
                         .icon(Symbol::RESTORE_FROM_TRASH)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             let files = this.picked();
@@ -2277,13 +2410,14 @@ impl Gdirect {
                         .child(t("恢复", "Restore")),
                 )
             })
-            .when(can.delete, |d| {
+            .when(in_trash, |d| {
                 d.child(
                     action(
                         "delete-forever",
                         Symbol::DELETE_FOREVER,
                         t("永久删除", "Delete forever"),
                     )
+                    .disabled(!can.delete)
                     .on_click(cx.listener(
                         |this, _: &ClickEvent, window, cx| {
                             let files = this.picked();
@@ -2292,9 +2426,10 @@ impl Gdirect {
                     )),
                 )
             })
-            .when(can.download, |d| {
+            .when(!in_trash, |d| {
                 d.child(
                     MaterialButton::new("download")
+                        .disabled(!can.download)
                         .icon(Symbol::DOWNLOAD)
                         .accessibility_label(t("下载所选项", "Download selected"))
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -2317,22 +2452,24 @@ impl Gdirect {
                         }),
                 )
             })
-            .when(can.copy, |d| {
+            .when(!in_trash, |d| {
                 d.child(
                     action("copy", Symbol::CONTENT_COPY, t("复制", "Copy"))
+                        .disabled(!can.copy)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.yank(false, cx))),
                 )
             })
-            .when(can.cut, |d| {
+            .when(!in_trash, |d| {
                 d.child(
                     action("cut", Symbol::CONTENT_CUT, t("剪切", "Cut"))
+                        .disabled(!can.cut)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.yank(true, cx))),
                 )
             })
-            .when(can.rename, |d| {
+            .when(!in_trash, |d| {
                 d.child(
                     action("rename", Symbol::EDIT, t("重命名", "Rename"))
-                        .disabled(!single)
+                        .disabled(!single || !can.rename)
                         .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                             if let [file] = this.picked().as_slice() {
                                 this.open_dialog(
@@ -2344,7 +2481,7 @@ impl Gdirect {
                         })),
                 )
             })
-            .when(can.star, |d| {
+            .when(!in_trash, |d| {
                 d.child(
                     action(
                         "star",
@@ -2366,14 +2503,14 @@ impl Gdirect {
                     )),
                 )
             })
-            .when(can.trash, |d| {
+            .when(!in_trash, |d| {
                 d.child(
-                    action("trash", Symbol::DELETE, t("移至回收站", "Move to trash")).on_click(
-                        cx.listener(|this, _: &ClickEvent, _, cx| {
+                    action("trash", Symbol::DELETE, t("移至回收站", "Move to trash"))
+                        .disabled(!can.trash)
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             let files = this.picked();
                             this.trash(files, cx);
-                        }),
-                    ),
+                        })),
                 )
             })
     }
@@ -2533,7 +2670,22 @@ impl Gdirect {
                     error.clone(),
                 )
             } else if self.loading {
-                ui::empty("hourglass_empty", t("正在加载…", "Loading…"), "")
+                // An indeterminate M3 indicator, where the icon would be.
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(rem(16.))
+                    .py(rem(64.))
+                    .child(
+                        CircularProgress::new("list-loading", t("正在加载", "Loading")).size(48.),
+                    )
+                    .child(ui::text(
+                        TypeRole::TitleMedium,
+                        ColorRole::ON_SURFACE,
+                        t("正在加载…", "Loading…"),
+                    ))
             } else if !self.filter.is_empty() {
                 ui::empty(
                     "search_off",
@@ -2708,12 +2860,14 @@ impl Gdirect {
         self.location.flat() && self.wide(1000.)
     }
 
+    /// The date column outlasts Size: every row has a date, where folders
+    /// have no size.
     fn show_modified(&self) -> bool {
-        self.wide(820.)
+        self.wide(640.)
     }
 
     fn show_size(&self) -> bool {
-        self.wide(640.)
+        self.wide(820.)
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2982,10 +3136,19 @@ impl Gdirect {
     }
 
     fn render_grid(&self, shown: Vec<&File>, cx: &mut Context<Self>) -> impl IntoElement {
+        // A divider under the bar above, once tiles scroll beneath it.
+        let scrolled = self.grid_scroll.offset().y < px(0.);
         div()
             .id("grid")
             .flex_1()
             .min_h_0()
+            .track_scroll(&self.grid_scroll)
+            .border_t_1()
+            .border_color(if scrolled {
+                color(ColorRole::OUTLINE_VARIANT)
+            } else {
+                gpui_kit::transparent_black().into()
+            })
             .overflow_y_scroll()
             .px(rem(GRID_PAD))
             .relative()
@@ -3064,12 +3227,15 @@ impl Gdirect {
                                     .flex()
                                     .items_center()
                                     .gap(rem(6.))
+                                    // Cut in the middle: a name's end (a date,
+                                    // an extension) tells similar ones apart.
                                     .child(
                                         ui::name_line(
                                             TypeRole::BodyMedium,
                                             ColorRole::ON_SURFACE,
                                             file.name.clone(),
                                         )
+                                        .text_ellipsis_middle()
                                         .flex_1(),
                                     )
                                     .when(file.starred && !self.location.trash(), |d| {

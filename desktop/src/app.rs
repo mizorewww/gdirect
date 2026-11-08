@@ -163,6 +163,8 @@ pub struct Gdirect {
     pub focus_search: bool,
     /// The search field shows a search that no longer applies; empty it.
     pub clear_search: bool,
+    /// The search field is to show this search again (Back to a search).
+    pub restore_search: Option<String>,
     /// The last trash or move, which the snackbar offers to undo.
     pub undo: Option<Undoable>,
     /// Read once per sign-in: Shared drives, the storage quota, and My
@@ -199,7 +201,13 @@ pub struct Gdirect {
     /// The window's width in logical pixels at the last frame; pages lay out
     /// for it (see [`Gdirect::wide`]).
     pub width: f32,
+    /// The window's height in logical pixels at the last frame.
+    pub height: f32,
     pub rows: UniformListScrollHandle,
+    /// The grid's and the Routes page's scrolling, for the dividers under
+    /// the bars they scroll beneath.
+    pub grid_scroll: ScrollHandle,
+    pub routes_scroll: ScrollHandle,
     /// The window's focus when nothing in it has any; its key context holds
     /// the global shortcuts.
     pub focus: FocusHandle,
@@ -210,8 +218,8 @@ pub struct Gdirect {
     /// dialog, so the keys always reach the page and the menu bar.
     pub focus_page: bool,
     /// Locations left by navigating, for Back, and those Back left, for Forward.
-    pub history: Vec<Location>,
-    pub future: Vec<Location>,
+    pub history: Vec<crate::files::Visit>,
+    pub future: Vec<crate::files::Visit>,
     /// The row the arrow keys move from, and the end a range selection grows from.
     pub cursor: Option<String>,
     pub anchor: Option<String>,
@@ -220,6 +228,11 @@ pub struct Gdirect {
     /// Items to select once the next listing arrives: the folder just left
     /// by going up, or items just restored.
     pub pending_select: Vec<String>,
+    /// The next listing puts the cursor on its first row: a folder opened
+    /// from the keyboard.
+    pub cursor_first: bool,
+    /// The item being opened was opened from the keyboard.
+    pub keyboard_open: bool,
     /// The filter field's placeholder as last set; it names the folder or not.
     pub filter_hint: &'static str,
     pub sort_menu: bool,
@@ -292,6 +305,33 @@ impl Gdirect {
                     _ => {}
                 },
             ),
+            // Escape closes a settings pane shown alone, back to the list.
+            // Taken ahead of the key bindings, which would match it first.
+            {
+                let view = cx.weak_entity();
+                cx.intercept_keystrokes(move |event, _, cx| {
+                    let k = &event.keystroke;
+                    if k.key != "escape"
+                        || k.modifiers.modified()
+                        || crate::settings_page::recording_shortcut()
+                    {
+                        return;
+                    }
+                    let closed = view
+                        .update(cx, |this, cx| {
+                            let close = this.dialog.is_none() && this.settings_pane_alone();
+                            if close {
+                                this.pane_open = false;
+                                cx.notify();
+                            }
+                            close
+                        })
+                        .unwrap_or(false);
+                    if closed {
+                        cx.stop_propagation();
+                    }
+                })
+            },
             cx.subscribe_in(
                 &name_input,
                 window,
@@ -352,6 +392,7 @@ impl Gdirect {
             before_search: None,
             chip_menu: None,
             focus_search: false,
+            restore_search: None,
             clear_search: false,
             undo: None,
             drives: Vec::new(),
@@ -376,7 +417,10 @@ impl Gdirect {
             clear_filter: false,
             session: 0,
             width: 1280.,
+            height: 800.,
             rows: UniformListScrollHandle::new(),
+            grid_scroll: ScrollHandle::new(),
+            routes_scroll: ScrollHandle::new(),
             focus: cx.focus_handle(),
             files_focus: cx.focus_handle(),
             focus_page: true,
@@ -386,6 +430,8 @@ impl Gdirect {
             anchor: None,
             keyboard_cursor: false,
             pending_select: Vec::new(),
+            cursor_first: false,
+            keyboard_open: false,
             filter_hint: "",
             sort_menu: false,
             crumb_menu: false,
@@ -1178,7 +1224,11 @@ impl Gdirect {
             this.go(Page::Files, cx);
         }))
         .on_action(Self::page_action(cx, |this, _: &GoBack, cx| {
-            if !this.accounts.is_empty() {
+            // A settings pane shown alone goes back to the list first.
+            if this.settings_pane_alone() {
+                this.pane_open = false;
+                cx.notify();
+            } else if !this.accounts.is_empty() {
                 this.go_back(cx);
             }
         }))
@@ -1259,6 +1309,7 @@ impl Render for Gdirect {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let viewport = window.viewport_size();
         self.width = f32::from(viewport.width) - self.rail_extra(f32::from(viewport.width));
+        self.height = f32::from(viewport.height);
         self.follow_language(window, cx);
         let labels = CaptionLabels {
             minimize: t("最小化", "Minimize").into(),
@@ -1326,21 +1377,28 @@ impl Render for Gdirect {
                             .when_some(self.toast.clone(), |d, message| {
                                 let view = cx.weak_entity();
                                 let undo = self.undo.is_some().then(|| cx.weak_entity());
+                                // Messages name files, accounts and addresses: set
+                                // in user content's face, Latin first, so a name's
+                                // hyphens do not read as dashes; the CJK face
+                                // still draws the Chinese around them.
                                 d.child(
-                                    Snackbar::new("toast", message)
-                                        .position(SnackbarPosition::Center)
-                                        .when_some(undo, |s, view| {
-                                            s.action(t("撤销", "Undo"), move |_, _, cx| {
-                                                let _ = view.update(cx, |this, cx| this.undo(cx));
+                                    ui::latin(div().absolute().inset_0()).child(
+                                        Snackbar::new("toast", message)
+                                            .position(SnackbarPosition::Center)
+                                            .when_some(undo, |s, view| {
+                                                s.action(t("撤销", "Undo"), move |_, _, cx| {
+                                                    let _ =
+                                                        view.update(cx, |this, cx| this.undo(cx));
+                                                })
                                             })
-                                        })
-                                        .on_dismiss(move |_, cx| {
-                                            let _ = view.update(cx, |this, cx| {
-                                                this.toast = None;
-                                                this.undo = None;
-                                                cx.notify();
-                                            });
-                                        }),
+                                            .on_dismiss(move |_, cx| {
+                                                let _ = view.update(cx, |this, cx| {
+                                                    this.toast = None;
+                                                    this.undo = None;
+                                                    cx.notify();
+                                                });
+                                            }),
+                                    ),
                                 )
                             }),
                     )

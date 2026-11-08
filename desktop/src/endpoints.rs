@@ -19,6 +19,54 @@ use std::{
 
 const COLUMNS: [f32; 4] = [280., 180., 160., 56.];
 
+/// A route's status as the engine recorded it, in the interface's words:
+/// the sentence to show, and whether it is a failure (in the error colour)
+/// rather than an address waiting to be checked again.
+pub fn route_status(raw: &str) -> (String, bool) {
+    let lower = raw.to_lowercase();
+    let known = |zh: &'static str, en: &'static str| t(zh, en).to_owned();
+    if lower.contains("verified over another network path") {
+        return (
+            known(
+                "网络路径已变化，待重新验证",
+                "Network path changed; recheck pending",
+            ),
+            false,
+        );
+    }
+    let text = if lower == "no tcp answer" {
+        known("无 TCP 响应", "No TCP answer")
+    } else if lower == "connection failed" {
+        known("连接失败", "Connection failed")
+    } else if lower == "download transport failure" {
+        known("下载时连接失败", "Connection failed during a download")
+    } else if lower.contains("timed out") || lower.contains("timeout") {
+        known("连接超时", "Timed out")
+    } else if lower.contains("certificate") || lower.contains("tls") || lower.contains("handshake")
+    {
+        known("TLS 握手失败", "TLS handshake failed")
+    } else if lower.contains("refused") || lower.contains("reset") {
+        known("连接被拒绝或重置", "Connection refused or reset")
+    } else if lower.contains("drive api") {
+        known("Drive API 响应异常", "Unexpected Drive API response")
+    } else if lower.contains("download probe") {
+        known("测试下载失败", "Test download failed")
+    } else {
+        // Unknown: the engine's text, as a sentence.
+        let mut chars = raw.trim().chars();
+        match chars.next() {
+            Some(first) => first.to_uppercase().chain(chars).collect(),
+            None => known("不可直达", "Unreachable"),
+        }
+    };
+    (text, true)
+}
+
+/// A latency as every page writes it: whole milliseconds.
+pub fn latency(ms: i64) -> String {
+    format!("{ms} ms")
+}
+
 impl Gdirect {
     /// Sweeps Google's front ends, or verifies the addresses in `file`.
     pub fn start_scan(&mut self, file: Option<PathBuf>, cx: &mut Context<Self>) {
@@ -173,6 +221,13 @@ impl Gdirect {
                     .pt(rem(24.))
                     .px(rem(24.))
                     .pb(rem(16.))
+                    // A divider once the page scrolls beneath the bar.
+                    .border_b_1()
+                    .border_color(if self.routes_scroll.offset().y < px(0.) {
+                        color(ColorRole::OUTLINE_VARIANT)
+                    } else {
+                        gpui_kit::transparent_black().into()
+                    })
                     .child(
                         // The title is short: the actions share its line
                         // as long as they fit beside it.
@@ -212,6 +267,7 @@ impl Gdirect {
                     .id("endpoints-scroll")
                     .flex_1()
                     .min_h_0()
+                    .track_scroll(&self.routes_scroll)
                     .overflow_y_scroll()
                     .child(
                         div()
@@ -266,19 +322,26 @@ impl Gdirect {
                     })
                     .child(self.render_filters(cx))
                     .child(self.render_table(cx))
-                    .child(ui::text(
+                    .child(ui::rich(
                         TypeRole::BodySmall,
                         ColorRole::ON_SURFACE_VARIANT,
-                        t(
-                            "固定一个地址相当于 --ip，所有请求只走它；取消固定后按延迟自动选择，并在失效时切换到下一个。",
-                            "Pinning an address works like --ip: every request goes through it. Unpinned, gdirect chooses by latency and switches to the next address if one fails.",
-                        ),
+                        &[
+                            (t("固定一个地址相当于 ", "Pinning an address works like "), ui::Face::Interface),
+                            ("--ip", ui::Face::Mono),
+                            (
+                                t(
+                                    "，所有请求只走它；取消固定后按延迟自动选择，并在失效时切换到下一个。",
+                                    ": every request goes through it. Unpinned, gdirect chooses by latency and switches to the next address if one fails.",
+                                ),
+                                ui::Face::Interface,
+                            ),
+                        ],
                     )),
                     ),
             )
     }
 
-    fn render_current(&self) -> impl IntoElement {
+    fn render_current(&self) -> AnyElement {
         let usable = self
             .endpoints
             .iter()
@@ -297,6 +360,13 @@ impl Gdirect {
         } else {
             t("未连接", "Not connected")
         };
+        // A small window gives the routes its first screen: the summary is
+        // one line of facts above them.
+        if !self.wide(760.) || self.height < 560. {
+            return self
+                .render_current_compact(ip, ms, sni, usable)
+                .into_any_element();
+        }
         let stat = |label: &'static str, value: String, unit: &'static str| {
             div()
                 .flex()
@@ -312,11 +382,12 @@ impl Gdirect {
                         .flex()
                         .items_baseline()
                         .gap(rem(4.))
-                        .child(ui::text(
+                        .whitespace_nowrap()
+                        .child(ui::latin(ui::text(
                             TypeRole::HeadlineMedium,
                             ColorRole::ON_SURFACE,
                             value,
-                        ))
+                        )))
                         .child(ui::text(
                             TypeRole::BodyMedium,
                             ColorRole::ON_SURFACE_VARIANT,
@@ -396,6 +467,75 @@ impl Gdirect {
                         },
                     )),
             )
+            .into_any_element()
+    }
+
+    /// The current route in one line: its health, address, latency and the
+    /// reachable count, for windows too small for the summary card.
+    fn render_current_compact(
+        &self,
+        ip: String,
+        ms: Option<i64>,
+        sni: String,
+        usable: usize,
+    ) -> impl IntoElement {
+        let dot = if self.api.is_some() {
+            crate::format::latency_role(ms)
+        } else {
+            ColorRole::OUTLINE
+        };
+        let mode = if self.settings.pinned.is_some() {
+            t("已固定", "Pinned")
+        } else if self.api.is_some() {
+            t("当前线路", "Current route")
+        } else {
+            t("未连接", "Not connected")
+        };
+        let fact = |content: String| {
+            ui::latin(ui::text(
+                TypeRole::BodyMedium,
+                ColorRole::ON_SURFACE_VARIANT,
+                content,
+            ))
+            .flex_none()
+            .whitespace_nowrap()
+        };
+        div()
+            .rounded(rem(16.))
+            .bg(color(ColorRole::SURFACE_CONTAINER_LOW))
+            .px(rem(16.))
+            .py(rem(12.))
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_x(rem(16.))
+            .gap_y(rem(4.))
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(rem(8.))
+                    .child(div().size(rem(8.)).rounded_full().bg(color(dot)))
+                    .child(ui::text(
+                        TypeRole::LabelLarge,
+                        ColorRole::ON_SURFACE_VARIANT,
+                        mode,
+                    )),
+            )
+            .child(
+                ui::mono(ip)
+                    .text_color(color(ColorRole::ON_SURFACE))
+                    .flex_none(),
+            )
+            .child(fact(ms.map_or("—".into(), latency)))
+            .when(!sni.is_empty(), |d| {
+                d.child(fact(tf!("伪装 · {sni}", "Disguised · {sni}")))
+            })
+            .child(fact({
+                let s = if usable == 1 { "" } else { "es" };
+                tf!("{usable} 个可直达地址", "{usable} reachable address{s}")
+            }))
     }
 
     fn render_scan_progress(&self, state: &ScanState) -> impl IntoElement {
@@ -538,7 +678,13 @@ impl Gdirect {
                     .min_w(rem(address_w))
                     .child(t("地址", "Address")),
             )
-            .child(div().w(rem(latency_w)).child(t("延迟", "Latency")))
+            .child(
+                div()
+                    .flex_none()
+                    .w(rem(latency_w))
+                    .whitespace_nowrap()
+                    .child(t("延迟", "Latency")),
+            )
             .when(show_tls, |d| {
                 d.child(
                     div()
@@ -603,17 +749,20 @@ impl Gdirect {
                     )
                     .child(
                         div()
+                            .flex_none()
                             .w(rem(latency_w))
                             .flex()
                             .items_center()
                             .gap(rem(12.))
                             .child(
-                                ui::text(
+                                ui::latin(ui::text(
                                     TypeRole::BodyMedium,
                                     ink,
-                                    e.latency_ms.map_or("—".into(), |ms| format!("{ms} ms")),
-                                )
-                                .w(rem(56.)),
+                                    e.latency_ms.map_or("—".into(), latency),
+                                ))
+                                .flex_none()
+                                .whitespace_nowrap()
+                                .w(rem(64.)),
                             )
                             .when_some(bar, |d, (fraction, fast)| {
                                 d.child(
@@ -665,22 +814,33 @@ impl Gdirect {
                                     ColorRole::ON_PRIMARY,
                                 ))
                             })
-                            .when(!in_use, |d| {
+                            .when(!in_use && ok, |d| {
                                 d.child(ui::line(
                                     TypeRole::BodyMedium,
-                                    if ok {
-                                        ColorRole::ON_SURFACE_VARIANT
-                                    } else {
-                                        ColorRole::ERROR
-                                    },
-                                    if ok {
-                                        t("可直达", "Reachable").to_owned()
-                                    } else {
-                                        e.error
-                                            .clone()
-                                            .unwrap_or_else(|| t("不可直达", "Unreachable").into())
-                                    },
+                                    ColorRole::ON_SURFACE_VARIANT,
+                                    t("可直达", "Reachable"),
                                 ))
+                            })
+                            .when(!in_use && !ok, |d| {
+                                let raw = e.error.clone().unwrap_or_default();
+                                let (status, failed) = route_status(&raw);
+                                let line = ui::line(
+                                    TypeRole::BodyMedium,
+                                    if failed {
+                                        ColorRole::ERROR
+                                    } else {
+                                        ColorRole::ON_SURFACE_VARIANT
+                                    },
+                                    status,
+                                );
+                                // The engine's own words, in full, on hover.
+                                d.child(if raw.is_empty() {
+                                    line.into_any_element()
+                                } else {
+                                    MaterialTooltip::plain(("route-status", ix), raw)
+                                        .trigger(div().min_w_0().overflow_hidden().child(line))
+                                        .into_any_element()
+                                })
                             }),
                     )
                     .child(div().w(rem(COLUMNS[3])).when(ok, |d| {
@@ -720,5 +880,38 @@ impl Gdirect {
                     .child(row)
             }))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::route_status;
+    use crate::i18n::{Language, apply};
+
+    #[test]
+    fn route_status_speaks_the_interface_language() {
+        let _language = crate::i18n::LANGUAGE_LOCK.lock().unwrap();
+        apply(Language::English);
+        assert_eq!(
+            route_status("no TCP answer"),
+            ("No TCP answer".into(), true)
+        );
+        // Retired, not failed: waiting to be checked again.
+        assert_eq!(
+            route_status("verified over another network path"),
+            ("Network path changed; recheck pending".into(), false)
+        );
+        assert_eq!(
+            route_status("operation timed out | forged: operation timed out").0,
+            "Timed out"
+        );
+        // Unknown text is kept, as a sentence.
+        assert_eq!(
+            route_status("weird failure"),
+            ("Weird failure".into(), true)
+        );
+        apply(Language::Chinese);
+        assert_eq!(route_status("no TCP answer").0, "无 TCP 响应");
+        apply(Language::English);
     }
 }

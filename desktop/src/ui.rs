@@ -41,18 +41,69 @@ pub fn latin<E: Styled>(mut element: E) -> E {
     element
 }
 
+/// The face a span of [`rich`] text is set in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Face {
+    /// The interface's, as [`type_role`] sets it.
+    Interface,
+    /// Commands and flags, which keep every hyphen: Roboto Mono.
+    Mono,
+}
+
+/// Text in a type role whose spans take their own faces, wrapping as one
+/// paragraph: a sentence naming a command (`--with-mount`).
+pub fn rich(role: TypeRole, ink: ColorRole, parts: &[(&str, Face)]) -> Div {
+    let scale = role.scale();
+    let weight = FontWeight(scale.font_weight as f32);
+    let ink: Hsla = color(ink).into();
+    let mut text = String::new();
+    let mut runs = Vec::new();
+    for (part, face) in parts.iter().filter(|(p, _)| !p.is_empty()) {
+        let mut run_font = match face {
+            Face::Interface => font(if scale.font_family == "Roboto" {
+                font_family()
+            } else {
+                scale.font_family
+            }),
+            Face::Mono => font("Roboto Mono"),
+        };
+        if *face != Face::Interface {
+            run_font.fallbacks = Some(FontFallbacks::from_fonts(vec![cjk_family().to_owned()]));
+        }
+        run_font.weight = weight;
+        // A command keeps its flags whole: no line breaks after its hyphens
+        // (word joiners, which draw nothing).
+        let part = if *face == Face::Mono {
+            part.replace('-', "-\u{2060}")
+        } else {
+            (*part).to_owned()
+        };
+        text.push_str(&part);
+        runs.push(TextRun {
+            len: part.len(),
+            font: run_font,
+            color: ink,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        });
+    }
+    type_role(div(), role).child(StyledText::new(text).with_runs(runs))
+}
+
 /// A [`line`] of user content, in [`latin`].
 pub fn name_line(role: TypeRole, ink: ColorRole, content: impl Into<SharedString>) -> Div {
     latin(line(role, ink, content))
 }
 
-/// The container of a card that holds rows: white on the tinted panes in
-/// light, and in dark a step lighter than the page, never darker.
+/// The container of a card that holds rows, on the surface every page has:
+/// tinted in light, and in dark a step lighter than the page, never darker.
+/// The settings index and its panes share it.
 pub fn card() -> ColorRole {
     if gpui_kit_material::theme::is_dark() {
         ColorRole::SURFACE_CONTAINER_HIGH
     } else {
-        ColorRole::SURFACE_CONTAINER_LOWEST
+        ColorRole::SURFACE_CONTAINER_LOW
     }
 }
 
@@ -246,21 +297,16 @@ pub fn setting_row_with(
     supporting: Option<AnyElement>,
     trailing: Option<AnyElement>,
 ) -> AnyElement {
-    // The text claims a real width, so a control that does not fit beside it
-    // wraps onto a line of its own, under the title rather than at the edge.
+    // The icon sits on the title's first line, however many lines the text
+    // takes: they are one block, which the control centres against. The text
+    // claims a real width, so a control that does not fit beside it wraps
+    // onto a line of its own, under the title rather than at the edge.
     div()
         .flex()
         .items_center()
-        .gap(rem(16.))
         .min_h(rem(72.))
         .px(rem(20.))
         .py(rem(12.))
-        .child(
-            div()
-                .flex_none()
-                .flex()
-                .child(icon(icon_name, 24., ColorRole::ON_SURFACE_VARIANT)),
-        )
         .child(
             div()
                 .flex_1()
@@ -271,12 +317,23 @@ pub fn setting_row_with(
                 .gap_x(rem(16.))
                 .gap_y(rem(8.))
                 .child(
-                    row_text(title.into(), supporting)
+                    div()
+                        .flex()
+                        .items_start()
+                        .gap(rem(16.))
                         .flex_grow(1.)
-                        .flex_basis(rem(240.))
-                        .min_w(rem(200.)),
+                        .flex_basis(rem(240. + ROW_INDENT))
+                        .min_w(rem(200. + ROW_INDENT))
+                        .child(div().flex_none().flex().child(icon(
+                            icon_name,
+                            24.,
+                            ColorRole::ON_SURFACE_VARIANT,
+                        )))
+                        .child(row_text(title.into(), supporting).flex_1().min_w_0()),
                 )
-                .when_some(trailing, |d, t| d.child(div().flex_none().child(t))),
+                .when_some(trailing, |d, t| {
+                    d.child(div().flex_none().ml(rem(ROW_INDENT)).child(t))
+                }),
         )
         .into_any_element()
 }

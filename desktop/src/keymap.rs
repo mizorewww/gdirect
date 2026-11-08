@@ -56,6 +56,8 @@ actions!(
         FocusFilter,
         CursorUp,
         CursorDown,
+        CursorFirst,
+        CursorLast,
         ExtendUp,
         ExtendDown,
         CopyLink,
@@ -282,6 +284,8 @@ pub fn key_bindings() -> Vec<Shortcut> {
         row(Undo, "secondary-z", "撤销", "Undo", files, All),
         row(CursorUp, "up", "上一项", "Previous item", files, All),
         row(CursorDown, "down", "下一项", "Next item", files, All),
+        row(CursorFirst, "home", "第一项", "First item", files, All),
+        row(CursorLast, "end", "最后一项", "Last item", files, All),
         row(
             ExtendUp,
             "shift-up",
