@@ -45,6 +45,7 @@ impl Gdirect {
                     .take()
                     .is_some_and(|(cancel, _)| cancel.load(Ordering::Relaxed));
                 this.reload_endpoints();
+                let finished = result.is_ok() && !cancelled;
                 match result {
                     Ok(()) => this.say(
                         if cancelled {
@@ -57,8 +58,10 @@ impl Gdirect {
                     Err(e) if !cancelled => this.scan_error = Some(format!("{e:#}")),
                     Err(_) => {}
                 }
-                // A first scan unblocks the connection that was waiting for one.
-                if this.api.is_none() && this.account.is_some() && !this.connecting {
+                // A first scan unblocks the connection that was waiting for one;
+                // a later one moves an unpinned connection to the fastest front end.
+                let reroute = finished && this.settings.pinned.is_none();
+                if (this.api.is_none() || reroute) && this.account.is_some() && !this.connecting {
                     this.connect(cx);
                 }
                 cx.notify();
