@@ -87,6 +87,10 @@ impl Gdirect {
                 state.ipv6 = ipv6;
                 state.target = target;
             }
+            Event::Swept { probed, open } => {
+                state.probed = probed;
+                state.open = open;
+            }
             Event::Progress { probed, open, good } => {
                 state.probed = probed;
                 state.open = open;

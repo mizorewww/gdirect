@@ -60,6 +60,12 @@ pub enum Event {
         sni: String,
     },
     Unavailable(IpAddr),
+    /// A sweep batch answered TCP and is being verified. [`run`] stays quiet
+    /// about it; a live view can show it.
+    Swept {
+        probed: usize,
+        open: usize,
+    },
     /// One sweep batch is done.
     Progress {
         probed: usize,
@@ -95,6 +101,9 @@ impl std::fmt::Display for Event {
             Event::Verified { ip, ms, sni } if sni.is_empty() => write!(f, "  OK  {ip}  {ms} ms"),
             Event::Verified { ip, ms, sni } => write!(f, "  OK  {ip}  {ms} ms (SNI {sni})"),
             Event::Unavailable(ip) => write!(f, "  --  {ip}  unavailable"),
+            Event::Swept { probed, open } => {
+                write!(f, "  … probed {probed}, {open} answered TCP, verifying")
+            }
             Event::Progress { probed, open, good } => {
                 write!(
                     f,
@@ -300,14 +309,14 @@ type Verdict = (
 /// Full probe of each address with 8 workers: the real SNI first, the forged
 /// identity only when the real one cannot complete. Stops handing out work
 /// once `enough` endpoints have verified.
-fn verify(ips: &[IpAddr], enough: usize) -> Vec<Verdict> {
+fn verify(ips: &[IpAddr], enough: usize, cancel: &AtomicBool) -> Vec<Verdict> {
     let next = AtomicUsize::new(0);
     let good = AtomicUsize::new(0);
     let results = Mutex::new(Vec::new());
     thread::scope(|scope| {
         for _ in 0..8.min(ips.len()) {
             scope.spawn(|| {
-                while good.load(Ordering::Relaxed) < enough {
+                while good.load(Ordering::Relaxed) < enough && !cancel.load(Ordering::Relaxed) {
                     let Some(&ip) = ips.get(next.fetch_add(1, Ordering::Relaxed)) else {
                         break;
                     };
@@ -420,13 +429,15 @@ fn record(
 }
 pub fn run(db: &Store, path: Option<&Path>) -> Result<()> {
     run_with(db, path, &AtomicBool::new(false), &mut |event| {
-        eprintln!("{event}")
+        if !matches!(event, Event::Swept { .. }) {
+            eprintln!("{event}")
+        }
     })?;
     eprintln!("Verified endpoints saved in SQLite.");
     Ok(())
 }
 /// [`run`], reporting progress to `report` instead of printing it. Setting
-/// `cancel` stops a sweep after its current batch.
+/// `cancel` stops verifying and sweeping; addresses already verified are kept.
 pub fn run_with(
     db: &Store,
     path: Option<&Path>,
@@ -438,7 +449,7 @@ pub fn run_with(
     if let Some(path) = path {
         let ips = file_candidates(path, &google, report)?;
         report(Event::Candidates(ips.len()));
-        let verdicts = verify(&ips, usize::MAX);
+        let verdicts = verify(&ips, usize::MAX, cancel);
         record(db, verdicts, |_| true, &mut warned, report)?;
     } else {
         crate::ranges::refresh(db, db.best_route()?.map(|r| r.ip));
@@ -484,7 +495,8 @@ pub fn run_with(
             }
             let candidates: Vec<IpAddr> = answered.into_iter().map(|(ip, _)| ip).collect();
             reached.extend(&candidates);
-            let verdicts = verify(&candidates, TARGET - good);
+            report(Event::Swept { probed, open });
+            let verdicts = verify(&candidates, TARGET - good, cancel);
             let working = record(db, verdicts, |ip| known.contains(&ip), &mut warned, report)?;
             good += working.len();
             // Front ends come in groups: the rest of a working /24 or /64 goes next.
