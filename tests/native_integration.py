@@ -77,7 +77,7 @@ def main():
 #include <thread>
 extern "C" int gdirect_download(const char*,const char*,const char*,const char*,const char*,const char*,const char*,int) noexcept;
 using Callback=int(*)(int64_t,int64_t,int,int,void*);
-extern "C" int gdirect_download_ex(const char*,const char*,const char*,const char*,const char*,const char*,const char*,int,Callback,void*,bool) noexcept;
+extern "C" int gdirect_download_ex(const char*,const char*,const char*,const char*,const char*,const char*,const char*,int,Callback,void*,bool,unsigned) noexcept;
 int progress(int64_t done,int64_t total,int speed,int connections,void* data){
   ++*static_cast<int*>(data);return std::getenv("GDIRECT_TEST_CANCEL") && done>0;
 }
@@ -88,14 +88,14 @@ int main(int n,char**v){
   // browse runs one download after another, each on a fresh worker thread.
   for(int i=0;i<3;i++){
    std::string name=std::string(v[3])+"."+std::to_string(i);int result=99,count=0;
-   std::thread worker([&]{result=gdirect_download_ex(v[1],v[2],name.c_str(),ip,v[4],v[5],v[6],v[7][0]-'0',progress,&count,false);});
+   std::thread worker([&]{result=gdirect_download_ex(v[1],v[2],name.c_str(),ip,v[4],v[5],v[6],v[7][0]-'0',progress,&count,false,0);});
    worker.join();if(result)return result;
   }
   return 0;
  }
  if(!std::getenv("GDIRECT_TEST_CALLBACK"))return gdirect_download(v[1],v[2],v[3],ip,v[4],v[5],v[6],v[7][0]-'0');
  int result=99,count=0;
- std::thread worker([&]{result=gdirect_download_ex(v[1],v[2],v[3],ip,v[4],v[5],v[6],v[7][0]-'0',progress,&count,false);});
+ std::thread worker([&]{result=gdirect_download_ex(v[1],v[2],v[3],ip,v[4],v[5],v[6],v[7][0]-'0',progress,&count,false,0);});
  worker.join();std::printf("callbacks=%d\\n",count);return count>0 ? result : 98;
 }
 ''')
