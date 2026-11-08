@@ -7,8 +7,19 @@ sha=60a420ad7085eb616cb6e2bdf0a7206d68ff3d37fb5a956dc44242eb2f79b66b
 prefix="$root/target/libaria2"
 mkdir -p target/vendor
 archive="$root/target/vendor/aria2-$version.tar.xz"
+# GitHub's release downloads go down now and then; Fedora's source archive
+# keeps the same tarball. Either way the checksum below decides.
+sha512=df3b8b4de8fa8d78f203ea00c059e43585e18a229009f202e42e6a9e59db67d09df0dbba8a016e99ed73c82f59e4f8b26f86c2288afdbb96a6807cbe2c56e6b3
 if [ ! -f "$archive" ]; then
-  curl --fail --location --retry 3 "https://github.com/aria2/aria2/releases/download/release-$version/aria2-$version.tar.xz" -o "$archive"
+  for url in \
+    "https://github.com/aria2/aria2/releases/download/release-$version/aria2-$version.tar.xz" \
+    "https://src.fedoraproject.org/repo/pkgs/aria2/aria2-$version.tar.xz/sha512/$sha512/aria2-$version.tar.xz"; do
+    if curl --fail --location --retry 3 "$url" -o "$archive.part"; then
+      mv "$archive.part" "$archive"
+      break
+    fi
+  done
+  [ -f "$archive" ] || { echo "cannot download aria2 $version" >&2; exit 1; }
 fi
 if command -v sha256sum >/dev/null; then
   printf '%s  %s\n' "$sha" "$archive" | sha256sum -c -
