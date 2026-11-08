@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.12.1
+
+### Added
+
+- Desktop client downloads for every platform: a Windows installer (`gdirect-desktop-windows-x64.msi`: Program Files, a Start menu shortcut, in-place upgrades), a Linux tarball (`gdirect-desktop-linux-x64.tar.gz`, with `install.sh` for a menu entry) and the macOS apps. Their names no longer carry the version, so the README's download buttons always fetch the latest release.
+- Homebrew cask for the desktop app: `brew install --cask mizorewww/gdirect/gdirect-desktop`.
+
 ## 0.12.0
 
 ### Added
