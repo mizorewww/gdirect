@@ -26,7 +26,10 @@ jobs:
           pacman -Sy --noconfirm git openssh python sudo binutils
           id builder &>/dev/null || useradd -m builder
 
+      # Full history and tags, so the -git packages get a describable pkgver.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup AUR SSH (builder)
         env:

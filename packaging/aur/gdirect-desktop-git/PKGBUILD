@@ -11,6 +11,7 @@ options=(!lto)
 depends=(
   'glibc'
   'gcc-libs'
+  'openssl'
   'libxkbcommon'
   'libxkbcommon-x11'
   'libxcb'
