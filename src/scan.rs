@@ -28,7 +28,6 @@ const OFFSETS: [u8; 7] = [100, 113, 155, 132, 138, 91, 123];
 /// Blocks that hold most of Google's general front ends; swept before the
 /// rest of Google's space.
 const CORE: &str = "142.250.0.0/15 172.217.0.0/16 172.253.0.0/16 173.194.0.0/16 74.125.0.0/16 192.178.0.0/15 64.233.160.0/19 66.102.0.0/20 108.177.0.0/17 209.85.128.0/17 216.58.192.0/19 216.239.32.0/19 108.170.192.0/18 72.14.192.0/18";
-const SEEDS: &str = include_str!("frontend-seeds.txt");
 /// Endpoints transfers may use, fastest first: only Google's own front ends.
 /// Anything else stored by older releases (third-party relays) is ignored.
 pub fn usable(routes: Vec<crate::store::Route>, google: &Ranges) -> Vec<crate::store::Route> {
@@ -107,9 +106,11 @@ fn hosts(net: u32) -> impl Iterator<Item = IpAddr> {
         .iter()
         .map(move |&o| IpAddr::V4(Ipv4Addr::from(net | u32::from(o))))
 }
-/// Sweep order: earlier verified endpoints, DNS answers, seed /24s, then
-/// Google's core front-end blocks and finally the rest of its space, each
-/// shuffled. Only addresses inside `google` are ever considered.
+/// Sweep order: earlier verified endpoints, DNS answers, then Google's core
+/// front-end blocks and finally the rest of its space, each shuffled. No IPs
+/// are built in: lists of working ones go stale, and a random batch of core
+/// /24s already holds several that work. Only addresses inside `google` are
+/// ever considered.
 fn plan(
     google: &Ranges,
     known: &[IpAddr],
@@ -117,7 +118,6 @@ fn plan(
     shuffle: &mut Shuffle,
 ) -> VecDeque<IpAddr> {
     let core = Ranges::parse(&CORE.replace(' ', "\n")).expect("core blocks must parse");
-    let seeds = Ranges::parse(SEEDS).expect("seed list must parse");
     let mut seen = HashSet::new();
     let mut order = VecDeque::new();
     let mut add = |ip: IpAddr, order: &mut VecDeque<IpAddr>| {
@@ -128,15 +128,12 @@ fn plan(
     for &ip in known.iter().chain(dns) {
         add(ip, &mut order);
     }
-    let mut seed_nets: Vec<u32> = seeds.slash24s().collect();
-    shuffle.apply(&mut seed_nets);
     let (mut core_nets, mut rest_nets): (Vec<u32>, Vec<u32>) = google
         .slash24s()
-        .filter(|n| !seeds.contains(IpAddr::V4(Ipv4Addr::from(*n))))
         .partition(|n| core.contains(IpAddr::V4(Ipv4Addr::from(*n))));
     shuffle.apply(&mut core_nets);
     shuffle.apply(&mut rest_nets);
-    for net in seed_nets.into_iter().chain(core_nets).chain(rest_nets) {
+    for net in core_nets.into_iter().chain(rest_nets) {
         for ip in hosts(net) {
             add(ip, &mut order);
         }
@@ -405,18 +402,11 @@ mod tests {
         assert_eq!(order[1], ip("172.217.115.4"));
         assert!(order.iter().all(|a| google.contains(*a)));
         assert_eq!(order.iter().collect::<HashSet<_>>().len(), order.len());
-        // Seed /24s come before the rest; Cloud Storage-only hosts are never swept.
-        let seeds = Ranges::parse(SEEDS).unwrap();
-        assert!(seeds.contains(order[2]));
-        let first_other = order
-            .iter()
-            .skip(2)
-            .position(|a| !seeds.contains(*a))
-            .unwrap()
-            + 2;
-        assert!(order.iter().skip(first_other).all(|a| !seeds.contains(*a)));
+        // Core blocks come before the rest; Cloud Storage-only hosts are never swept.
         let core = Ranges::parse(&CORE.replace(' ', "\n")).unwrap();
-        assert!(core.contains(order[first_other]));
+        let first_other = order.iter().position(|a| !core.contains(*a)).unwrap();
+        assert!(first_other > 1000);
+        assert!(order.iter().skip(first_other).all(|a| !core.contains(*a)));
         assert!(order.iter().all(|a| match a {
             IpAddr::V4(v4) =>
                 ![187, 207, 219].contains(&v4.octets()[3]) || known.contains(a) || dns.contains(a),
