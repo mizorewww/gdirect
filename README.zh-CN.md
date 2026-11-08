@@ -13,6 +13,13 @@
   <img alt="gdirect 桌面客户端：列出云盘文件夹，一个文件正在下载，其余在排队" src="docs/images/files-light.png">
 </picture>
 
+<p align="center">
+  <a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-windows-x64.msi"><img alt="下载 Windows 版" src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20Windows%20%E7%89%88-0078D4?style=for-the-badge&logo=windows&logoColor=white"></a>
+  <a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-macos-arm64.zip"><img alt="下载 macOS 版（Apple 芯片）" src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20macOS%20%E7%89%88%EF%BC%88Apple%20%E8%8A%AF%E7%89%87%EF%BC%89-000000?style=for-the-badge&logo=apple&logoColor=white"></a>
+  <a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-macos-x64.zip"><img alt="下载 macOS 版（Intel）" src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20macOS%20%E7%89%88%EF%BC%88Intel%EF%BC%89-000000?style=for-the-badge&logo=apple&logoColor=white"></a>
+  <a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-linux-x64.tar.gz"><img alt="下载 Linux 版" src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20Linux%20%E7%89%88-FCC624?style=for-the-badge&logo=linux&logoColor=black"></a>
+</p>
+
 - **直连传输：** 扫描 Google 自己的前端，只用能连通的那些；证书按程序内置的 Google 根证书校验。
 - **快且可续传：** 每个下载最多 16 条连接，完成后校验 MD5；下载和上传中断后都能接着传。
 - **终端和桌面：** 终端里有仿 yazi 的文件浏览器和适合脚本的命令，另有桌面客户端（预览）。
@@ -67,9 +74,13 @@ gdirect mount                    # 挂载到 ~/GoogleDrive
 | --- | --- | --- |
 | ![传输队列和已完成的下载](docs/images/transfers.png) | ![线路列表和延迟](docs/images/endpoints.png) | ![外观设置](docs/images/settings.png) |
 
-**macOS：** 在 [Releases](https://github.com/mizorewww/gdirect/releases/latest) 下载 `gdirect-desktop-…-aarch64-apple-darwin.zip`（Apple 芯片）或 `…-x86_64-apple-darwin.zip`（Intel），解压后把 `gdirect.app` 拖进“应用程序”。应用没有经过公证：第一次打开后，到“系统设置 › 隐私与安全性”里点“仍要打开”。
+点页面顶部的按钮下载，或者到 [Releases](https://github.com/mizorewww/gdirect/releases/latest) 下载：
 
-Linux 和 Windows 需要从源码编译，见[从源码编译](docs/building.zh-CN.md#桌面客户端)。
+- **macOS：** 解压后把 `gdirect.app` 拖进“应用程序”，或者执行 `brew install --cask mizorewww/gdirect/gdirect-desktop`。应用没有经过公证：第一次打开后，到“系统设置 › 隐私与安全性”里点“仍要打开”。
+- **Windows：** 运行 `gdirect-desktop-windows-x64.msi`，装好后在开始菜单里打开 gdirect。SmartScreen 可能提示发布者未知：点“更多信息 › 仍要运行”。
+- **Linux（x86_64，glibc 2.35+）：** 解压后在目录里执行 `./install.sh` 添加菜单项，或者直接运行 `gdirect-desktop`。
+
+想自己编译，见[从源码编译](docs/building.zh-CN.md#桌面客户端)。
 
 ## 文档
 

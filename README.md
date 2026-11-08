@@ -13,6 +13,13 @@ Browse, download, upload and mount your Google Drive from networks where Google 
   <img alt="The gdirect desktop client listing a Drive folder, with one file downloading and others queued" src="docs/images/en/files-light.png">
 </picture>
 
+<p align="center">
+  <a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-windows-x64.msi"><img alt="Download for Windows" src="https://img.shields.io/badge/Download%20for%20Windows-0078D4?style=for-the-badge&logo=windows&logoColor=white"></a>
+  <a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-macos-arm64.zip"><img alt="Download for macOS (Apple silicon)" src="https://img.shields.io/badge/Download%20for%20macOS%20%28Apple%20silicon%29-000000?style=for-the-badge&logo=apple&logoColor=white"></a>
+  <a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-macos-x64.zip"><img alt="Download for macOS (Intel)" src="https://img.shields.io/badge/Download%20for%20macOS%20%28Intel%29-000000?style=for-the-badge&logo=apple&logoColor=white"></a>
+  <a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-linux-x64.tar.gz"><img alt="Download for Linux" src="https://img.shields.io/badge/Download%20for%20Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black"></a>
+</p>
+
 - **Direct transfers:** scans Google's own front ends and keeps the ones that answer; certificates are checked against Google's roots built into the binary.
 - **Fast and resumable:** up to 16 connections per download, MD5 checked; interrupted downloads and uploads pick up where they stopped.
 - **Terminal and desktop:** a yazi-style file browser in the terminal, scripting commands, and a desktop app (preview).
@@ -67,9 +74,13 @@ The same engine in a Material 3 window: browse and manage files, drag files in t
 | --- | --- | --- |
 | ![Transfer queue with finished downloads](docs/images/en/transfers.png) | ![Routes page with latencies](docs/images/en/endpoints.png) | ![Appearance settings](docs/images/en/settings.png) |
 
-**macOS:** download `gdirect-desktop-…-aarch64-apple-darwin.zip` (Apple silicon) or `…-x86_64-apple-darwin.zip` (Intel) from the [releases page](https://github.com/mizorewww/gdirect/releases/latest), unzip it and move `gdirect.app` to Applications. The app is not notarized: the first time, open it, then allow it under System Settings › Privacy & Security › Open Anyway.
+Download it with the buttons at the top, or from the [releases page](https://github.com/mizorewww/gdirect/releases/latest):
 
-On Linux and Windows, build it from source — see [Building from source](docs/building.md#desktop-client).
+- **macOS:** unzip and move `gdirect.app` to Applications, or `brew install --cask mizorewww/gdirect/gdirect-desktop`. The app is not notarized: the first time, open it, then allow it under System Settings › Privacy & Security › Open Anyway.
+- **Windows:** run `gdirect-desktop-windows-x64.msi`; gdirect appears in the Start menu. Windows SmartScreen may warn that the publisher is unknown: choose More info › Run anyway.
+- **Linux (x86_64, glibc 2.35+):** unpack the tarball and run `./install.sh` inside it for a menu entry, or start `gdirect-desktop` directly.
+
+To build it yourself, see [Building from source](docs/building.md#desktop-client).
 
 ## Documentation
 
