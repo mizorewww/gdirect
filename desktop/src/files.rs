@@ -57,6 +57,7 @@ impl Gdirect {
             return;
         };
         let folder = self.folder().to_owned();
+        let session = self.session;
         if self.entries.is_empty()
             && let Ok(cached) = api.cached(&folder)
         {
@@ -67,7 +68,7 @@ impl Gdirect {
         self.background(
             move || api.list(&listed).map_err(|e| format!("{e:#}")),
             move |this, result, cx| {
-                if this.folder() != folder {
+                if this.session != session || this.folder() != folder {
                     return;
                 }
                 this.loading = false;

@@ -64,6 +64,9 @@ impl Gdirect {
     }
 
     fn reset_files(&mut self) {
+        // Nothing done through the previous account's client applies now.
+        self.api = None;
+        self.loading = false;
         self.path.truncate(1);
         self.entries.clear();
         self.selected.clear();
@@ -108,7 +111,6 @@ impl Gdirect {
         self.say(format!("已退出 {account}"), cx);
         if was_current {
             self.reset_files();
-            self.api = None;
             self.connect(cx);
         }
     }

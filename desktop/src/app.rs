@@ -139,6 +139,8 @@ pub struct Gdirect {
     pub name_input: Entity<InputState>,
     /// The dialog's name field takes focus once the dialog is up.
     focus_name: bool,
+    /// Bumped by each connection attempt; results from older ones are dropped.
+    pub session: u64,
     pub rows: UniformListScrollHandle,
 
     // Transfers
@@ -258,6 +260,7 @@ impl Gdirect {
             dialog: None,
             name_input,
             focus_name: false,
+            session: 0,
             rows: UniformListScrollHandle::new(),
             queues: Queues::default(),
             show_uploads: false,
@@ -340,6 +343,10 @@ impl Gdirect {
     /// Picks the route and builds the Drive client for the default account,
     /// then lists the current folder.
     pub fn connect(&mut self, cx: &mut Context<Self>) {
+        // Results of earlier attempts, and listings made through them, no
+        // longer apply.
+        self.session += 1;
+        let session = self.session;
         let Some(account) = self.account.clone() else {
             self.api = None;
             return;
@@ -357,7 +364,10 @@ impl Gdirect {
                 api.token()?;
                 Ok(api)
             },
-            |this, result, cx| {
+            move |this, result, cx| {
+                if this.session != session {
+                    return;
+                }
                 this.connecting = false;
                 this.reload_endpoints();
                 match result {
