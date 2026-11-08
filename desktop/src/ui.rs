@@ -5,11 +5,31 @@ use gpui_kit_material::icons::{Icon, Style, Symbol};
 use gpui_kit_material::prelude::*;
 use std::{cell::RefCell, collections::HashMap};
 
+/// The interface's typeface: Roboto, or in Chinese the platform's CJK UI
+/// face, whose Latin is fine and whose full-width punctuation (“”，：) keeps
+/// CJK widths, where Roboto, which has those marks, draws them narrow.
+pub fn font_family() -> &'static str {
+    if !crate::i18n::chinese() {
+        return "Roboto";
+    }
+    if cfg!(target_os = "macos") {
+        "PingFang SC"
+    } else if cfg!(target_os = "windows") {
+        "Microsoft YaHei UI"
+    } else {
+        "Noto Sans CJK SC"
+    }
+}
+
 /// Applies a Material type role to text (the library keeps its own private).
 pub fn type_role<E: Styled>(element: E, role: TypeRole) -> E {
     let scale = role.scale();
     element
-        .font_family(scale.font_family)
+        .font_family(if scale.font_family == "Roboto" {
+            font_family()
+        } else {
+            scale.font_family
+        })
         .text_size(scale.font_size)
         .line_height(scale.line_height)
         .font_weight(FontWeight(scale.font_weight as f32))
@@ -304,4 +324,137 @@ pub fn empty(
                 .text_center()
                 .max_w(rem(420.)),
         )
+}
+
+/// A right-click menu that opens down from the pointer and, where the
+/// window has no room for that, slides up just enough to fit whole: the
+/// kit's `MaterialContextMenu` opens below or above the pointer and scrolls
+/// when neither side has the room, which in a short window is most of the
+/// list.
+/// Builds a menu for the frame it shows on.
+type MenuBuilder = Box<dyn Fn(&mut Window, &mut App) -> MaterialMenu>;
+
+#[derive(gpui_kit::IntoElement)]
+pub struct ContextMenu {
+    id: ElementId,
+    menu: MenuBuilder,
+    button: MouseButton,
+}
+
+impl ContextMenu {
+    /// `menu` builds the menu on each frame it is shown, and no other.
+    pub fn new(
+        id: impl Into<ElementId>,
+        menu: impl Fn(&mut Window, &mut App) -> MaterialMenu + 'static,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            menu: Box::new(menu),
+            button: MouseButton::Right,
+        }
+    }
+
+    /// Opens on a left press instead, over a button such as a row's ⋮.
+    pub fn on_left_press(mut self) -> Self {
+        self.button = MouseButton::Left;
+        self
+    }
+}
+
+#[derive(Default)]
+struct ContextMenuState {
+    /// In the tree since the first press; it stays, closed, after that.
+    mounted: bool,
+    /// The popup enters the tree closed for one frame, so it has a trigger
+    /// position to open at.
+    entering: bool,
+    open: bool,
+    /// The pointer's offset from the parent's top left, and in the window.
+    position: Point<Pixels>,
+    in_window: Point<Pixels>,
+}
+
+/// The menus' width, which the menu does not report; the file menus' 220
+/// with some to spare.
+const CONTEXT_MENU_WIDTH: f32 = 240.;
+
+impl RenderOnce for ContextMenu {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let state = window.use_keyed_state((self.id.clone(), "context-menu"), cx, |_, _| {
+            ContextMenuState::default()
+        });
+        let button = self.button;
+        let press = canvas(
+            |bounds, window, _| (bounds, window.insert_hitbox(bounds, HitboxBehavior::Normal)),
+            {
+                let state = state.clone();
+                move |_, (bounds, hitbox): (Bounds<Pixels>, Hitbox), window, _| {
+                    window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+                        if phase.bubble() && event.button == button && hitbox.is_hovered(window) {
+                            // Bubbling reaches the innermost context menu first.
+                            cx.stop_propagation();
+                            let position = event.position - bounds.origin;
+                            state.update(cx, |state, cx| {
+                                state.entering = !state.mounted;
+                                state.mounted = true;
+                                state.open = true;
+                                state.position = position;
+                                state.in_window = event.position;
+                                cx.notify();
+                            });
+                        }
+                    });
+                }
+            },
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full();
+        let mut popup = None;
+        if state.read(cx).mounted {
+            let entering = state.update(cx, |state, _| std::mem::take(&mut state.entering));
+            if entering {
+                window.request_animation_frame();
+            }
+            let (open, position, in_window) = {
+                let state = state.read(cx);
+                (state.open && !entering, state.position, state.in_window)
+            };
+            let menu = (self.menu)(window, cx);
+            // The menu opens below its trigger, a point here moved up and
+            // left until the whole menu fits: the kit's popup then finds the
+            // room below and neither flips nor scrolls it. Base's 8px margin
+            // and the popup's 4px gap stay clear, with a little to spare.
+            let rem_size = window.rem_size();
+            let viewport = window.viewport_size();
+            let height = rem(menu.visible_height()).to_pixels(rem_size);
+            let width = rem(CONTEXT_MENU_WIDTH).to_pixels(rem_size);
+            let edge = px(12.);
+            let lowest = (viewport.height - edge - px(6.) - height).max(edge);
+            let rightmost = (viewport.width - edge - width).max(edge);
+            let left = position.x - (in_window.x - rightmost).max(px(0.));
+            let top = position.y - (in_window.y - lowest).max(px(0.));
+            let close = state.clone();
+            popup = Some(
+                div().absolute().left(left).top(top).child(
+                    MenuPopup::new((self.id, "popup"), div(), menu)
+                        .open(open)
+                        .on_open_change(move |next, _, cx| {
+                            close.update(cx, |state, cx| {
+                                state.open = *next;
+                                cx.notify();
+                            })
+                        }),
+                ),
+            );
+        }
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .child(press)
+            .children(popup)
+    }
 }

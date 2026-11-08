@@ -15,6 +15,13 @@ use gpui_kit_material::icons::Symbol;
 use gpui_kit_material::prelude::*;
 use std::{collections::HashSet, path::PathBuf, time::Duration};
 
+/// The height of the breadcrumb row and of the selection bar that replaces
+/// it, the same so the list stays put when a file is selected.
+const BAR_HEIGHT: f32 = 64.;
+
+/// The window width from which the toolbar shows the route chip in words.
+const ROUTE_CHIP: f32 = 760.;
+
 /// Name, Location, date and size; then the ⋮ button.
 const COLUMNS: [f32; 4] = [180., 160., 112., 56.];
 /// The first page of a listing, small so it shows quickly.
@@ -47,6 +54,11 @@ pub fn filter_placeholder() -> &'static str {
     t("在此文件夹中筛选", "Filter this folder")
 }
 
+/// The filter's placeholder where the list is not one folder's.
+fn filter_list_placeholder() -> &'static str {
+    t("筛选", "Filter")
+}
+
 pub fn search_placeholder() -> &'static str {
     t("在云端硬盘中搜索", "Search in Drive")
 }
@@ -75,7 +87,7 @@ impl Gdirect {
         let folders_first = !self.location.flat() || key == SortKey::Name;
         files.sort_by(|a, b| {
             let order = match key {
-                SortKey::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                SortKey::Name => format::natural_cmp(&a.name, &b.name),
                 SortKey::Modified => self.date_of(a).cmp(&self.date_of(b)),
                 SortKey::Size => {
                     let size = |f: &File| f.size.as_deref().and_then(|s| s.parse::<u64>().ok());
@@ -192,6 +204,7 @@ impl Gdirect {
                         this.list_error = None;
                         this.selected
                             .retain(|id| this.entries.iter().any(|f| &f.id == id));
+                        this.select_pending();
                         this.name_parents();
                     }
                     Err(e) => {
@@ -213,6 +226,25 @@ impl Gdirect {
             },
         );
         cx.notify();
+    }
+
+    /// Selects the items waiting for the listing (see
+    /// [`Gdirect::pending_select`]) that it has, and scrolls to the first.
+    fn select_pending(&mut self) {
+        let want = std::mem::take(&mut self.pending_select);
+        let found: Vec<String> = want
+            .into_iter()
+            .filter(|id| self.entries.iter().any(|f| &f.id == id))
+            .collect();
+        let Some(first) = found.first().cloned() else {
+            return;
+        };
+        if let Some(ix) = self.shown().iter().position(|f| f.id == first) {
+            self.rows.scroll_to_item(ix, ScrollStrategy::Nearest);
+        }
+        self.cursor = Some(first.clone());
+        self.anchor = Some(first);
+        self.selected = found;
     }
 
     /// Fetches the listing's next page, as the list nears its end.
@@ -316,13 +348,70 @@ impl Gdirect {
     }
 
     fn set_location(&mut self, location: Location, cx: &mut Context<Self>) {
+        self.remember(&location);
+        self.arrive(location, cx);
+    }
+
+    /// Shows `location`, which history has been told about.
+    fn arrive(&mut self, location: Location, cx: &mut Context<Self>) {
         if !matches!(location.place, Place::Search(_)) {
             self.before_search = None;
             self.clear_search = true;
+            self.filters = places::Filters::default();
         }
         self.location = location;
         self.entered(cx);
         self.go(Page::Files, cx);
+    }
+
+    /// Records the location being left for `next`, for Back.
+    fn remember(&mut self, next: &Location) {
+        if *next == self.location {
+            return;
+        }
+        if self.history.last() != Some(&self.location) {
+            self.history.push(self.location.clone());
+            if self.history.len() > 100 {
+                self.history.remove(0);
+            }
+        }
+        self.future.clear();
+    }
+
+    /// The location before the last one navigated to.
+    pub fn go_back(&mut self, cx: &mut Context<Self>) {
+        let Some(previous) = self.history.pop() else {
+            return self.go(Page::Files, cx);
+        };
+        // Back up to a folder above selects the one it came from, as going up does.
+        let from = (previous.place == self.location.place
+            && self.location.path.starts_with(&previous.path))
+        .then(|| {
+            self.location
+                .path
+                .get(previous.path.len())
+                .map(|c| c.id.clone())
+        })
+        .flatten();
+        self.future.push(self.location.clone());
+        self.arrive(previous, cx);
+        self.pending_select.extend(from);
+    }
+
+    /// The location Back left.
+    pub fn go_forward(&mut self, cx: &mut Context<Self>) {
+        let Some(next) = self.future.pop() else {
+            return self.go(Page::Files, cx);
+        };
+        self.history.push(self.location.clone());
+        self.arrive(next, cx);
+    }
+
+    /// A place chosen from the Go menu or its shortcut.
+    pub fn go_place_from_menu(&mut self, place: Place, cx: &mut Context<Self>) {
+        if !self.accounts.is_empty() {
+            self.go_place(place, cx);
+        }
     }
 
     fn open_folder(&mut self, folder: &File, cx: &mut Context<Self>) {
@@ -331,13 +420,22 @@ impl Gdirect {
             self.reveal(folder.clone(), cx);
             return;
         }
-        self.location.enter(folder);
+        let mut next = self.location.clone();
+        next.enter(folder);
+        self.remember(&next);
+        self.location = next;
         self.entered(cx);
     }
 
+    /// Goes up to breadcrumb `depth`, with the folder it came from selected.
     fn back_to(&mut self, depth: usize, cx: &mut Context<Self>) {
-        self.location.back_to(depth);
+        let from = self.location.path.get(depth).map(|c| c.id.clone());
+        let mut next = self.location.clone();
+        next.back_to(depth);
+        self.remember(&next);
+        self.location = next;
         self.entered(cx);
+        self.pending_select.extend(from);
     }
 
     /// Opens the folder `id` where it lives, as the finished-upload list does.
@@ -393,6 +491,7 @@ impl Gdirect {
         self.selected.clear();
         self.cursor = None;
         self.anchor = None;
+        self.pending_select.clear();
         self.list_error = None;
         self.filter.clear();
         self.clear_filter = true;
@@ -453,7 +552,12 @@ impl Gdirect {
         if self.location.search().is_none() {
             self.sort = (SortKey::Name, true);
         }
-        self.location = Location::new(Place::Search(spec));
+        let next = Location::new(Place::Search(spec));
+        // Refining a search is one step back, not one per keystroke.
+        if self.location.search().is_none() {
+            self.remember(&next);
+        }
+        self.location = next;
         self.entered(cx);
         self.go(Page::Files, cx);
     }
@@ -474,6 +578,8 @@ impl Gdirect {
     fn clear_search_now(&mut self, cx: &mut Context<Self>) {
         self.clear_search = true;
         self.search_serial += 1;
+        // A new search starts without the last one's filters.
+        self.filters = places::Filters::default();
         self.end_search(cx);
         cx.notify();
     }
@@ -496,6 +602,7 @@ impl Gdirect {
         cx: &mut Context<Self>,
     ) {
         window.focus(&self.files_focus, cx);
+        self.keyboard_cursor = false;
         let id = file.id.clone();
         if event.click_count() >= 2 {
             self.selected.retain(|s| *s != id);
@@ -570,6 +677,7 @@ impl Gdirect {
             self.anchor = Some(id.clone());
         }
         self.cursor = Some(id);
+        self.keyboard_cursor = true;
         self.rows.scroll_to_item(next, ScrollStrategy::Nearest);
         cx.notify();
     }
@@ -691,6 +799,17 @@ impl Gdirect {
                 && Actions::of(file, this.location.trash()).rename
             {
                 this.open_dialog(Dialog::Rename(Box::new(file.clone())), window, cx);
+            }
+        }))
+        .on_action(cx.listener(|this, _: &CopyLink, window, cx| {
+            if this.typing(window, cx) {
+                return cx.propagate();
+            }
+            if let [file] = this.picked().as_slice()
+                && Actions::of(file, this.location.trash()).link
+            {
+                let file = file.clone();
+                this.copy_link(&file, cx);
             }
         }))
         .on_action(cx.listener(|this, _: &Parent, window, cx| {
@@ -1026,13 +1145,18 @@ impl Gdirect {
 
     pub fn restore(&mut self, files: Vec<File>, cx: &mut Context<Self>) {
         self.selected.clear();
+        // Back where they are listed (an undone trash), they come back selected.
+        self.pending_select = files.iter().map(|f| f.id.clone()).collect();
         self.operate(
             tf!("正在恢复 {}…", "Restoring {}…", item_count(files.len())),
             move |api| {
                 for file in &files {
                     api.untrash(&file.id)?;
                 }
-                Ok(tf!("已恢复 {}", "Restored {}", item_count(files.len())))
+                Ok(match files.as_slice() {
+                    [one] => tf!("已恢复“{}”", "Restored “{}”", one.name),
+                    many => tf!("已恢复 {}", "Restored {}", item_count(many.len())),
+                })
             },
             cx,
         );
@@ -1075,19 +1199,22 @@ impl Gdirect {
     fn set_starred(&mut self, files: Vec<File>, starred: bool, cx: &mut Context<Self>) {
         self.operate(
             if starred {
-                t("正在添加星标…", "Adding to Starred…")
+                t("正在添加星标…", "Adding to starred…")
             } else {
-                t("正在移除星标…", "Removing from Starred…")
+                t("正在移除星标…", "Removing from starred…")
             }
             .into(),
             move |api| {
                 for file in &files {
                     api.set_starred(&file.id, starred)?;
                 }
-                Ok(if starred {
-                    tf!("已为 {}加星标", "Starred {}", item_count(files.len()))
-                } else {
-                    tf!("已移除 {}的星标", "Unstarred {}", item_count(files.len()))
+                Ok(match (files.as_slice(), starred) {
+                    ([one], true) => tf!("已为“{}”加星标", "Starred “{}”", one.name),
+                    ([one], false) => tf!("已移除“{}”的星标", "Unstarred “{}”", one.name),
+                    (many, true) => tf!("已为 {}加星标", "Starred {}", item_count(many.len())),
+                    (many, false) => {
+                        tf!("已移除 {}的星标", "Unstarred {}", item_count(many.len()))
+                    }
                 })
             },
             cx,
@@ -1337,6 +1464,26 @@ impl Gdirect {
                 input.update(cx, |input, cx| input.focus(window, cx));
             });
         }
+        // The filter says "this folder" only where the list is one, and the
+        // field is wide enough for the words.
+        let hint = if self.location.folder().is_some() && self.wide(860.) {
+            filter_placeholder()
+        } else {
+            filter_list_placeholder()
+        };
+        if self.filter_hint != hint {
+            self.filter_hint = hint;
+            let input = self.filter_input.clone();
+            window.on_next_frame(move |window, cx| {
+                input.update(cx, |input, cx| input.set_placeholder(hint, window, cx));
+            });
+        }
+        let filter_focused = self
+            .filter_input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
+        let list_focused = self.files_focus.is_focused(window);
         Self::files_actions(div().id("files"), cx)
             .track_focus(&self.files_focus)
             .key_context(keymap::FILES)
@@ -1348,14 +1495,32 @@ impl Gdirect {
             }))
             .child(self.render_toolbar(cx))
             .child(if self.selected.is_empty() {
-                self.render_breadcrumb(cx).into_any_element()
+                self.render_breadcrumb(filter_focused, cx)
+                    .into_any_element()
             } else {
                 self.render_selection(cx).into_any_element()
             })
             .when(self.location.search().is_some(), |d| {
                 d.child(self.render_chips(cx))
             })
-            .child(self.render_listing(cx))
+            .when(
+                self.location.trash() && self.location.path.is_empty() && !self.entries.is_empty(),
+                |d| {
+                    d.child(
+                        ui::text(
+                            TypeRole::BodyMedium,
+                            ColorRole::ON_SURFACE_VARIANT,
+                            t(
+                                "回收站中的项目会在 30 天后被永久删除",
+                                "Items in trash are deleted forever after 30 days",
+                            ),
+                        )
+                        .px(rem(24.))
+                        .pb(rem(8.)),
+                    )
+                },
+            )
+            .child(self.render_listing(list_focused, cx))
     }
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1389,10 +1554,13 @@ impl Gdirect {
                             .monogram(initial)
                             .size(28.),
                     )
-                    // Narrow windows show the avatar alone.
-                    .when(self.wide(760.), |d| d.child(account.clone())),
+                    // The account gives way first: narrower windows show
+                    // the avatar alone, and the route chip keeps its words.
+                    .when(self.wide(1100.), |d| d.child(account.clone())),
             );
-        let mut menu = MaterialMenu::new("account-menu").width(280.);
+        let mut menu = MaterialMenu::new("account-menu")
+            .style(MenuStyle::Baseline)
+            .width(280.);
         let count = self.accounts.len();
         for (i, email) in self.accounts.clone().into_iter().enumerate() {
             let current = Some(&email) == self.account.as_ref();
@@ -1475,7 +1643,7 @@ impl Gdirect {
                     .items_center()
                     .gap(rem(12.))
                     // The route chip leaves narrow windows; the Routes page has it.
-                    .when(self.wide(960.), |d| {
+                    .when(self.wide(ROUTE_CHIP), |d| {
                         d.child(match route {
                             Some((ip, ms, _)) => MaterialButton::new("route")
                                 .variant(ButtonVariant::Outlined)
@@ -1493,7 +1661,7 @@ impl Gdirect {
                                             div()
                                                 .size(rem(8.))
                                                 .rounded_full()
-                                                .bg(color(ColorRole::SUCCESS)),
+                                                .bg(color(format::latency_role(ms))),
                                         )
                                         .child(ui::mono(ip))
                                         .when_some(ms, |d, ms| {
@@ -1507,12 +1675,17 @@ impl Gdirect {
                                         }),
                                 )
                                 .into_any_element(),
-                            None if self.connecting => MaterialButton::new("route")
-                                .variant(ButtonVariant::Outlined)
-                                .tone(ButtonTone::Neutral)
-                                .loading(true, t("正在选择线路", "Choosing a route"))
-                                .child(t("正在选择线路…", "Choosing a route…"))
-                                .into_any_element(),
+                            None if self.connecting || self.scan.is_some() => {
+                                MaterialButton::new("route")
+                                    .variant(ButtonVariant::Outlined)
+                                    .tone(ButtonTone::Neutral)
+                                    .loading(true, t("正在连接", "Connecting"))
+                                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                        this.go(Page::Endpoints, cx)
+                                    }))
+                                    .child(t("正在连接…", "Connecting…"))
+                                    .into_any_element()
+                            }
                             None => MaterialButton::new("route")
                                 .variant(ButtonVariant::Outlined)
                                 .tone(ButtonTone::Neutral)
@@ -1525,7 +1698,9 @@ impl Gdirect {
                         })
                     })
                     // Narrow windows keep a status dot in its place.
-                    .when(!self.wide(960.), |d| d.child(self.render_route_dot(cx)))
+                    .when(!self.wide(ROUTE_CHIP), |d| {
+                        d.child(self.render_route_dot(cx))
+                    })
                     .child(
                         MenuPopup::new("account-popup", trigger, menu)
                             .anchor(Anchor::TopRight)
@@ -1543,17 +1718,16 @@ impl Gdirect {
     fn render_route_dot(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (ink, tip): (ColorRole, SharedString) = match self.current_route() {
             Some((ip, Some(ms), _)) => (
-                ColorRole::SUCCESS,
+                format::latency_role(Some(ms)),
                 tf!("当前线路 {ip} · {ms} ms", "Route {ip} · {ms} ms").into(),
             ),
             Some((ip, None, _)) => (
                 ColorRole::SUCCESS,
                 tf!("当前线路 {ip}", "Route {ip}").into(),
             ),
-            None if self.connecting => (
-                ColorRole::OUTLINE,
-                t("正在选择线路…", "Choosing a route…").into(),
-            ),
+            None if self.connecting || self.scan.is_some() => {
+                (ColorRole::OUTLINE, t("正在连接…", "Connecting…").into())
+            }
             None => (ColorRole::ERROR, t("未连接", "Not connected").into()),
         };
         let button = div()
@@ -1606,7 +1780,9 @@ impl Gdirect {
                         this.set_filters(|f| set(f), cx)
                     }))
             };
-        let mut kinds = MaterialMenu::new("kind-menu").width(220.).item(option(
+        // Baseline menus mark the choice in the secondary container; the
+        // Expressive ones' tertiary reads as an alarm in this palette.
+        let mut kinds = choice_menu("kind-menu", 220.).item(option(
             t("任何类型", "Any type"),
             filters.kind.is_none(),
             true,
@@ -1620,7 +1796,7 @@ impl Gdirect {
                 Box::new(move |f| f.kind = Some(kind)),
             ));
         }
-        let mut owners = MaterialMenu::new("owner-menu").width(200.);
+        let mut owners = choice_menu("owner-menu", 200.);
         for owner in [Owner::Any, Owner::Me, Owner::NotMe] {
             owners = owners.item(option(
                 places::owner_label(owner),
@@ -1629,7 +1805,7 @@ impl Gdirect {
                 Box::new(move |f| f.owner = owner),
             ));
         }
-        let mut modified = MaterialMenu::new("modified-menu").width(200.);
+        let mut modified = choice_menu("modified-menu", 200.);
         for when in Modified::ALL {
             modified = modified.item(option(
                 when.label(),
@@ -1707,8 +1883,7 @@ impl Gdirect {
                     cx.notify();
                 }))
         };
-        let menu = MaterialMenu::new("sort-menu")
-            .width(200.)
+        let menu = choice_menu("sort-menu", 200.)
             .item(item(
                 t("名称", "Name"),
                 key == SortKey::Name,
@@ -1778,16 +1953,16 @@ impl Gdirect {
             .into_any_element()
     }
 
-    fn render_breadcrumb(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_breadcrumb(&self, filter_focused: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let names = self.location.crumbs();
         let last = names.len() - 1;
-        // Deep paths in narrow windows show the place, "…" and the last two.
-        let collapsed = (!self.wide(760.) && names.len() >= 4).then(|| 1..last - 1);
+        let filter_width = if self.wide(860.) { 220. } else { 168. };
+        let collapsed = self.collapsed_crumbs(&names, filter_width);
         let mut crumbs = div()
             .flex_1()
-            .min_w(rem(120.))
+            .min_w(rem(80.))
+            .overflow_hidden()
             .flex()
-            .flex_wrap()
             .items_center()
             .gap(rem(4.));
         for (depth, name) in names.iter().enumerate() {
@@ -1800,12 +1975,22 @@ impl Gdirect {
                 continue;
             }
             if depth > 0 {
-                crumbs = crumbs.child(ui::icon("chevron_right", 24., ColorRole::OUTLINE));
+                crumbs = crumbs.child(div().flex_none().flex().child(ui::icon(
+                    "chevron_right",
+                    24.,
+                    ColorRole::OUTLINE,
+                )));
             }
+            // One line: the last crumb shortens to an ellipsis, the others keep their names.
             let label = ui::type_role(div(), TypeRole::TitleLarge)
                 .px(rem(8.))
                 .py(rem(4.))
                 .rounded(RADIUS_SMALL)
+                .whitespace_nowrap()
+                .when(depth == last, |d| {
+                    d.min_w_0().overflow_hidden().text_ellipsis()
+                })
+                .when(depth != last, |d| d.flex_none())
                 .child(name.clone());
             crumbs = crumbs.child(if depth == last {
                 label
@@ -1823,10 +2008,12 @@ impl Gdirect {
                     .into_any_element()
             });
         }
-        if self.loading {
+        // An empty list says "Loading…" itself; one indicator is enough.
+        if self.loading && !self.shown().is_empty() {
             crumbs = crumbs.child(
                 div()
                     .ml(rem(8.))
+                    .flex_none()
                     .child(CircularProgress::new("loading", t("正在加载", "Loading")).size(20.)),
             );
         }
@@ -1861,27 +2048,46 @@ impl Gdirect {
         });
         // The search has chips instead; the local filter would read as a second search.
         let filter = self.location.search().is_none().then(|| {
-            div().w(rem(220.)).child(
+            div().flex_none().w(rem(filter_width)).child(
                 SearchField::new(&self.filter_input)
                     .id("filter")
                     .field_style(SearchFieldStyle::Surface)
-                    .leading(ui::icon("filter_list", 24., ColorRole::ON_SURFACE_VARIANT)),
+                    .leading(ui::icon("filter_list", 24., ColorRole::ON_SURFACE_VARIANT))
+                    .when(!self.filter.is_empty(), |field| {
+                        field.trailing(
+                            IconButton::new(
+                                "clear-filter",
+                                Symbol::CLOSE,
+                                t("清除筛选", "Clear filter"),
+                            )
+                            .on_click(cx.listener(
+                                |this, _: &ClickEvent, window, cx| {
+                                    this.clear_filter_now(cx);
+                                    window.focus(&this.files_focus, cx);
+                                },
+                            )),
+                        )
+                    })
+                    // A compact desktop field, with an outlined field's
+                    // focus: the primary colour, thicker.
+                    .h(rem(44.))
+                    .when(filter_focused, |field| {
+                        field.border_2().border_color(color(ColorRole::PRIMARY))
+                    }),
             )
         });
         div()
-            .min_h(rem(64.))
+            .h(rem(BAR_HEIGHT))
+            .flex_none()
             .flex()
-            .flex_wrap()
             .items_center()
             .gap(rem(8.))
-            .py(rem(8.))
             .pl(rem(16.))
             .pr(rem(16.))
             .child(crumbs)
-            // The controls wrap as one group, at the right.
             .child(
                 div()
-                    .ml_auto()
+                    .flex_none()
                     .flex()
                     .items_center()
                     .gap(rem(8.))
@@ -1925,6 +2131,57 @@ impl Gdirect {
             )
     }
 
+    /// The crumbs a breadcrumb hides behind "…" so the rest fit on one line:
+    /// those after the place, as few as do, keeping the place and the last.
+    fn collapsed_crumbs(
+        &self,
+        names: &[String],
+        filter_width: f32,
+    ) -> Option<std::ops::Range<usize>> {
+        let last = names.len() - 1;
+        if last < 2 {
+            return None;
+        }
+        // TitleLarge: 22px, about half that for Latin letters; the label's
+        // padding and the chevron before it.
+        let width = |name: &String| -> f32 {
+            name.chars()
+                .map(|c| if c.is_ascii() { 12. } else { 22. })
+                .sum::<f32>()
+                + 16.
+                + 28.
+        };
+        let mut controls = 112. + 16.;
+        if self.location.search().is_none() {
+            controls += filter_width + 8.;
+        }
+        if self.grid || !self.show_modified() || !self.show_size() {
+            controls += 48.;
+        }
+        if self.clipboard.is_some() {
+            controls += 200.;
+        }
+        if self.location.trash() {
+            controls += 160.;
+        }
+        if self.loading {
+            controls += 28.;
+        }
+        let room = self.content_width() - 32. - controls;
+        let widths: Vec<f32> = names.iter().map(width).collect();
+        let total: f32 = widths.iter().sum();
+        if total <= room {
+            return None;
+        }
+        // Hide 1..end, the "…" taking its own place.
+        let more = 40. + 28.;
+        let mut end = 2;
+        while end < last && widths[0] + more + widths[end..].iter().sum::<f32>() > room {
+            end += 1;
+        }
+        Some(1..end)
+    }
+
     fn render_selection(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let picked = self.picked();
         let label: SharedString = match picked.as_slice() {
@@ -1938,11 +2195,12 @@ impl Gdirect {
             IconButton::new(id, symbol, label)
         };
         div()
-            .min_h(rem(64.))
+            .h(rem(BAR_HEIGHT))
+            .flex_none()
+            .overflow_hidden()
             .mx(rem(8.))
             .px(rem(8.))
             .flex()
-            .flex_wrap()
             .items_center()
             .gap(rem(4.))
             .rounded(rem(32.))
@@ -2001,7 +2259,7 @@ impl Gdirect {
                                 "Download · {}",
                                 count(
                                     self.settings.connections as usize,
-                                    "连接",
+                                    "个连接",
                                     "connection",
                                     "connections"
                                 )
@@ -2044,9 +2302,9 @@ impl Gdirect {
                         "star",
                         Symbol::STAR,
                         if starred {
-                            t("移除星标", "Remove from Starred")
+                            t("移除星标", "Remove from starred")
                         } else {
-                            t("添加星标", "Add to Starred")
+                            t("添加星标", "Add to starred")
                         },
                     )
                     .toggle(true)
@@ -2140,6 +2398,13 @@ impl Gdirect {
                 t("没有找到结果", "No results").into(),
                 if spec.text.is_empty() {
                     t("换个筛选条件试试。", "Try other filters.").into()
+                } else if self.filters.any() || self.filters.full_text {
+                    tf!(
+                        "没有符合筛选条件且名称包含“{}”的项目",
+                        "No items match “{}” with the current filters",
+                        spec.text
+                    )
+                    .into()
                 } else {
                     tf!(
                         "云端硬盘中没有名称包含“{}”的项目",
@@ -2152,9 +2417,13 @@ impl Gdirect {
         }
     }
 
-    fn render_listing(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_listing(&self, list_focused: bool, cx: &mut Context<Self>) -> AnyElement {
         if self.api.is_none() {
-            let body = if let Some((_, scan)) = &self.scan {
+            // Saved routes are checked again, which is no first run.
+            let saved = !self.endpoints.is_empty();
+            let body = if let Some((_, scan)) = &self.scan
+                && !saved
+            {
                 ui::empty(
                     "radar",
                     tf!(
@@ -2168,13 +2437,22 @@ impl Gdirect {
                         "The first run looks for addresses reachable from your network, which takes about a minute. See Routes for progress and results.",
                     ),
                 )
+            } else if self.scan.is_some() {
+                ui::empty(
+                    "network_ping",
+                    t("正在连接…", "Connecting…"),
+                    t(
+                        "已保存的线路超过一天未验证，正在重新检查。进度见“线路”页。",
+                        "Your saved routes haven’t been checked for a day, so they’re being checked again. See Routes for progress.",
+                    ),
+                )
             } else if self.connecting {
                 ui::empty(
                     "network_ping",
-                    t("正在选择线路", "Choosing a route"),
+                    t("正在连接…", "Connecting…"),
                     t(
-                        "首次使用会扫描可直达的 Google 前端，大约需要半分钟。",
-                        "The first run scans for reachable Google front ends, which takes about 30 seconds.",
+                        "正在通过已保存的线路连接 Google 云端硬盘。",
+                        "Connecting to Google Drive through your saved routes.",
                     ),
                 )
             } else {
@@ -2183,8 +2461,8 @@ impl Gdirect {
                     t("未连接到 Google 云端硬盘", "Not connected to Google Drive"),
                     self.connect_error.clone().unwrap_or_else(|| {
                         t(
-                            "请先在“线路”页扫描可用地址。",
-                            "Scan for usable addresses in Routes first.",
+                            "请先在“线路”页扫描可直达的地址。",
+                            "Scan for reachable addresses in Routes first.",
                         )
                         .into()
                     }),
@@ -2244,7 +2522,6 @@ impl Gdirect {
             .flex()
             .flex_col()
             .px(rem(8.))
-            .pb(rem(self.listing_bottom()))
             .relative()
             .on_mouse_down(MouseButton::Left, focus_list)
             .child(background)
@@ -2259,15 +2536,27 @@ impl Gdirect {
                             this.load_more();
                         }
                         let shown: Vec<File> = this.shown().into_iter().cloned().collect();
+                        let selected = |ix: Option<usize>| {
+                            ix.and_then(|ix| shown.get(ix))
+                                .is_some_and(|f| this.selected.contains(&f.id))
+                        };
                         range
                             .map(|ix| match shown.get(ix) {
-                                Some(f) => this.render_row(ix, f, cx),
+                                Some(f) => {
+                                    let joins =
+                                        (selected(ix.checked_sub(1)), selected(Some(ix + 1)));
+                                    let ring = list_focused
+                                        && this.keyboard_cursor
+                                        && this.cursor.as_deref() == Some(f.id.as_str());
+                                    this.render_row(ix, f, joins, ring, cx)
+                                }
                                 None => this.render_more(cx).into_any_element(),
                             })
                             .collect::<Vec<_>>()
                     }),
                 )
                 .track_scroll(&self.rows)
+                .pb(rem(Self::LISTING_BOTTOM))
                 .flex_1(),
             )
             .into_any_element()
@@ -2305,26 +2594,26 @@ impl Gdirect {
         id: impl Into<ElementId>,
         file: &File,
         cx: &mut Context<Self>,
-    ) -> MaterialContextMenu {
+    ) -> ui::ContextMenu {
         let id: ElementId = id.into();
         let (file, view) = (file.clone(), cx.entity().downgrade());
         let how = (self.location.trash(), self.settings.office);
         let menu_id = ElementId::from((id.clone(), "menu"));
-        MaterialContextMenu::new(id, move |_, _| {
+        ui::ContextMenu::new(id, move |_, _| {
             file_menu(menu_id.clone(), &file, how, view.clone())
         })
     }
 
     /// A right click on the listing's empty space offers what + does here,
     /// and paste.
-    fn folder_context_menu(&self, cx: &mut Context<Self>) -> MaterialContextMenu {
+    fn folder_context_menu(&self, cx: &mut Context<Self>) -> ui::ContextMenu {
         let here = Here {
             writable: self.location.writable(),
             paste: self.clipboard.is_some(),
             trash: self.location.trash() && !self.entries.is_empty(),
         };
         let view = cx.entity().downgrade();
-        MaterialContextMenu::new("folder-context", move |_, _| {
+        ui::ContextMenu::new("folder-context", move |_, _| {
             folder_menu("folder-context-menu", here, view.clone())
         })
     }
@@ -2339,11 +2628,10 @@ impl Gdirect {
         })
     }
 
-    /// The listing's bottom padding: a snackbar on screen takes the room
-    /// above the edge, so it never covers the last row.
-    fn listing_bottom(&self) -> f32 {
-        if self.toast.is_some() { 80. } else { 16. }
-    }
+    /// The room under the listing's last row, inside its scrolling content:
+    /// a snackbar floats over the list, and the list scrolls the last row
+    /// clear of it. Always there, so nothing moves when one appears.
+    const LISTING_BOTTOM: f32 = 80.;
 
     /// The list's columns give way, last first, as the window narrows.
     fn show_location(&self) -> bool {
@@ -2467,8 +2755,19 @@ impl Gdirect {
             })
     }
 
-    fn render_row(&self, ix: usize, file: &File, cx: &mut Context<Self>) -> AnyElement {
+    /// One row. A selected row meets the selected rows next to it (`joins`:
+    /// above, below) as one block; `ring` marks the keyboard's row.
+    fn render_row(
+        &self,
+        ix: usize,
+        file: &File,
+        (above, below): (bool, bool),
+        ring: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let selected = self.selected.contains(&file.id);
+        let (above, below) = (selected && above, selected && below);
+        let corner = |joined: bool| rem(if joined { 4. } else { 28. });
         // A row whose ⋮ menu is open stays highlighted while it is.
         let menu_open = self.row_menu.as_deref() == Some(file.id.as_str());
         let state = self.file_state(file);
@@ -2476,7 +2775,7 @@ impl Gdirect {
         div()
             .id(("row", ix))
             .h(rem(58.))
-            .pt(rem(2.))
+            .when(!above, |d| d.pt(rem(2.)))
             .relative()
             .child(self.file_context_menu(("row-context", ix), file, cx))
             .child(
@@ -2484,9 +2783,14 @@ impl Gdirect {
                     .size_full()
                     .flex()
                     .items_center()
-                    // The header's padding, so the columns line up under it.
-                    .px(rem(16.))
-                    .rounded(rem(28.))
+                    // The header's padding, so the columns line up under it
+                    // (less the ring's width, which takes from it).
+                    .px(rem(if ring { 14. } else { 16. }))
+                    .rounded_t(corner(above))
+                    .rounded_b(corner(below))
+                    .when(ring, |d| {
+                        d.border_2().border_color(color(ColorRole::PRIMARY))
+                    })
                     .when(selected, |d| d.bg(color(ColorRole::SECONDARY_CONTAINER)))
                     .when(!selected && menu_open, |d| {
                         d.bg(color(ColorRole::ON_SURFACE).opacity(0.08))
@@ -2549,7 +2853,19 @@ impl Gdirect {
             .into_any_element()
     }
 
+    /// The ⋮ button. A press opens the file's menu from the pointer, kept
+    /// whole inside the window; the keyboard opens it from the button.
     fn render_row_menu(&self, ix: usize, file: &File, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .relative()
+            .child(self.render_row_popup(ix, file, cx))
+            .child(
+                self.file_context_menu(("more-press", ix), file, cx)
+                    .on_left_press(),
+            )
+    }
+
+    fn render_row_popup(&self, ix: usize, file: &File, cx: &mut Context<Self>) -> impl IntoElement {
         let open = self.row_menu.as_deref() == Some(file.id.as_str());
         let trigger_id = file.id.clone();
         let trigger = IconButton::new(
@@ -2578,9 +2894,13 @@ impl Gdirect {
         MenuPopup::new(("row-popup", ix), trigger, menu)
             .anchor(Anchor::TopRight)
             .open(open)
+            // A press opens the pointer's menu over the button instead (see
+            // `render_row_menu`); this one opens from the keyboard only.
             .on_open_change(cx.listener(move |this, open: &bool, _, cx| {
-                this.row_menu = open.then(|| menu_id.clone());
-                cx.notify();
+                if !*open && this.row_menu.as_deref() == Some(menu_id.as_str()) {
+                    this.row_menu = None;
+                    cx.notify();
+                }
             }))
     }
 
@@ -2591,7 +2911,7 @@ impl Gdirect {
             .min_h_0()
             .overflow_y_scroll()
             .px(rem(16.))
-            .pb(rem(self.listing_bottom()))
+            .pb(rem(Self::LISTING_BOTTOM))
             .relative()
             .on_mouse_down(MouseButton::Left, self.focus_list(cx))
             .child(self.folder_context_menu(cx))
@@ -2699,6 +3019,14 @@ impl Gdirect {
     }
 }
 
+/// A menu of choices, the chosen one marked.
+fn choice_menu(id: &'static str, width: f32) -> MaterialMenu {
+    MaterialMenu::new(id)
+        .style(MenuStyle::Baseline)
+        .density(MenuDensity::Dense)
+        .width(width)
+}
+
 /// A file's kind tile, with a shortcut's arrow in its corner. On a selected
 /// row, whose container is the tile's own role for folders, it sits on the
 /// lowest surface instead.
@@ -2792,7 +3120,7 @@ fn file_menu(
         }
         if can.download {
             let label: SharedString = if file.folder() {
-                t("下载整个文件夹", "Download folder").into()
+                t("下载", "Download").into()
             } else if let Some((_, ext)) = native.then(|| format::export(file, office)).flatten() {
                 let ext = ext.to_uppercase();
                 tf!("下载为 {ext}", "Download as {ext}").into()
@@ -2839,13 +3167,13 @@ fn file_menu(
         if can.star {
             share.push(if file.starred {
                 item(
-                    t("移除星标", "Remove from Starred").into(),
+                    t("移除星标", "Remove from starred").into(),
                     "star_border",
                     |this, f, _, cx| this.set_starred(vec![f], false, cx),
                 )
             } else {
                 item(
-                    t("添加星标", "Add to Starred").into(),
+                    t("添加星标", "Add to starred").into(),
                     "star",
                     |this, f, _, cx| this.set_starred(vec![f], true, cx),
                 )
@@ -2875,7 +3203,15 @@ fn file_menu(
             )]);
         }
     }
-    menu_of(MaterialMenu::new(id).width(220.), groups)
+    menu_of(dense_menu(id), groups)
+}
+
+/// A file or folder menu: dense, as desktop menus are, so a file's dozen
+/// actions fit a short window.
+fn dense_menu(id: impl Into<ElementId>) -> MaterialMenu {
+    MaterialMenu::new(id)
+        .width(220.)
+        .density(MenuDensity::Dense)
 }
 
 /// Adds groups of items to a menu, a divider between groups.
@@ -2950,5 +3286,5 @@ fn folder_menu(id: impl Into<ElementId>, here: Here, view: WeakEntity<Gdirect>) 
         this.refresh(cx)
     }));
     groups.push(rest);
-    menu_of(MaterialMenu::new(id).width(220.), groups)
+    menu_of(dense_menu(id), groups)
 }

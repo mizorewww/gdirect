@@ -55,6 +55,10 @@ def macos(executable: Path, version: str, archive: Path):
                 'CFBundleShortVersionString': version,
                 'CFBundleVersion': version,
                 'CFBundleInfoDictionaryVersion': '6.0',
+                # The system's own menu items (Services, the Edit menu's
+                # extras) follow the interface's languages.
+                'CFBundleDevelopmentRegion': 'en',
+                'CFBundleLocalizations': ['en', 'zh-Hans'],
                 'LSMinimumSystemVersion': '15.0',
                 'LSApplicationCategoryType': 'public.app-category.productivity',
                 'NSHighResolutionCapable': True,

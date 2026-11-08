@@ -227,9 +227,80 @@ pub fn home(path: &std::path::Path) -> String {
     }
 }
 
+/// A route's health by its latency, as the Routes page grades it: green
+/// under 300 ms, amber under a second, red beyond; green when unmeasured.
+pub fn latency_role(ms: Option<i64>) -> gpui_kit_material::prelude::ColorRole {
+    use gpui_kit_material::prelude::ColorRole;
+    match ms {
+        Some(ms) if ms >= 1000 => ColorRole::ERROR,
+        Some(ms) if ms >= 300 => ColorRole::WARNING,
+        _ => ColorRole::SUCCESS,
+    }
+}
+
+/// Names in the order people expect: case aside, and runs of digits by their
+/// value, so "Photo 2" comes before "Photo 10".
+pub fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let (mut a, mut b) = (a.chars().peekable(), b.chars().peekable());
+    loop {
+        match (a.peek().copied(), b.peek().copied()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
+                let run = |chars: &mut std::iter::Peekable<std::str::Chars>| {
+                    let mut digits = String::new();
+                    while let Some(c) = chars.peek().copied().filter(char::is_ascii_digit) {
+                        digits.push(c);
+                        chars.next();
+                    }
+                    digits
+                };
+                let (x, y) = (run(&mut a), run(&mut b));
+                let (tx, ty) = (x.trim_start_matches('0'), y.trim_start_matches('0'));
+                let order = tx.len().cmp(&ty.len()).then_with(|| tx.cmp(ty));
+                if order != Ordering::Equal {
+                    return order;
+                }
+            }
+            (Some(x), Some(y)) => {
+                let order = x.to_lowercase().cmp(y.to_lowercase());
+                if order != Ordering::Equal {
+                    return order;
+                }
+                a.next();
+                b.next();
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_sort_naturally() {
+        use std::cmp::Ordering::*;
+        assert_eq!(natural_cmp("Photo 2", "photo 10"), Less);
+        assert_eq!(natural_cmp("a10b", "a9c"), Greater);
+        assert_eq!(natural_cmp("File", "file"), Equal);
+        assert_eq!(natural_cmp("x007", "x7"), Equal);
+        assert_eq!(natural_cmp("第2章", "第10章"), Less);
+        assert_eq!(
+            latency_role(Some(299)),
+            gpui_kit_material::prelude::ColorRole::SUCCESS
+        );
+        assert_eq!(
+            latency_role(Some(300)),
+            gpui_kit_material::prelude::ColorRole::WARNING
+        );
+        assert_eq!(
+            latency_role(Some(1000)),
+            gpui_kit_material::prelude::ColorRole::ERROR
+        );
+    }
 
     #[test]
     fn kinds_fall_back_to_the_extension() {

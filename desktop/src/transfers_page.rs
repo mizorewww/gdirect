@@ -635,7 +635,7 @@ impl Gdirect {
                 MaterialButton::new("open-target")
                     .icon(Symbol::FOLDER_OPEN)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.go(Page::Files, cx)))
-                    .child(t("在云盘中查看", "Show in Google Drive"))
+                    .child(t("在云端硬盘中查看", "Show in Google Drive"))
             } else {
                 MaterialButton::new("open-target")
                     .icon(Symbol::FOLDER_OPEN)
@@ -670,8 +670,8 @@ impl Gdirect {
                             t("队列是空的", "The queue is empty")
                         } else {
                             t(
-                                "队列是空的 · 在“文件”页选择文件后点“下载”",
-                                "The queue is empty · select files on the Files page and choose Download",
+                                "队列是空的。在“文件”页选择文件后点“下载”。",
+                                "The queue is empty. Select files on the Files page and choose Download.",
                             )
                         },
                     ))
@@ -794,7 +794,7 @@ impl Gdirect {
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.show_folder(parent.0.clone(), parent.1.clone(), cx)
                         }))
-                        .child(t("在云盘中查看", "Show in Google Drive"))
+                        .child(t("在云端硬盘中查看", "Show in Google Drive"))
                         .into_any_element(),
                     None,
                 ));

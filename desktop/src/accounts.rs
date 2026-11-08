@@ -3,6 +3,7 @@ use crate::i18n::t;
 use crate::tf;
 use crate::{app::Gdirect, ui};
 use gdirect::{api::Api, store::Store};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::{prelude::*, *};
 use gpui_kit_material::icons::Symbol;
 use gpui_kit_material::prelude::*;
@@ -258,14 +259,18 @@ impl Gdirect {
                         )),
                 )
         };
+        // The column keeps its own height, taller than a short window, and
+        // the page scrolls to its buttons; a stretched one would be clipped.
         div()
             .id("welcome")
             .size_full()
-            .overflow_y_scroll()
+            .overflow_y_scrollbar()
             .flex()
             .justify_center()
+            .items_start()
             .child(
                 div()
+                    .flex_none()
                     .w_full()
                     .max_w(rem(600.))
                     .px(rem(24.))
@@ -283,7 +288,7 @@ impl Gdirect {
                             .justify_center()
                             .child(ui::symbol("add_to_drive", true).size(rem(36.)).color(color(ColorRole::ON_PRIMARY_CONTAINER))),
                     )
-                    .child(ui::text(TypeRole::HeadlineMedium, ColorRole::ON_SURFACE, t("连接你的 Google 云盘", "Connect your Google Drive")))
+                    .child(ui::text(TypeRole::HeadlineMedium, ColorRole::ON_SURFACE, t("连接你的 Google 云端硬盘", "Connect your Google Drive")))
                     .child(ui::text(
                         TypeRole::BodyLarge,
                         ColorRole::ON_SURFACE_VARIANT,
@@ -329,7 +334,7 @@ impl Gdirect {
                             ))
                             .child(step(
                                 "3",
-                                t("在浏览器里登录", "Sign in in your browser"),
+                                t("在浏览器里登录", "Sign in with your browser"),
                                 t(
                                     "浏览器会打开 Google 登录页。看到“Google 尚未验证此应用”时点“继续”——这是你自己创建的应用。授权后回到这里，文件就会出现。",
                                     "Your browser opens Google’s sign-in page. If it says “Google hasn’t verified this app”, choose Continue — it is the app you just created. After you allow access, come back here and your files appear.",

@@ -8,6 +8,7 @@ use crate::{
     places::{self, Place},
     ui,
 };
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::{prelude::*, *};
 use gpui_kit_material::icons::Symbol;
 use gpui_kit_material::prelude::*;
@@ -180,7 +181,14 @@ impl Gdirect {
         ))
     }
 
-    fn new_fab(&self, expanded: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    fn new_fab(&self, expanded: bool, floating: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let id = |name: &'static str| -> ElementId {
+            if floating {
+                (name, 1usize).into()
+            } else {
+                name.into()
+            }
+        };
         let disabled = self.account.is_none() || self.api.is_none();
         let toggle = cx.listener(|this, event: &ClickEvent, _, cx| {
             if matches!(event, ClickEvent::Keyboard(_)) {
@@ -189,26 +197,27 @@ impl Gdirect {
             }
         });
         let fab = if expanded {
-            ExtendedFab::new("new", Symbol::ADD, t("新建", "New"))
+            ExtendedFab::new(id("new"), Symbol::ADD, t("新建", "New"))
                 .color(FabColor::PrimaryContainer)
                 .disabled(disabled)
                 .on_click(toggle)
                 .into_any_element()
         } else {
-            Fab::new("new", Symbol::ADD, t("新建", "New"))
+            Fab::new(id("new"), Symbol::ADD, t("新建", "New"))
                 .color(FabColor::PrimaryContainer)
                 .disabled(disabled)
                 .on_click(toggle)
                 .into_any_element()
         };
         // Places that take no new files make them in My Drive, as Drive does.
-        let menu = MaterialMenu::new("new-menu")
+        let menu = MaterialMenu::new(id("new-menu"))
             .width(220.)
             .item(
                 MaterialMenuItem::new(t("新建文件夹", "New folder"))
                     .leading(ui::symbol("create_new_folder", false))
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.new_menu = false;
+                        this.rail_modal = false;
                         this.go(Page::Files, cx);
                         this.writable_here(cx);
                         this.open_dialog(Dialog::NewFolder, window, cx);
@@ -220,6 +229,7 @@ impl Gdirect {
                     .divider(false)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.new_menu = false;
+                        this.rail_modal = false;
                         this.writable_here(cx);
                         this.choose_upload(false, cx);
                     })),
@@ -229,11 +239,12 @@ impl Gdirect {
                     .leading(ui::symbol("drive_folder_upload", false))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.new_menu = false;
+                        this.rail_modal = false;
                         this.writable_here(cx);
                         this.choose_upload(true, cx);
                     })),
             );
-        MenuPopup::new("new-popup", fab, menu)
+        MenuPopup::new(id("new-popup"), fab, menu)
             .open(self.new_menu)
             .on_open_change(cx.listener(|this, open: &bool, _, cx| {
                 // The menu ignores its trigger's disabled state.
@@ -254,7 +265,8 @@ impl Gdirect {
         } else {
             (self.page_items(), Vec::new())
         };
-        let fab = !floating;
+        // Signed out there is nothing to create.
+        let fab = signed_in;
         // The kit's geometry: top inset, menu, FAB and the gap under them;
         // then the items and section headers, and the bottom inset.
         let header = 44. + 48. + if fab { 4. + 56. } else { 0. } + 40.;
@@ -267,6 +279,12 @@ impl Gdirect {
         let room = f32::from(viewport.height)
             - f32::from(TITLE_BAR)
             - if footer.is_some() { 64. } else { 0. };
+        let need = header + list + 20.;
+        // A short window takes back most of the kit's top inset, made for a
+        // window without a title bar, and the bottom one under the last
+        // label; what still does not fit scrolls, with a scrollbar.
+        let (lift, drop) = if need > room { (28., 16.) } else { (0., 0.) };
+        let overflows = need - lift - drop > room + 0.5;
         let mut rail = NavigationRail::new(
             if floating { "modal-rail" } else { "rail" },
             t("主导航", "Main navigation"),
@@ -293,7 +311,7 @@ impl Gdirect {
             ));
         }
         if fab {
-            rail = rail.fab(self.new_fab(expanded, cx));
+            rail = rail.fab(self.new_fab(expanded, floating, cx));
         }
         div()
             .flex_none()
@@ -309,15 +327,23 @@ impl Gdirect {
                     })
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
+                    .overflow_y_scrollbar()
                     .child(
                         div()
-                            .h(rem(room.max(header + list + 28.)))
+                            .h(rem(room.max(need)))
+                            .mt(rem(-lift))
+                            .mb(rem(-drop))
                             .flex()
                             .child(rail),
                     ),
             )
-            .children(footer)
+            // The list scrolls under the footer: a line marks where.
+            .children(footer.map(|footer| {
+                footer.when(overflows, |d| {
+                    d.border_t_1()
+                        .border_color(color(ColorRole::OUTLINE_VARIANT))
+                })
+            }))
     }
 
     /// The rail beside the content.
@@ -350,8 +376,13 @@ impl Gdirect {
         let (scrim_close, key_close) = (close.clone(), close);
         Some(
             div()
+                .id("nav-overlay")
                 .absolute()
                 .inset_0()
+                // The list behind takes neither the pointer nor the wheel;
+                // a press on the scrim only closes the rail.
+                .occlude()
+                .on_scroll(|_, _, cx| cx.stop_propagation())
                 .child(navigation_scrim("nav-scrim", move |window, cx| {
                     scrim_close(&(), window, cx)
                 }))

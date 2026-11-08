@@ -52,7 +52,7 @@ impl Gdirect {
                         if cancelled {
                             t("已停止扫描", "Scan stopped")
                         } else {
-                            t("扫描完成，可用地址已保存", "Scan complete · usable addresses saved")
+                            t("扫描完成，可直达的地址已保存", "Scan complete · reachable addresses saved")
                         },
                         cx,
                     ),
@@ -345,11 +345,10 @@ impl Gdirect {
                             .gap(rem(8.))
                             // Green, amber or red by latency, as a route's health reads.
                             .child(div().size(rem(8.)).rounded_full().bg(color(
-                                match (self.api.is_some(), ms) {
-                                    (false, _) => ColorRole::OUTLINE,
-                                    (true, Some(ms)) if ms >= 1000 => ColorRole::ERROR,
-                                    (true, Some(ms)) if ms >= 300 => ColorRole::WARNING,
-                                    _ => ColorRole::SUCCESS,
+                                if self.api.is_some() {
+                                    crate::format::latency_role(ms)
+                                } else {
+                                    ColorRole::OUTLINE
                                 },
                             )))
                             .child(ui::text(
@@ -387,7 +386,7 @@ impl Gdirect {
                         "ms",
                     ))
                     .child(stat(
-                        t("可用", "Usable"),
+                        t("可直达", "Reachable"),
                         usable.to_string(),
                         if usable == 1 {
                             t("个地址", "address")
@@ -672,11 +671,11 @@ impl Gdirect {
                                     ColorRole::ERROR
                                 },
                                 if ok {
-                                    t("可用", "Usable").to_owned()
+                                    t("可直达", "Reachable").to_owned()
                                 } else {
                                     e.error
                                         .clone()
-                                        .unwrap_or_else(|| t("不可用", "Unusable").into())
+                                        .unwrap_or_else(|| t("不可直达", "Unreachable").into())
                                 },
                             )),
                     )

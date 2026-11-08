@@ -530,7 +530,7 @@ pub fn explain(error: &anyhow::Error) -> String {
             ),
             19 => t("域名解析失败", "DNS lookup failed"),
             22 => t(
-                "Google 云盘拒绝了下载（配额、权限或下载次数限制）",
+                "Google 云端硬盘拒绝了下载（配额、权限或下载次数限制）",
                 "Google Drive refused the download (quota, permissions or download limit)",
             ),
             24 => t(
@@ -546,14 +546,14 @@ pub fn explain(error: &anyhow::Error) -> String {
     }
     if text.contains("MD5 does not match") {
         return t(
-            "下载完成，但 MD5 与云盘记录不一致；文件已保留，以便检查",
+            "下载完成，但 MD5 与云端硬盘记录不一致；文件已保留，以便检查",
             "Download finished, but the MD5 doesn't match Google Drive's record. The file was kept so you can check it",
         )
         .into();
     }
     if text.contains("login/quota error page") {
         return t(
-            "Google 云盘返回了登录或配额错误页",
+            "Google 云端硬盘返回了登录或配额错误页",
             "Google Drive returned a sign-in or quota error page",
         )
         .into();

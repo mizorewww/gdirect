@@ -185,8 +185,9 @@ pub struct Gdirect {
     pub name_input: Entity<InputState>,
     /// The filter field shows text that no longer applies; empty it.
     pub clear_filter: bool,
-    /// The dialog's name field takes focus once the dialog is up.
-    focus_name: bool,
+    /// The dialog's name field takes focus once the dialog is up, with this
+    /// many bytes of its name (the name less its extension) selected.
+    focus_name: Option<usize>,
     /// Bumped by each connection attempt; results from older ones are dropped.
     pub session: u64,
     /// The window's width in logical pixels at the last frame; pages lay out
@@ -198,11 +199,23 @@ pub struct Gdirect {
     pub focus: FocusHandle,
     /// The Files page's focus: its shortcuts apply while it or the filter has it.
     pub files_focus: FocusHandle,
-    /// The Files page takes focus on its next frame.
-    pub focus_files: bool,
+    /// The page's root takes focus after its next frame, unless a text
+    /// field in the window has it: set by each page change and each closed
+    /// dialog, so the keys always reach the page and the menu bar.
+    pub focus_page: bool,
+    /// Locations left by navigating, for Back, and those Back left, for Forward.
+    pub history: Vec<Location>,
+    pub future: Vec<Location>,
     /// The row the arrow keys move from, and the end a range selection grows from.
     pub cursor: Option<String>,
     pub anchor: Option<String>,
+    /// The cursor row was last moved by the keyboard, so it shows a focus ring.
+    pub keyboard_cursor: bool,
+    /// Items to select once the next listing arrives: the folder just left
+    /// by going up, or items just restored.
+    pub pending_select: Vec<String>,
+    /// The filter field's placeholder as last set; it names the folder or not.
+    pub filter_hint: &'static str,
     pub sort_menu: bool,
     pub crumb_menu: bool,
 
@@ -350,16 +363,21 @@ impl Gdirect {
             row_menu: None,
             dialog: None,
             name_input,
-            focus_name: false,
+            focus_name: None,
             clear_filter: false,
             session: 0,
             width: 1280.,
             rows: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
             files_focus: cx.focus_handle(),
-            focus_files: true,
+            focus_page: true,
+            history: Vec::new(),
+            future: Vec::new(),
             cursor: None,
             anchor: None,
+            keyboard_cursor: false,
+            pending_select: Vec::new(),
+            filter_hint: "",
             sort_menu: false,
             crumb_menu: false,
             rail_expanded: db.setting(crate::nav::RAIL_KEY).ok().flatten().as_deref() != Some("0"),
@@ -472,11 +490,10 @@ impl Gdirect {
             return;
         }
         crate::keymap::set_menus(cx);
-        let (filter, search) = (self.filter_input.clone(), self.search_input.clone());
+        // The Files page sets the filter's again, for its location.
+        self.filter_hint = "";
+        let search = self.search_input.clone();
         window.on_next_frame(move |window, cx| {
-            filter.update(cx, |input, cx| {
-                input.set_placeholder(crate::files::filter_placeholder(), window, cx)
-            });
             search.update(cx, |input, cx| {
                 input.set_placeholder(crate::files::search_placeholder(), window, cx)
             });
@@ -580,9 +597,7 @@ impl Gdirect {
 
     pub fn go(&mut self, page: Page, cx: &mut Context<Self>) {
         self.page = page;
-        if page == Page::Files {
-            self.focus_files = true;
-        }
+        self.focus_page = true;
         if page == Page::Endpoints {
             self.reload_endpoints();
         }
@@ -640,15 +655,15 @@ impl Gdirect {
 
     pub fn open_dialog(&mut self, dialog: Dialog, window: &mut Window, cx: &mut Context<Self>) {
         let text = match &dialog {
-            Dialog::NewFolder => Some(String::new()),
-            Dialog::Rename(file) => Some(file.name.clone()),
+            Dialog::NewFolder => Some((String::new(), 0)),
+            Dialog::Rename(file) => Some((file.name.clone(), name_stem(file))),
             _ => None,
         };
-        if let Some(text) = text {
+        if let Some((text, stem)) = text {
             self.name_input.update(cx, |input, cx| {
                 input.set_value(text, window, cx);
             });
-            self.focus_name = true;
+            self.focus_name = Some(stem);
         }
         self.dialog = Some(dialog);
         cx.notify();
@@ -656,10 +671,11 @@ impl Gdirect {
 
     pub fn close_dialog(&mut self, cx: &mut Context<Self>) {
         self.dialog = None;
+        self.focus_page = true;
         cx.notify();
     }
 
-    pub fn confirm_dialog(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub fn confirm_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name = self.name_input.read(cx).value().trim().to_string();
         // A name dialog stays open until it has a name to act on.
         if name.is_empty() && matches!(self.dialog, Some(Dialog::NewFolder | Dialog::Rename(_))) {
@@ -668,6 +684,8 @@ impl Gdirect {
         let Some(dialog) = self.dialog.take() else {
             return;
         };
+        self.focus_page = true;
+        self.focus_now(window, cx);
         match dialog {
             Dialog::NewFolder if !name.is_empty() => self.create_folder(name, cx),
             Dialog::Rename(file) if !name.is_empty() && name != file.name => {
@@ -684,10 +702,13 @@ impl Gdirect {
     fn render_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // The dialog moves focus to its surface after its first frame; the
         // field takes it from there on the frame after.
-        if std::mem::take(&mut self.focus_name) {
+        if let Some(stem) = self.focus_name.take() {
             let input = self.name_input.clone();
             window.on_next_frame(move |window, cx| {
-                input.update(cx, |input, cx| input.focus(window, cx));
+                input.update(cx, |input, cx| {
+                    input.focus(window, cx);
+                    input.set_selected_range(0..stem, cx);
+                });
             });
         }
         let (headline, supporting, confirm, input, danger): (
@@ -704,9 +725,9 @@ impl Gdirect {
                 true,
                 false,
             ),
-            Some(Dialog::Rename(file)) => (
+            Some(Dialog::Rename(_)) => (
                 t("重命名", "Rename").into(),
-                Some(format!("“{}”", file.name).into()),
+                None,
                 t("重命名", "Rename"),
                 true,
                 false,
@@ -765,11 +786,14 @@ impl Gdirect {
         MaterialDialog::new("dialog")
             .modal(self.dialog.is_some())
             .size(DialogSize::Small)
+            // A question's text reads on fewer, fuller lines than the name
+            // field needs.
+            .width(if input { 360. } else { 440. })
             .headline(headline)
             .when_some(supporting, |d, s| d.supporting_text(s))
             .when(input, |d| {
                 d.content(
-                    div().pt(rem(8.)).child(
+                    div().px(rem(24.)).pt(rem(8.)).child(
                         TextField::new("dialog-name", &self.name_input)
                             .variant(TextFieldVariant::Outlined)
                             .label(t("名称", "Name"))
@@ -781,7 +805,10 @@ impl Gdirect {
                 material_button("dialog-cancel", ButtonVariant::Text)
                     .accessibility_label(t("取消", "Cancel"))
                     .child(t("取消", "Cancel"))
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close_dialog(cx))),
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.close_dialog(cx);
+                        this.focus_now(window, cx);
+                    })),
             )
             .action(
                 material_button(
@@ -799,8 +826,11 @@ impl Gdirect {
                     cx.listener(|this, _: &ClickEvent, window, cx| this.confirm_dialog(window, cx)),
                 ),
             )
-            .on_dismiss(move |_, cx| {
-                let _ = view.update(cx, |this, cx| this.close_dialog(cx));
+            .on_dismiss(move |window, cx| {
+                let _ = view.update(cx, |this, cx| {
+                    this.close_dialog(cx);
+                    this.focus_now(window, cx);
+                });
             })
     }
 
@@ -960,95 +990,194 @@ impl Gdirect {
 
     /// Keeps focus somewhere in the window, so the shortcuts and the menu
     /// bar reach the view; the Files page takes it when it is shown.
+    ///
+    /// Checked after each frame is drawn: focus on an element that frame no
+    /// longer has (a page left, a dialog or menu closed) still counts as
+    /// focus to GPUI, but no key reaches the view through it, and the menu
+    /// bar finds none of its actions.
     fn manage_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.dialog.is_some() {
             return;
         }
-        let handle = if std::mem::take(&mut self.focus_files)
-            && self.page == Page::Files
-            && !self.accounts.is_empty()
-        {
+        let files = self.page == Page::Files && !self.accounts.is_empty();
+        let page = if files {
             self.files_focus.clone()
-        } else if window.focused(cx).is_none() {
-            self.focus.clone()
         } else {
-            return;
+            self.focus.clone()
         };
-        window.on_next_frame(move |window, cx| window.focus(&handle, cx));
+        let want = std::mem::take(&mut self.focus_page);
+        // Typing keeps its field: a page change the typing caused (search
+        // results arriving) never takes the keys from it.
+        let fields = [
+            self.search_input.read(cx).focus_handle(cx),
+            self.filter_input.read(cx).focus_handle(cx),
+        ];
+        // The handles this frame does not draw: the Files page's off it, and
+        // the name field with its dialog gone. (Popups draw outside this
+        // view, so its tree cannot tell their focus from a stale one.)
+        let mut stale = vec![self.name_input.read(cx).focus_handle(cx)];
+        if !files {
+            stale.push(self.files_focus.clone());
+            stale.extend(fields.iter().cloned());
+        }
+        window.on_next_frame(move |window, cx| {
+            let attached = window.focused(cx).is_some()
+                && !stale.iter().any(|handle| handle.is_focused(window));
+            let typing = attached && fields.iter().any(|f| f.is_focused(window));
+            if (want && !typing && !page.is_focused(window)) || !attached {
+                window.focus(&page, cx);
+            }
+        });
+    }
+
+    /// Gives the page the keys at once. The check after the next frame
+    /// does too, but an inactive window draws no frames: a second shortcut
+    /// right after a page change must not meet the old page's focus.
+    pub fn focus_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let files = self.page == Page::Files && !self.accounts.is_empty();
+        let typing = files
+            && [&self.search_input, &self.filter_input]
+                .iter()
+                .any(|input| input.read(cx).focus_handle(cx).is_focused(window));
+        if typing || self.dialog.is_some() {
+            return;
+        }
+        let page = if files {
+            self.files_focus.clone()
+        } else {
+            self.focus.clone()
+        };
+        window.focus(&page, cx);
+    }
+
+    /// A listener for a command that may change the page; the page then
+    /// has the keys.
+    fn page_action<A: Action>(
+        cx: &mut Context<Self>,
+        act: impl Fn(&mut Self, &A, &mut Context<Self>) + 'static,
+    ) -> impl Fn(&A, &mut Window, &mut App) + 'static {
+        cx.listener(move |this, action: &A, window, cx| {
+            act(this, action, cx);
+            this.focus_now(window, cx);
+        })
     }
 
     /// The window-wide commands of the menu bar and the shortcuts.
     fn on_actions(root: Div, cx: &mut Context<Self>) -> Div {
         use crate::keymap::*;
-        root.on_action(cx.listener(|this, _: &ShowFiles, _, cx| this.go(Page::Files, cx)))
-            .on_action(cx.listener(|this, _: &ShowTransfers, _, cx| {
-                if !this.accounts.is_empty() {
-                    this.go(Page::Transfers, cx);
-                }
-            }))
-            .on_action(cx.listener(|this, _: &ShowRoutes, _, cx| {
-                if !this.accounts.is_empty() {
-                    this.go(Page::Endpoints, cx);
-                }
-            }))
-            .on_action(cx.listener(|this, _: &ShowSettings, _, cx| this.go(Page::Settings, cx)))
-            .on_action(cx.listener(|this, _: &OpenSettings, _, cx| this.go(Page::Settings, cx)))
-            .on_action(cx.listener(|this, _: &About, _, cx| {
-                this.pane = Pane::About;
-                this.pane_open = true;
-                this.go(Page::Settings, cx);
-            }))
-            .on_action(cx.listener(|this, _: &Refresh, _, cx| match this.page {
-                Page::Endpoints => {
-                    this.reload_endpoints();
-                    cx.notify();
-                }
-                _ => this.refresh(cx),
-            }))
-            .on_action(cx.listener(|this, _: &NewFolder, window, cx| {
-                if this.api.is_some() {
-                    this.go(Page::Files, cx);
-                    this.writable_here(cx);
-                    this.open_dialog(Dialog::NewFolder, window, cx);
-                }
-            }))
-            .on_action(cx.listener(|this, _: &UploadFiles, _, cx| {
-                if this.api.is_some() {
-                    this.writable_here(cx);
-                    this.choose_upload(false, cx);
-                }
-            }))
-            .on_action(cx.listener(|this, _: &UploadFolder, _, cx| {
-                if this.api.is_some() {
-                    this.writable_here(cx);
-                    this.choose_upload(true, cx);
-                }
-            }))
-            .on_action(cx.listener(|this, _: &Cancel, _, cx| {
-                // Escape closes the floating rail when nothing nearer took it.
-                if this.rail_modal {
-                    this.rail_modal = false;
-                    cx.notify();
-                } else {
-                    cx.propagate();
-                }
-            }))
-            .on_action(cx.listener(|this, _: &FocusFilter, _, cx| {
-                if !this.accounts.is_empty() {
-                    this.go(Page::Files, cx);
-                    this.focus_search = true;
-                }
-            }))
-            .on_action(cx.listener(|this, _: &ViewList, _, cx| {
-                this.grid = false;
+        root.on_action(Self::page_action(cx, |this, _: &ShowFiles, cx| {
+            this.go(Page::Files, cx)
+        }))
+        .on_action(Self::page_action(cx, |this, _: &ShowTransfers, cx| {
+            if !this.accounts.is_empty() {
+                this.go(Page::Transfers, cx);
+            }
+        }))
+        .on_action(Self::page_action(cx, |this, _: &ShowRoutes, cx| {
+            if !this.accounts.is_empty() {
+                this.go(Page::Endpoints, cx);
+            }
+        }))
+        .on_action(Self::page_action(cx, |this, _: &ShowSettings, cx| {
+            this.go(Page::Settings, cx)
+        }))
+        .on_action(Self::page_action(cx, |this, _: &OpenSettings, cx| {
+            this.go(Page::Settings, cx)
+        }))
+        .on_action(Self::page_action(cx, |this, _: &About, cx| {
+            this.pane = Pane::About;
+            this.pane_open = true;
+            this.go(Page::Settings, cx);
+        }))
+        .on_action(cx.listener(|this, _: &Refresh, _, cx| match this.page {
+            Page::Endpoints => {
+                this.reload_endpoints();
+                cx.notify();
+            }
+            _ => this.refresh(cx),
+        }))
+        .on_action(cx.listener(|this, _: &NewFolder, window, cx| {
+            if this.api.is_some() {
                 this.go(Page::Files, cx);
-            }))
-            .on_action(cx.listener(|this, _: &ViewGrid, _, cx| {
-                this.grid = true;
+                this.writable_here(cx);
+                this.open_dialog(Dialog::NewFolder, window, cx);
+            }
+        }))
+        .on_action(cx.listener(|this, _: &UploadFiles, _, cx| {
+            if this.api.is_some() {
+                this.writable_here(cx);
+                this.choose_upload(false, cx);
+            }
+        }))
+        .on_action(cx.listener(|this, _: &UploadFolder, _, cx| {
+            if this.api.is_some() {
+                this.writable_here(cx);
+                this.choose_upload(true, cx);
+            }
+        }))
+        .on_action(cx.listener(|this, _: &Cancel, _, cx| {
+            // Escape closes the floating rail when nothing nearer took it.
+            if this.rail_modal {
+                this.rail_modal = false;
+                cx.notify();
+            } else {
+                cx.propagate();
+            }
+        }))
+        .on_action(cx.listener(|this, _: &FocusFilter, _, cx| {
+            if !this.accounts.is_empty() {
                 this.go(Page::Files, cx);
-            }))
-            .on_action(|_: &Minimize, window, _| window.minimize_window())
-            .on_action(|_: &Zoom, window, _| window.zoom_window())
+                this.focus_search = true;
+            }
+        }))
+        .on_action(Self::page_action(cx, |this, _: &ViewList, cx| {
+            this.grid = false;
+            this.go(Page::Files, cx);
+        }))
+        .on_action(Self::page_action(cx, |this, _: &ViewGrid, cx| {
+            this.grid = true;
+            this.go(Page::Files, cx);
+        }))
+        .on_action(Self::page_action(cx, |this, _: &GoBack, cx| {
+            if !this.accounts.is_empty() {
+                this.go_back(cx);
+            }
+        }))
+        .on_action(Self::page_action(cx, |this, _: &GoForward, cx| {
+            if !this.accounts.is_empty() {
+                this.go_forward(cx);
+            }
+        }))
+        .on_action(Self::page_action(cx, |this, _: &GoMyDrive, cx| {
+            this.go_place_from_menu(Place::MyDrive, cx)
+        }))
+        .on_action(Self::page_action(cx, |this, _: &GoShared, cx| {
+            this.go_place_from_menu(Place::Shared, cx)
+        }))
+        .on_action(Self::page_action(cx, |this, _: &GoStarred, cx| {
+            this.go_place_from_menu(Place::Starred, cx)
+        }))
+        .on_action(Self::page_action(cx, |this, _: &GoRecent, cx| {
+            this.go_place_from_menu(Place::Recent, cx)
+        }))
+        .on_action(Self::page_action(cx, |this, _: &GoTrash, cx| {
+            this.go_place_from_menu(Place::Trash, cx)
+        }))
+        .on_action(|_: &Minimize, window, _| window.minimize_window())
+        .on_action(|_: &Zoom, window, _| window.zoom_window())
+    }
+}
+
+/// How much of a file's name a rename selects: the name less its extension
+/// for files (as Finder and Drive do), all of a folder's or a dotfile's.
+pub fn name_stem(file: &File) -> usize {
+    let name = file.name.as_str();
+    if file.folder() || crate::places::native(file) {
+        return name.len();
+    }
+    match name.rfind('.') {
+        Some(dot) if dot > 0 => dot,
+        _ => name.len(),
     }
 }
 
@@ -1120,7 +1249,7 @@ impl Render for Gdirect {
             .size_full()
             .flex()
             .flex_col()
-            .font_family("Roboto")
+            .font_family(ui::font_family())
             .bg(color(ColorRole::SURFACE_CONTAINER))
             .text_color(color(ColorRole::ON_SURFACE))
             .child(

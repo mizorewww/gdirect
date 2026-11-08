@@ -470,7 +470,7 @@ impl Gdirect {
                 section(t("下载", "Downloads")).child(ui::group(vec![
                     ui::setting_row_with(
                         "folder_open",
-                        t("下载目录", "Download folder"),
+                        t("下载位置", "Download location"),
                         Some(ui::path("download-dir-path", format::home(&s.download_dir))),
                         Some(
                             material_button("download-dir", ButtonVariant::Text)
@@ -713,7 +713,7 @@ impl Gdirect {
                     TypeRole::BodyMedium,
                     status_fg,
                     t(
-                        "挂载后可以在访达中像本地磁盘一样使用云盘",
+                        "挂载后可以在访达中像本地磁盘一样使用云端硬盘",
                         "Once mounted, use Google Drive in Finder like a local disk",
                     ),
                 )
@@ -1290,6 +1290,13 @@ impl ShortcutsView {
                         this.start(id.clone(), window, cx)
                     }))
                     .child(key_caps(b.keys.as_deref().unwrap_or_default(), os));
+                if n > 0 {
+                    keys = keys.child(ui::text(
+                        TypeRole::BodySmall,
+                        ColorRole::ON_SURFACE_VARIANT,
+                        t("或", "or"),
+                    ));
+                }
                 keys = keys
                     .child(MaterialTooltip::plain(("keys-tip", ix * 16 + n), tip).trigger(chip));
             }
