@@ -14,10 +14,15 @@
         <Component Id="Executable">
           <File Id="GdirectDesktopExe" Source="$(Bundle)\gdirect-desktop.exe" KeyPath="yes" />
         </Component>
-        <Component Id="Notices">
+        <!-- One file per component, so WiX can derive their GUIDs. -->
+        <Component Id="License">
           <File Source="$(Bundle)\LICENSE.txt" KeyPath="yes" />
-          <File Source="$(Bundle)\FONTS-OFL.txt" />
-          <File Source="$(Bundle)\OPENSSL-LICENSE.txt" />
+        </Component>
+        <Component Id="FontsLicense">
+          <File Source="$(Bundle)\FONTS-OFL.txt" KeyPath="yes" />
+        </Component>
+        <Component Id="OpenSslLicense">
+          <File Source="$(Bundle)\OPENSSL-LICENSE.txt" KeyPath="yes" />
         </Component>
       </Directory>
     </StandardDirectory>
