@@ -8,6 +8,8 @@ mod files;
 mod format;
 mod i18n;
 mod keymap;
+mod nav;
+mod places;
 mod settings;
 mod settings_page;
 mod transfers;

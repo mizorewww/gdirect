@@ -81,7 +81,16 @@ impl Gdirect {
         // Nothing done through the previous account's client applies now.
         self.api = None;
         self.loading = false;
-        self.path.truncate(1);
+        self.location = crate::places::Location::new(crate::places::Place::MyDrive);
+        self.before_search = None;
+        self.clear_search = true;
+        self.next_page = None;
+        self.undo = None;
+        self.drives.clear();
+        self.about = None;
+        self.root_id = None;
+        self.folder_names.clear();
+        self.naming.clear();
         self.entries.clear();
         self.selected.clear();
         self.filter.clear();

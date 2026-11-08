@@ -182,6 +182,7 @@ pub fn key_bindings() -> Vec<Shortcut> {
         row(ShowSettings, "secondary-4", "设置", "Settings", None, All),
         row(Refresh, "secondary-r", "刷新", "Refresh", None, All),
         row(Refresh, "f5", "刷新", "Refresh", None, Other),
+        row(FocusFilter, "secondary-f", "搜索", "Search", None, All),
         // The file list
         row(SelectAll, "secondary-a", "全选", "Select all", files, All),
         row(Copy, "secondary-c", "复制", "Copy", files, All),
@@ -239,7 +240,7 @@ pub fn key_bindings() -> Vec<Shortcut> {
             files,
             All,
         ),
-        row(FocusFilter, "secondary-f", "筛选", "Filter", files, All),
+        row(Undo, "secondary-z", "撤销", "Undo", files, All),
         row(CursorUp, "up", "上一项", "Previous item", files, All),
         row(CursorDown, "down", "下一项", "Next item", files, All),
         row(

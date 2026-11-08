@@ -13,6 +13,10 @@ pub enum Language {
 
 static CHINESE: AtomicBool = AtomicBool::new(false);
 
+/// Held by tests that read or switch the language, which is process-wide.
+#[cfg(test)]
+pub static LANGUAGE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Whether the interface is in Chinese.
 pub fn chinese() -> bool {
     CHINESE.load(Ordering::Relaxed)

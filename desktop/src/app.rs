@@ -3,13 +3,15 @@
 use crate::i18n::t;
 use crate::tf;
 use crate::{
+    files::Undoable,
     keymap,
+    places::{Filters, Location, Place},
     settings::{Settings, Theme},
     transfers::{self, Queues},
     ui,
 };
 use gdirect::{
-    api::{Api, File},
+    api::{About, Api, File, SharedDrive},
     route,
     store::{Endpoint, Store},
 };
@@ -17,10 +19,10 @@ use gpui_kit::base::input::{InputEvent, InputState};
 use gpui_kit::base::slider::{SliderEvent, SliderState};
 use gpui_kit::{prelude::*, *};
 use gpui_kit_material::color::dynamic::{SeedScheme, Variant};
-use gpui_kit_material::icons::Symbol;
 use gpui_kit_material::prelude::*;
 use gpui_kit_material::theme;
 use std::{
+    collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{
         Arc,
@@ -42,7 +44,7 @@ pub enum Page {
 }
 
 impl Page {
-    fn value(self) -> &'static str {
+    pub fn value(self) -> &'static str {
         match self {
             Self::Files => "files",
             Self::Transfers => "transfers",
@@ -65,8 +67,9 @@ pub enum Pane {
 
 pub enum Dialog {
     NewFolder,
-    Rename(File),
-    Trash(Vec<File>),
+    Rename(Box<File>),
+    DeleteForever(Vec<File>),
+    EmptyTrash,
     Logout(String),
 }
 
@@ -137,12 +140,39 @@ pub struct Gdirect {
     _subs: Vec<Subscription>,
 
     // Files
-    pub path: Vec<(String, String)>,
+    pub location: Location,
     pub entries: Vec<File>,
     pub loading: bool,
+    /// Bumped by each listing; pages of an older one are dropped.
+    pub generation: u64,
+    /// The listing's next page, fetched as the list nears its end.
+    pub next_page: Option<String>,
+    pub loading_more: bool,
     pub list_error: Option<String>,
+    /// Filters the folder on screen; the search field searches all of Drive.
     pub filter_input: Entity<InputState>,
     pub filter: String,
+    pub search_input: Entity<InputState>,
+    /// Bumped by each edit of the search; it runs once typing pauses on the latest.
+    pub search_serial: u64,
+    pub filters: Filters,
+    /// Where a search started, to return to when it is cleared.
+    pub before_search: Option<Location>,
+    /// The search chip whose menu is open.
+    pub chip_menu: Option<&'static str>,
+    pub focus_search: bool,
+    /// The search field shows a search that no longer applies; empty it.
+    pub clear_search: bool,
+    /// The last trash or move, which the snackbar offers to undo.
+    pub undo: Option<Undoable>,
+    /// Read once per sign-in: Shared drives, the storage quota, and My
+    /// Drive's real ID (Drive reports parents by it, not by "root").
+    pub drives: Vec<SharedDrive>,
+    pub about: Option<About>,
+    pub root_id: Option<String>,
+    /// Folder names for the Location column by ID, and those being read.
+    pub folder_names: HashMap<String, String>,
+    pub naming: HashSet<String>,
     pub selected: Vec<String>,
     pub grid: bool,
     pub sort: (SortKey, bool),
@@ -176,6 +206,12 @@ pub struct Gdirect {
     pub sort_menu: bool,
     pub crumb_menu: bool,
 
+    // Navigation
+    /// The rail is expanded beside the content in a wide window (a setting).
+    pub rail_expanded: bool,
+    /// The expanded rail floats over a narrow window.
+    pub rail_modal: bool,
+
     // Transfers
     pub queues: Queues,
     pub show_uploads: bool,
@@ -205,8 +241,10 @@ impl Gdirect {
         let (tx, rx) = mpsc::channel::<Update>();
         let poll = cx.spawn(async move |this, cx| poll(rx, this, cx).await);
 
-        let filter_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder(t("按名称筛选", "Filter by name")));
+        let filter_input = cx
+            .new(|cx| InputState::new(window, cx).placeholder(crate::files::filter_placeholder()));
+        let search_input = cx
+            .new(|cx| InputState::new(window, cx).placeholder(crate::files::search_placeholder()));
         let name_input = cx.new(|cx| InputState::new(window, cx));
         let connections = cx.new(|_| {
             SliderState::new()
@@ -224,6 +262,15 @@ impl Gdirect {
                         this.filter = state.read(cx).value().to_string();
                         cx.notify();
                     }
+                },
+            ),
+            cx.subscribe_in(
+                &search_input,
+                window,
+                |this, _, event: &InputEvent, _, cx| match event {
+                    InputEvent::Change => this.search_typed(cx),
+                    InputEvent::PressEnter { .. } => this.search_now(cx),
+                    _ => {}
                 },
             ),
             cx.subscribe_in(
@@ -271,12 +318,28 @@ impl Gdirect {
             drawn_chinese: crate::i18n::chinese(),
             theme_frame_pending: false,
             _subs: subs,
-            path: vec![("root".into(), t("我的云盘", "My Drive").into())],
+            location: Location::new(Place::MyDrive),
             entries: Vec::new(),
             loading: false,
+            generation: 0,
+            next_page: None,
+            loading_more: false,
             list_error: None,
             filter_input,
             filter: String::new(),
+            search_input,
+            search_serial: 0,
+            filters: Filters::default(),
+            before_search: None,
+            chip_menu: None,
+            focus_search: false,
+            clear_search: false,
+            undo: None,
+            drives: Vec::new(),
+            about: None,
+            root_id: None,
+            folder_names: HashMap::new(),
+            naming: HashSet::new(),
             selected: Vec::new(),
             grid: false,
             sort: (SortKey::Name, true),
@@ -299,6 +362,8 @@ impl Gdirect {
             anchor: None,
             sort_menu: false,
             crumb_menu: false,
+            rail_expanded: db.setting(crate::nav::RAIL_KEY).ok().flatten().as_deref() != Some("0"),
+            rail_modal: false,
             queues: Queues::default(),
             show_uploads: false,
             listing: Vec::new(),
@@ -340,14 +405,33 @@ impl Gdirect {
     }
 
     pub fn say(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.toast = Some(message.into());
+        self.undo = None;
+        self.show_toast(message.into(), 5, cx);
+    }
+
+    /// A message whose snackbar offers to undo what it reports, for longer.
+    pub fn say_undo(
+        &mut self,
+        message: impl Into<SharedString>,
+        undo: Undoable,
+        cx: &mut Context<Self>,
+    ) {
+        self.undo = Some(undo);
+        self.show_toast(message.into(), 10, cx);
+    }
+
+    fn show_toast(&mut self, message: SharedString, seconds: u64, cx: &mut Context<Self>) {
+        self.toast = Some(message);
         self.toast_serial += 1;
         let serial = self.toast_serial;
         cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(Duration::from_secs(5)).await;
+            cx.background_executor()
+                .timer(Duration::from_secs(seconds))
+                .await;
             let _ = this.update(cx, |this, cx| {
                 if this.toast_serial == serial {
                     this.toast = None;
+                    this.undo = None;
                     cx.notify();
                 }
             });
@@ -380,28 +464,6 @@ impl Gdirect {
             .collect();
     }
 
-    /// The rail's destinations, in the current language.
-    fn nav_items() -> Vec<NavItem> {
-        vec![
-            NavItem::new("files", t("文件", "Files"), NavIcon::symbol(Symbol::FOLDER)),
-            NavItem::new(
-                "transfers",
-                t("传输", "Transfers"),
-                NavIcon::symbol(Symbol::SWAP_VERT),
-            ),
-            NavItem::new(
-                "endpoints",
-                t("线路", "Routes"),
-                NavIcon::symbol(Symbol::NETWORK_PING),
-            ),
-            NavItem::new(
-                "settings",
-                t("设置", "Settings"),
-                NavIcon::symbol(Symbol::SETTINGS),
-            ),
-        ]
-    }
-
     /// Text held by components (rather than drawn from `t` each frame)
     /// follows a language switch.
     fn follow_language(&mut self, window: &mut Window, cx: &mut App) {
@@ -410,17 +472,28 @@ impl Gdirect {
             return;
         }
         crate::keymap::set_menus(cx);
-        let input = self.filter_input.clone();
+        let (filter, search) = (self.filter_input.clone(), self.search_input.clone());
         window.on_next_frame(move |window, cx| {
-            input.update(cx, |input, cx| {
-                input.set_placeholder(t("按名称筛选", "Filter by name"), window, cx)
+            filter.update(cx, |input, cx| {
+                input.set_placeholder(crate::files::filter_placeholder(), window, cx)
+            });
+            search.update(cx, |input, cx| {
+                input.set_placeholder(crate::files::search_placeholder(), window, cx)
             });
         });
     }
 
-    /// Whether the window is at least `px` logical pixels wide.
+    /// Whether the window is at least `px` logical pixels wide, less what an
+    /// expanded rail takes beyond the collapsed one: the breakpoints are
+    /// written for the window beside the collapsed rail.
     pub fn wide(&self, px: f32) -> bool {
         self.width >= px
+    }
+
+    /// The content pane's width, beside the rail and inside its margin.
+    #[allow(dead_code)] // For pages that lay out by their own width.
+    pub fn content_width(&self) -> f32 {
+        self.width - RAIL_COLLAPSED_WIDTH - 8.
     }
 
     /// Whether a front end verified in the last day is stored to connect through.
@@ -472,6 +545,7 @@ impl Gdirect {
                     Ok(api) => {
                         this.api = Some(api);
                         this.refresh(cx);
+                        this.load_places(cx);
                         this.pump(cx);
                     }
                     // A reconnect that fails keeps the working client; the
@@ -597,9 +671,10 @@ impl Gdirect {
         match dialog {
             Dialog::NewFolder if !name.is_empty() => self.create_folder(name, cx),
             Dialog::Rename(file) if !name.is_empty() && name != file.name => {
-                self.rename(file, name, cx)
+                self.rename(*file, name, cx)
             }
-            Dialog::Trash(files) => self.trash(files, cx),
+            Dialog::DeleteForever(files) => self.delete_forever(files, cx),
+            Dialog::EmptyTrash => self.empty_trash(cx),
             Dialog::Logout(account) => self.logout(account, cx),
             _ => {}
         }
@@ -636,25 +711,38 @@ impl Gdirect {
                 true,
                 false,
             ),
-            Some(Dialog::Trash(files)) => (
-                t("移至回收站？", "Move to trash?").into(),
+            Some(Dialog::DeleteForever(files)) => (
+                t("永久删除？", "Delete forever?").into(),
                 Some(
                     if files.len() == 1 {
                         tf!(
-                            "“{}”会移到 Google 云盘的回收站，30 天内可以恢复。",
-                            "“{}” will be moved to the Google Drive trash. You can restore it within 30 days.",
+                            "“{}”将被永久删除，无法撤销。",
+                            "“{}” will be deleted forever. This can’t be undone.",
                             files[0].name
                         )
                     } else {
                         tf!(
-                            "{} 项会移到 Google 云盘的回收站，30 天内可以恢复。",
-                            "{} items will be moved to the Google Drive trash. You can restore them within 30 days.",
+                            "{} 项将被永久删除，无法撤销。",
+                            "{} items will be deleted forever. This can’t be undone.",
                             files.len()
                         )
                     }
                     .into(),
                 ),
-                t("移至回收站", "Move to trash"),
+                t("永久删除", "Delete forever"),
+                false,
+                true,
+            ),
+            Some(Dialog::EmptyTrash) => (
+                t("清空回收站？", "Empty trash?").into(),
+                Some(
+                    t(
+                        "回收站中的所有内容都将被永久删除，无法撤销。",
+                        "Everything in the trash will be deleted forever. This can’t be undone.",
+                    )
+                    .into(),
+                ),
+                t("清空回收站", "Empty trash"),
                 false,
                 true,
             ),
@@ -860,7 +948,7 @@ impl Gdirect {
                         }
                     }
                     // The folder it went to may be on screen.
-                    if parent.as_deref() == Some(this.folder()) {
+                    if parent.is_some() && parent.as_deref() == this.location.folder() {
                         this.refresh(cx);
                     }
                     this.pump(cx);
@@ -920,17 +1008,35 @@ impl Gdirect {
             .on_action(cx.listener(|this, _: &NewFolder, window, cx| {
                 if this.api.is_some() {
                     this.go(Page::Files, cx);
+                    this.writable_here(cx);
                     this.open_dialog(Dialog::NewFolder, window, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &UploadFiles, _, cx| {
                 if this.api.is_some() {
+                    this.writable_here(cx);
                     this.choose_upload(false, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &UploadFolder, _, cx| {
                 if this.api.is_some() {
+                    this.writable_here(cx);
                     this.choose_upload(true, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &Cancel, _, cx| {
+                // Escape closes the floating rail when nothing nearer took it.
+                if this.rail_modal {
+                    this.rail_modal = false;
+                    cx.notify();
+                } else {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &FocusFilter, _, cx| {
+                if !this.accounts.is_empty() {
+                    this.go(Page::Files, cx);
+                    this.focus_search = true;
                 }
             }))
             .on_action(cx.listener(|this, _: &ViewList, _, cx| {
@@ -943,83 +1049,6 @@ impl Gdirect {
             }))
             .on_action(|_: &Minimize, window, _| window.minimize_window())
             .on_action(|_: &Zoom, window, _| window.zoom_window())
-    }
-
-    fn render_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let pending = self.queues.pending();
-        // Signed out, the welcome screen stands in for Files, and Settings
-        // stays; the other pages need an account.
-        let signed_out = self.accounts.is_empty();
-        let items = Self::nav_items()
-            .into_iter()
-            .filter(|item| !signed_out || matches!(item.value().as_ref(), "files" | "settings"))
-            .map(|item| {
-                if item.value() == "transfers" && pending > 0 {
-                    item.badge(NavBadge::Large(pending.to_string().into()))
-                } else {
-                    item
-                }
-            });
-        let signed_in = self.account.is_some();
-        let fab = Fab::new("new", Symbol::ADD, t("新建", "New"))
-            .color(FabColor::PrimaryContainer)
-            .disabled(!signed_in || self.api.is_none())
-            .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
-                if matches!(event, ClickEvent::Keyboard(_)) {
-                    this.new_menu = !this.new_menu;
-                    cx.notify();
-                }
-            }));
-        let menu = MaterialMenu::new("new-menu")
-            .width(220.)
-            .item(
-                MaterialMenuItem::new(t("新建文件夹", "New folder"))
-                    .leading(ui::symbol("create_new_folder", false))
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                        this.new_menu = false;
-                        this.go(Page::Files, cx);
-                        this.open_dialog(Dialog::NewFolder, window, cx);
-                    })),
-            )
-            .item(
-                MaterialMenuItem::new(t("上传文件…", "Upload files…"))
-                    .leading(ui::symbol("upload_file", false))
-                    .divider(false)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.new_menu = false;
-                        this.choose_upload(false, cx);
-                    })),
-            )
-            .item(
-                MaterialMenuItem::new(t("上传文件夹…", "Upload folder…"))
-                    .leading(ui::symbol("drive_folder_upload", false))
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.new_menu = false;
-                        this.choose_upload(true, cx);
-                    })),
-            );
-        NavigationRail::new("rail", t("主导航", "Main navigation"))
-            .container(ColorRole::SURFACE_CONTAINER)
-            .items(items)
-            .selected(self.page.value())
-            .fab(
-                MenuPopup::new("new-popup", fab, menu)
-                    .open(self.new_menu)
-                    .on_open_change(cx.listener(|this, open: &bool, _, cx| {
-                        // The menu ignores its trigger's disabled state.
-                        this.new_menu = *open && this.api.is_some();
-                        cx.notify();
-                    })),
-            )
-            .on_change(cx.listener(|this, value: &SharedString, _, cx| {
-                let page = match value.as_ref() {
-                    "transfers" => Page::Transfers,
-                    "endpoints" => Page::Endpoints,
-                    "settings" => Page::Settings,
-                    _ => Page::Files,
-                };
-                this.go(page, cx);
-            }))
     }
 }
 
@@ -1060,7 +1089,8 @@ pub const TITLE_BAR: Pixels = px(40.);
 
 impl Render for Gdirect {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.width = f32::from(window.viewport_size().width);
+        let viewport = window.viewport_size();
+        self.width = f32::from(viewport.width) - self.rail_extra(f32::from(viewport.width));
         self.follow_language(window, cx);
         let labels = CaptionLabels {
             minimize: t("最小化", "Minimize").into(),
@@ -1107,10 +1137,11 @@ impl Render for Gdirect {
             )
             .child(
                 div()
+                    .relative()
                     .flex_1()
                     .min_h_0()
                     .flex()
-                    .child(self.render_rail(cx))
+                    .child(self.render_nav(viewport, cx))
                     .child(
                         div()
                             .relative()
@@ -1126,18 +1157,26 @@ impl Render for Gdirect {
                             .child(content)
                             .when_some(self.toast.clone(), |d, message| {
                                 let view = cx.weak_entity();
+                                let undo = self.undo.is_some().then(|| cx.weak_entity());
                                 d.child(
                                     Snackbar::new("toast", message)
                                         .position(SnackbarPosition::Center)
+                                        .when_some(undo, |s, view| {
+                                            s.action(t("撤销", "Undo"), move |_, _, cx| {
+                                                let _ = view.update(cx, |this, cx| this.undo(cx));
+                                            })
+                                        })
                                         .on_dismiss(move |_, cx| {
                                             let _ = view.update(cx, |this, cx| {
                                                 this.toast = None;
+                                                this.undo = None;
                                                 cx.notify();
                                             });
                                         }),
                                 )
                             }),
-                    ),
+                    )
+                    .children(self.render_modal_nav(viewport, cx)),
             )
             .children(dialog)
     }

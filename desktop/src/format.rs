@@ -90,8 +90,15 @@ pub enum Kind {
 }
 
 impl Kind {
+    /// A shortcut takes its target's kind.
     pub fn of(file: &File) -> Self {
-        Self::from_mime(&file.mime_type, &file.name)
+        let mime = file
+            .shortcut_details
+            .as_ref()
+            .and_then(|d| d.target_mime_type.as_deref())
+            .filter(|_| file.mime_type == crate::places::SHORTCUT)
+            .unwrap_or(&file.mime_type);
+        Self::from_mime(mime, &file.name)
     }
 
     pub fn from_mime(mime: &str, name: &str) -> Self {
@@ -288,6 +295,7 @@ mod tests {
         let this_year = at(now.year(), mo, d, 12, 0);
         let past = at(2020, 11, 5, 12, 0);
 
+        let _language = crate::i18n::LANGUAGE_LOCK.lock().unwrap();
         apply(Language::Chinese);
         assert_eq!(duration(42), "42 秒");
         assert_eq!(duration(125), "2 分 5 秒");

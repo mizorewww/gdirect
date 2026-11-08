@@ -465,9 +465,12 @@ pub fn run_download(
 }
 
 /// Lists every file below `folder`, paired with its directory relative to it.
+/// Every file below `folder`, with the subfolder it is in; `drive` names the
+/// Shared drive the folder is in, whose folders list only there.
 pub fn walk(
     api: &Api,
     folder: &str,
+    drive: Option<&str>,
     progress: impl Fn(usize),
 ) -> anyhow::Result<Vec<(File, PathBuf)>> {
     let mut files = Vec::new();
@@ -478,7 +481,11 @@ pub fn walk(
         if !seen.insert(id.clone()) {
             continue;
         }
-        for file in api.list(&id)? {
+        let listing = match drive {
+            Some(drive) => api.query_all(&gdirect::api::Query::folder(&id, Some(drive)))?,
+            None => api.list(&id)?,
+        };
+        for file in listing {
             if file.folder() {
                 let sub = dir.join(gdirect::api::safe_name(&file.name));
                 pending.push_back((file.id.clone(), sub));
