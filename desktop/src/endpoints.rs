@@ -425,11 +425,23 @@ impl Gdirect {
             .collect();
         rows.sort_by_key(|e| (e.latency_ms.is_none(), e.latency_ms));
         if rows.is_empty() {
-            return ui::empty(
-                "radar",
-                "还没有扫描到地址",
-                "点“重新扫描”寻找从本机网络可直达的 Google 前端。",
-            )
+            let family = match self.family.as_ref() {
+                "v4" => Some("IPv4"),
+                "v6" => Some("IPv6"),
+                _ => None,
+            };
+            return match family {
+                Some(family) if !self.endpoints.is_empty() => ui::empty(
+                    "filter_alt_off",
+                    format!("没有 {family} 地址"),
+                    "扫描只会在本机有对应路由时探测这类地址。",
+                ),
+                _ => ui::empty(
+                    "radar",
+                    "还没有扫描到地址",
+                    "点“重新扫描”寻找从本机网络可直达的 Google 前端。",
+                ),
+            }
             .into_any_element();
         }
         let header = ui::type_role(div(), TypeRole::TitleSmall)
