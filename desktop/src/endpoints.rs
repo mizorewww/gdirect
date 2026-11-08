@@ -665,7 +665,7 @@ impl Gdirect {
         let (address_w, latency_w) = if show_bar {
             (COLUMNS[0], COLUMNS[1])
         } else {
-            (180., 88.)
+            (150., 88.)
         };
         let header = ui::type_role(div(), TypeRole::TitleSmall)
             .flex()

@@ -280,7 +280,7 @@ impl Gdirect {
             return;
         };
         if let Some(ix) = self.shown().iter().position(|f| f.id == first) {
-            self.rows.scroll_to_item(ix, ScrollStrategy::Nearest);
+            self.scroll_into_view(ix);
         }
         self.cursor = Some(first.clone());
         self.anchor = Some(first);
@@ -771,8 +771,57 @@ impl Gdirect {
         }
         self.cursor = Some(id);
         self.keyboard_cursor = true;
-        self.rows.scroll_to_item(next, ScrollStrategy::Nearest);
+        self.scroll_into_view(next);
         cx.notify();
+    }
+
+    /// How far Up and Down move: a row, or a grid's row of tiles.
+    fn row_step(&self) -> isize {
+        if self.grid {
+            self.grid_columns() as isize
+        } else {
+            1
+        }
+    }
+
+    /// Scrolls item `ix` into view, in the list or the grid.
+    fn scroll_into_view(&mut self, ix: usize) {
+        if !self.grid {
+            return self.rows.scroll_to_item(ix, ScrollStrategy::Nearest);
+        }
+        // The grid is one child of its scroller, so its tiles' place comes
+        // from its height: rows of tiles share it evenly.
+        let scroller = &self.grid_scroll;
+        let Some(grid) = (0..scroller.children_count())
+            .filter_map(|i| scroller.bounds_for_item(i))
+            .max_by(|a, b| {
+                a.size
+                    .height
+                    .partial_cmp(&b.size.height)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+        else {
+            return;
+        };
+        let columns = self.grid_columns().max(1) as usize;
+        let rows = self.shown().len().div_ceil(columns).max(1);
+        let gap = px(GRID_GAP);
+        let pitch = (grid.size.height + gap) / rows as f32;
+        let view = scroller.bounds();
+        let offset = scroller.offset();
+        // Where the tile sits in the scrolled content, and what is in view.
+        let top = grid.origin.y - view.origin.y - offset.y + pitch * (ix / columns) as f32;
+        let bottom = top + pitch - gap;
+        let (seen_top, seen_bottom) = (-offset.y, -offset.y + view.size.height);
+        let y = if top < seen_top {
+            top - gap
+        } else if bottom > seen_bottom {
+            bottom - view.size.height + gap
+        } else {
+            return;
+        };
+        let y = y.max(px(0.)).min(scroller.max_offset().y);
+        scroller.set_offset(point(offset.x, -y));
     }
 
     /// Home and End: the cursor to the first or last row, selecting it.
@@ -790,7 +839,7 @@ impl Gdirect {
         self.anchor = Some(id.clone());
         self.cursor = Some(id);
         self.keyboard_cursor = true;
-        self.rows.scroll_to_item(ix, ScrollStrategy::Nearest);
+        self.scroll_into_view(ix);
         cx.notify();
     }
 
@@ -961,14 +1010,14 @@ impl Gdirect {
             if this.typing(window, cx) {
                 return cx.propagate();
             }
-            this.move_cursor(-1, false, cx);
+            this.move_cursor(-this.row_step(), false, cx);
         }))
         .on_action(cx.listener(|this, _: &CursorDown, window, cx| {
             // Down from a field moves into the list.
             if this.typing(window, cx) {
                 window.focus(&this.files_focus, cx);
             }
-            this.move_cursor(1, false, cx);
+            this.move_cursor(this.row_step(), false, cx);
         }))
         .on_action(cx.listener(|this, _: &CursorFirst, window, cx| {
             if this.typing(window, cx) {
@@ -986,13 +1035,26 @@ impl Gdirect {
             if this.typing(window, cx) {
                 return cx.propagate();
             }
-            this.move_cursor(-1, true, cx);
+            this.move_cursor(-this.row_step(), true, cx);
         }))
         .on_action(cx.listener(|this, _: &ExtendDown, window, cx| {
             if this.typing(window, cx) {
                 return cx.propagate();
             }
-            this.move_cursor(1, true, cx);
+            this.move_cursor(this.row_step(), true, cx);
+        }))
+        // Left and right move between a grid's tiles.
+        .on_action(cx.listener(|this, _: &CursorLeft, window, cx| {
+            if this.typing(window, cx) || !this.grid {
+                return cx.propagate();
+            }
+            this.move_cursor(-1, false, cx);
+        }))
+        .on_action(cx.listener(|this, _: &CursorRight, window, cx| {
+            if this.typing(window, cx) || !this.grid {
+                return cx.propagate();
+            }
+            this.move_cursor(1, false, cx);
         }))
     }
 
@@ -1314,7 +1376,7 @@ impl Gdirect {
                 .as_ref()
                 .and_then(|c| self.shown().iter().position(|f| &f.id == c))
             {
-                self.rows.scroll_to_item(ix, ScrollStrategy::Nearest);
+                self.scroll_into_view(ix);
             }
         }
         let all = files.clone();
@@ -2492,7 +2554,7 @@ impl Gdirect {
         // The count in the interface's face, the name in user content's.
         let label = match picked.as_slice() {
             // Named only where the name has room beside the actions.
-            [one] if self.content_width() >= 720. => div()
+            [one] if self.content_width() >= 600. => div()
                 .flex()
                 .items_center()
                 .min_w_0()
@@ -2517,7 +2579,8 @@ impl Gdirect {
                     )
                     .text_ellipsis_middle(),
                 ),
-            many => div().flex().min_w_0().mr(rem(8.)).child(ui::line(
+            // The count keeps its width; the actions give way first.
+            many => div().flex().flex_none().mr(rem(8.)).child(ui::line(
                 TypeRole::TitleMedium,
                 ColorRole::ON_SURFACE,
                 tf!("已选择 {} 项", "{} selected", many.len()),
