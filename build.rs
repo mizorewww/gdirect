@@ -75,6 +75,8 @@ fn main() {
         let dir = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("openssl-static");
         std::fs::create_dir_all(&dir).unwrap();
         for lib in ["libssl.a", "libcrypto.a"] {
+            // Homebrew's archives are read-only, and so is an earlier copy.
+            let _ = std::fs::remove_file(dir.join(lib));
             std::fs::copy(format!("{ssl}/lib/{lib}"), dir.join(lib)).unwrap();
         }
         println!("cargo:rustc-link-search=native={}", dir.display());
