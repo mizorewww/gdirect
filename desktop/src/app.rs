@@ -137,6 +137,8 @@ pub struct Gdirect {
     pub row_menu: Option<String>,
     pub dialog: Option<Dialog>,
     pub name_input: Entity<InputState>,
+    /// The dialog's name field takes focus once the dialog is up.
+    focus_name: bool,
     pub rows: UniformListScrollHandle,
 
     // Transfers
@@ -255,6 +257,7 @@ impl Gdirect {
             row_menu: None,
             dialog: None,
             name_input,
+            focus_name: false,
             rows: UniformListScrollHandle::new(),
             queues: Queues::default(),
             show_uploads: false,
@@ -451,8 +454,8 @@ impl Gdirect {
         if let Some(text) = text {
             self.name_input.update(cx, |input, cx| {
                 input.set_value(text, window, cx);
-                input.focus(window, cx);
             });
+            self.focus_name = true;
         }
         self.dialog = Some(dialog);
         cx.notify();
@@ -480,7 +483,15 @@ impl Gdirect {
         cx.notify();
     }
 
-    fn render_dialog(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The dialog moves focus to its surface after its first frame; the
+        // field takes it from there on the frame after.
+        if std::mem::take(&mut self.focus_name) {
+            let input = self.name_input.clone();
+            window.on_next_frame(move |window, cx| {
+                input.update(cx, |input, cx| input.focus(window, cx));
+            });
+        }
         let (headline, supporting, confirm, input, danger): (
             SharedString,
             Option<SharedString>,
@@ -831,6 +842,11 @@ impl Render for Gdirect {
                 Page::Settings => self.render_settings(cx).into_any_element(),
             }
         };
+        // Mounted only while open, so it never animates in from stale content.
+        let dialog = self
+            .dialog
+            .is_some()
+            .then(|| self.render_dialog(window, cx).into_any_element());
         div()
             .size_full()
             .flex()
@@ -884,7 +900,6 @@ impl Render for Gdirect {
                             }),
                     ),
             )
-            // Mounted only while open, so it never animates in from stale content.
-            .when(self.dialog.is_some(), |d| d.child(self.render_dialog(cx)))
+            .children(dialog)
     }
 }
