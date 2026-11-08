@@ -174,21 +174,12 @@ impl Gdirect {
                     .px(rem(24.))
                     .pb(rem(16.))
                     .child(
+                        // The title is short: the actions share its line
+                        // as long as they fit beside it.
                         div()
                             .flex_1()
-                            .min_w(rem(240.))
-                            .flex()
-                            .flex_col()
-                            .gap(rem(4.))
-                            .child(ui::text(TypeRole::HeadlineSmall, ColorRole::ON_SURFACE, t("线路", "Routes")))
-                            .child(ui::text(
-                                TypeRole::BodyMedium,
-                                ColorRole::ON_SURFACE_VARIANT,
-                                t(
-                                    "从本机网络可直达的 Google 前端。证书始终用内置的 Google GTS 根证书校验。",
-                                    "Google front ends reachable directly from this network. Certificates are always verified against the built-in Google GTS root.",
-                                ),
-                            )),
+                            .min_w(rem(96.))
+                            .child(ui::text(TypeRole::HeadlineSmall, ColorRole::ON_SURFACE, t("线路", "Routes"))),
                     )
                     // The actions wrap together.
                     .child(div().flex().items_center().gap(rem(12.)).child(
@@ -229,6 +220,16 @@ impl Gdirect {
                     .flex()
                     .flex_col()
                     .gap(rem(16.))
+                    // The description scrolls with the page, so a short
+                    // window keeps its room for the routes.
+                    .child(ui::text(
+                        TypeRole::BodyMedium,
+                        ColorRole::ON_SURFACE_VARIANT,
+                        t(
+                            "从本机网络可直达的 Google 前端。证书始终用内置的 Google GTS 根证书校验。",
+                            "Google front ends reachable directly from this network. Certificates are always verified against the built-in Google GTS root.",
+                        ),
+                    ))
                     .when(self.intercepted, |d| {
                         d.child(
                             notice_banner(
@@ -656,6 +657,7 @@ impl Gdirect {
                             .flex()
                             .items_center()
                             .gap(rem(8.))
+                            // In use, it is reachable: the pill says enough.
                             .when(in_use, |d| {
                                 d.child(ui::pill(
                                     t("使用中", "In use"),
@@ -663,21 +665,23 @@ impl Gdirect {
                                     ColorRole::ON_PRIMARY,
                                 ))
                             })
-                            .child(ui::line(
-                                TypeRole::BodyMedium,
-                                if ok {
-                                    ColorRole::ON_SURFACE_VARIANT
-                                } else {
-                                    ColorRole::ERROR
-                                },
-                                if ok {
-                                    t("可直达", "Reachable").to_owned()
-                                } else {
-                                    e.error
-                                        .clone()
-                                        .unwrap_or_else(|| t("不可直达", "Unreachable").into())
-                                },
-                            )),
+                            .when(!in_use, |d| {
+                                d.child(ui::line(
+                                    TypeRole::BodyMedium,
+                                    if ok {
+                                        ColorRole::ON_SURFACE_VARIANT
+                                    } else {
+                                        ColorRole::ERROR
+                                    },
+                                    if ok {
+                                        t("可直达", "Reachable").to_owned()
+                                    } else {
+                                        e.error
+                                            .clone()
+                                            .unwrap_or_else(|| t("不可直达", "Unreachable").into())
+                                    },
+                                ))
+                            }),
                     )
                     .child(div().w(rem(COLUMNS[3])).when(ok, |d| {
                         d.child(

@@ -6,18 +6,53 @@ use gpui_kit_material::prelude::*;
 use std::{cell::RefCell, collections::HashMap};
 
 /// The interface's typeface: Roboto, or in Chinese the platform's CJK UI
-/// face, whose Latin is fine and whose full-width punctuation (“”，：) keeps
-/// CJK widths, where Roboto, which has those marks, draws them narrow.
+/// face, whose full-width punctuation (“”，：) keeps CJK widths, where
+/// Roboto, which has those marks, draws them narrow. User content is set in
+/// [`latin`] instead.
 pub fn font_family() -> &'static str {
-    if !crate::i18n::chinese() {
-        return "Roboto";
+    if crate::i18n::chinese() {
+        cjk_family()
+    } else {
+        "Roboto"
     }
+}
+
+/// The platform's CJK UI face, which [`font_family`] uses in Chinese and
+/// [`latin`] falls back to.
+fn cjk_family() -> &'static str {
     if cfg!(target_os = "macos") {
         "PingFang SC"
     } else if cfg!(target_os = "windows") {
         "Microsoft YaHei UI"
     } else {
         "Noto Sans CJK SC"
+    }
+}
+
+/// Sets user content (file names, paths, addresses) in Roboto, with the CJK
+/// face for what Roboto lacks: its hyphens, digits and dots look as they do
+/// in the text fields, which the CJK face's Latin would not (its hyphen
+/// reads as a dash). Applied after a type role, which picks the interface's
+/// face.
+pub fn latin<E: Styled>(mut element: E) -> E {
+    let style = element.text_style();
+    style.font_family = Some("Roboto".into());
+    style.font_fallbacks = Some(FontFallbacks::from_fonts(vec![cjk_family().to_owned()]));
+    element
+}
+
+/// A [`line`] of user content, in [`latin`].
+pub fn name_line(role: TypeRole, ink: ColorRole, content: impl Into<SharedString>) -> Div {
+    latin(line(role, ink, content))
+}
+
+/// The container of a card that holds rows: white on the tinted panes in
+/// light, and in dark a step lighter than the page, never darker.
+pub fn card() -> ColorRole {
+    if gpui_kit_material::theme::is_dark() {
+        ColorRole::SURFACE_CONTAINER_HIGH
+    } else {
+        ColorRole::SURFACE_CONTAINER_LOWEST
     }
 }
 
@@ -139,7 +174,7 @@ pub fn pill(label: impl Into<SharedString>, bg: ColorRole, fg: ColorRole) -> Div
         .child(label.into())
 }
 
-/// A white card holding rows, as the settings panes and queues group them.
+/// A card holding rows, as the settings panes and queues group them.
 pub fn group(rows: Vec<AnyElement>) -> Div {
     let count = rows.len();
     div()
@@ -152,7 +187,7 @@ pub fn group(rows: Vec<AnyElement>) -> Div {
             let big = rem(20.);
             let small = rem(6.);
             div()
-                .bg(color(ColorRole::SURFACE_CONTAINER_LOWEST))
+                .bg(color(card()))
                 .rounded_tl(if first { big } else { small })
                 .rounded_tr(if first { big } else { small })
                 .rounded_bl(if last { big } else { small })
@@ -190,7 +225,7 @@ pub fn path(id: &'static str, content: impl Into<SharedString>) -> AnyElement {
 pub fn path_in(id: &'static str, ink: ColorRole, content: impl Into<SharedString>) -> AnyElement {
     let content = content.into();
     MaterialTooltip::plain(id, content.clone())
-        .trigger(line(TypeRole::BodyMedium, ink, content))
+        .trigger(name_line(TypeRole::BodyMedium, ink, content))
         .into_any_element()
 }
 
@@ -333,12 +368,15 @@ pub fn empty(
 /// list.
 /// Builds a menu for the frame it shows on.
 type MenuBuilder = Box<dyn Fn(&mut Window, &mut App) -> MaterialMenu>;
+/// Told when the menu opens or closes.
+type OpenChange = std::rc::Rc<dyn Fn(bool, &mut Window, &mut App)>;
 
 #[derive(gpui_kit::IntoElement)]
 pub struct ContextMenu {
     id: ElementId,
     menu: MenuBuilder,
     button: MouseButton,
+    on_open_change: Option<OpenChange>,
 }
 
 impl ContextMenu {
@@ -351,7 +389,15 @@ impl ContextMenu {
             id: id.into(),
             menu: Box::new(menu),
             button: MouseButton::Right,
+            on_open_change: None,
         }
+    }
+
+    /// Calls `f` when the menu opens (true) and closes (false), so its
+    /// target can stay highlighted meanwhile.
+    pub fn on_open_change(mut self, f: impl Fn(bool, &mut Window, &mut App) + 'static) -> Self {
+        self.on_open_change = Some(std::rc::Rc::new(f));
+        self
     }
 
     /// Opens on a left press instead, over a button such as a row's ⋮.
@@ -384,6 +430,7 @@ impl RenderOnce for ContextMenu {
             ContextMenuState::default()
         });
         let button = self.button;
+        let opened = self.on_open_change.clone();
         let press = canvas(
             |bounds, window, _| (bounds, window.insert_hitbox(bounds, HitboxBehavior::Normal)),
             {
@@ -402,6 +449,9 @@ impl RenderOnce for ContextMenu {
                                 state.in_window = event.position;
                                 cx.notify();
                             });
+                            if let Some(opened) = &opened {
+                                opened(true, window, cx);
+                            }
                         }
                     });
                 }
@@ -436,15 +486,19 @@ impl RenderOnce for ContextMenu {
             let left = position.x - (in_window.x - rightmost).max(px(0.));
             let top = position.y - (in_window.y - lowest).max(px(0.));
             let close = state.clone();
+            let closed = self.on_open_change.clone();
             popup = Some(
                 div().absolute().left(left).top(top).child(
                     MenuPopup::new((self.id, "popup"), div(), menu)
                         .open(open)
-                        .on_open_change(move |next, _, cx| {
+                        .on_open_change(move |next, window, cx| {
                             close.update(cx, |state, cx| {
                                 state.open = *next;
                                 cx.notify();
-                            })
+                            });
+                            if let Some(closed) = &closed {
+                                closed(*next, window, cx);
+                            }
                         }),
                 ),
             );
@@ -456,5 +510,27 @@ impl RenderOnce for ContextMenu {
             .size_full()
             .child(press)
             .children(popup)
+    }
+}
+
+/// Focuses something from inside a parent that renders before it, such as a
+/// dialog that moves focus to its own surface on the frame it opens: the
+/// work is deferred from this element's render, so it runs after the
+/// parent's. Renders nothing.
+#[derive(gpui_kit::IntoElement)]
+pub struct FocusLater(Deferred);
+
+type Deferred = Box<dyn FnOnce(&mut Window, &mut App)>;
+
+impl FocusLater {
+    pub fn new(focus: impl FnOnce(&mut Window, &mut App) + 'static) -> Self {
+        Self(Box::new(focus))
+    }
+}
+
+impl RenderOnce for FocusLater {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        window.defer(cx, self.0);
+        div()
     }
 }

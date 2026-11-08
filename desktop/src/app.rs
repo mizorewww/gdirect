@@ -181,6 +181,8 @@ pub struct Gdirect {
     pub new_menu: bool,
     pub account_menu: bool,
     pub row_menu: Option<String>,
+    /// The file whose right-click menu is open, highlighted meanwhile.
+    pub context_row: Option<String>,
     pub dialog: Option<Dialog>,
     pub name_input: Entity<InputState>,
     /// The filter field shows text that no longer applies; empty it.
@@ -188,6 +190,10 @@ pub struct Gdirect {
     /// The dialog's name field takes focus once the dialog is up, with this
     /// many bytes of its name (the name less its extension) selected.
     focus_name: Option<usize>,
+    /// A question that destroys something opens with Cancel focused, so
+    /// Enter answers it safely.
+    focus_cancel: bool,
+    cancel_focus: FocusHandle,
     /// Bumped by each connection attempt; results from older ones are dropped.
     pub session: u64,
     /// The window's width in logical pixels at the last frame; pages lay out
@@ -361,9 +367,12 @@ impl Gdirect {
             new_menu: false,
             account_menu: false,
             row_menu: None,
+            context_row: None,
             dialog: None,
             name_input,
             focus_name: None,
+            focus_cancel: false,
+            cancel_focus: cx.focus_handle(),
             clear_filter: false,
             session: 0,
             width: 1280.,
@@ -508,7 +517,6 @@ impl Gdirect {
     }
 
     /// The content pane's width, beside the rail and inside its margin.
-    #[allow(dead_code)] // For pages that lay out by their own width.
     pub fn content_width(&self) -> f32 {
         self.width - RAIL_COLLAPSED_WIDTH - 8.
     }
@@ -665,6 +673,7 @@ impl Gdirect {
             });
             self.focus_name = Some(stem);
         }
+        self.focus_cancel = matches!(dialog, Dialog::DeleteForever(_) | Dialog::EmptyTrash);
         self.dialog = Some(dialog);
         cx.notify();
     }
@@ -700,17 +709,34 @@ impl Gdirect {
     }
 
     fn render_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // The dialog moves focus to its surface after its first frame; the
-        // field takes it from there on the frame after.
-        if let Some(stem) = self.focus_name.take() {
+        // The dialog moves its surface into focus at the end of its first
+        // frame. The field (or Cancel) takes it back at once, from inside
+        // the dialog, whose contents render after it: typed right after the
+        // shortcut, the first keys reach the field. The next frame checks
+        // again, in case the surface took it later.
+        let focus_name = self.focus_name.take().map(|stem| {
             let input = self.name_input.clone();
-            window.on_next_frame(move |window, cx| {
+            let focus = move |window: &mut Window, cx: &mut App| {
                 input.update(cx, |input, cx| {
-                    input.focus(window, cx);
-                    input.set_selected_range(0..stem, cx);
+                    if !input.focus_handle(cx).is_focused(window) {
+                        input.focus(window, cx);
+                        input.set_selected_range(0..stem, cx);
+                    }
                 });
-            });
-        }
+            };
+            window.on_next_frame(focus.clone());
+            ui::FocusLater::new(focus)
+        });
+        let focus_cancel = std::mem::take(&mut self.focus_cancel).then(|| {
+            let handle = self.cancel_focus.clone();
+            let focus = move |window: &mut Window, cx: &mut App| {
+                if !handle.is_focused(window) {
+                    window.focus(&handle, cx);
+                }
+            };
+            window.on_next_frame(focus.clone());
+            ui::FocusLater::new(focus)
+        });
         let (headline, supporting, confirm, input, danger): (
             SharedString,
             Option<SharedString>,
@@ -793,18 +819,24 @@ impl Gdirect {
             .when_some(supporting, |d, s| d.supporting_text(s))
             .when(input, |d| {
                 d.content(
-                    div().px(rem(24.)).pt(rem(8.)).child(
-                        TextField::new("dialog-name", &self.name_input)
-                            .variant(TextFieldVariant::Outlined)
-                            .label(t("名称", "Name"))
-                            .w_full(),
-                    ),
+                    div()
+                        .px(rem(24.))
+                        .pt(rem(8.))
+                        .child(
+                            TextField::new("dialog-name", &self.name_input)
+                                .variant(TextFieldVariant::Outlined)
+                                .label(t("名称", "Name"))
+                                .w_full(),
+                        )
+                        .children(focus_name),
                 )
             })
             .action(
                 material_button("dialog-cancel", ButtonVariant::Text)
+                    .track_focus(&self.cancel_focus)
                     .accessibility_label(t("取消", "Cancel"))
                     .child(t("取消", "Cancel"))
+                    .children(focus_cancel)
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.close_dialog(cx);
                         this.focus_now(window, cx);
@@ -819,7 +851,11 @@ impl Gdirect {
                         ButtonVariant::Text
                     },
                 )
-                .when(danger, |b| b.tone(ButtonTone::Accent))
+                // What cannot be undone is in the error colour.
+                .when(danger, |b| {
+                    b.bg(color(ColorRole::ERROR))
+                        .text_color(color(ColorRole::ON_ERROR))
+                })
                 .accessibility_label(confirm.to_owned())
                 .child(confirm.to_owned())
                 .on_click(
@@ -1013,9 +1049,12 @@ impl Gdirect {
             self.filter_input.read(cx).focus_handle(cx),
         ];
         // The handles this frame does not draw: the Files page's off it, and
-        // the name field with its dialog gone. (Popups draw outside this
+        // the name field and Cancel with their dialog gone. (Popups draw outside this
         // view, so its tree cannot tell their focus from a stale one.)
-        let mut stale = vec![self.name_input.read(cx).focus_handle(cx)];
+        let mut stale = vec![
+            self.name_input.read(cx).focus_handle(cx),
+            self.cancel_focus.clone(),
+        ];
         if !files {
             stale.push(self.files_focus.clone());
             stale.extend(fields.iter().cloned());

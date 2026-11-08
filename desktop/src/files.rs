@@ -28,6 +28,14 @@ const COLUMNS: [f32; 4] = [180., 160., 112., 56.];
 const FIRST_PAGE: u32 = 200;
 /// Rows from the end at which the next page is fetched.
 const PREFETCH: usize = 40;
+/// The blank rows after the list's last, enough of them (58 each) to make
+/// [`Gdirect::LISTING_BOTTOM`]'s room. Inert: nothing selects, opens or
+/// highlights them, and the keys, Select All and the menus count only files.
+const SPACER_ROWS: usize = 2;
+/// The grid's tiles' least width, the gap between them and the grid's margin.
+const TILE_MIN: f32 = 176.;
+const GRID_GAP: f32 = 12.;
+const GRID_PAD: f32 = 16.;
 
 /// A count with its unit: `{n}{zh}` in Chinese, "1 file" or "3 files" in English.
 fn count(n: usize, zh: &str, one: &str, many: &str) -> String {
@@ -854,8 +862,8 @@ impl Gdirect {
         if self.location.trash() {
             self.say(
                 t(
-                    "回收站中的项目无法打开；请先恢复",
-                    "Items in the trash can’t be opened. Restore them first",
+                    "回收站中的项目无法打开，请先恢复。",
+                    "Items in the trash can’t be opened. Restore them first.",
                 ),
                 cx,
             );
@@ -952,23 +960,31 @@ impl Gdirect {
         let (folders, files): (Vec<File>, Vec<File>) = files.into_iter().partition(File::folder);
         if !files.is_empty() {
             let account = self.account.clone().unwrap_or_default();
+            // One file is named, as the other snackbars name one item.
+            let one = match files.as_slice() {
+                [one] => Some(one.name.clone()),
+                _ => None,
+            };
             let (added, skipped) = self.queues.enqueue(
                 files.into_iter().map(|f| (f, dir.clone())).collect(),
                 self.settings.office,
                 &account,
             );
-            let message = match (added, skipped) {
-                (0, _) => t(
+            let message = match (added, skipped, one) {
+                (0, _, _) => t(
                     "没有可下载的文件：已在队列中，或无法下载",
                     "Nothing to download: already queued, or can’t be downloaded",
                 )
                 .to_owned(),
-                (n, 0) => tf!(
+                (1, 0, Some(name)) => {
+                    tf!("已将“{name}”加入下载队列", "Queued “{name}” for download")
+                }
+                (n, 0, _) => tf!(
                     "已加入下载队列 · {}",
                     "Queued for download · {}",
                     file_count(n)
                 ),
-                (n, s) => tf!(
+                (n, s, _) => tf!(
                     "已加入下载队列 · {}，跳过 {s} 个",
                     "Queued for download · {}, skipped {s}",
                     file_count(n)
@@ -1018,14 +1034,20 @@ impl Gdirect {
                     this.listing.remove(i);
                 }
                 let message = match result {
-                    Ok(files) if files.is_empty() => tf!("{name} 里没有文件", "No files in {name}"),
+                    Ok(files) if files.is_empty() => {
+                        tf!("“{name}”里没有文件", "No files in “{name}”")
+                    }
                     Ok(files) => {
                         let (added, _) = this.queues.enqueue(files, this.settings.office, &account);
-                        tf!("{name}：已加入 {}", "{name}: queued {}", file_count(added))
+                        tf!(
+                            "“{name}”：已加入 {}",
+                            "“{name}”: queued {}",
+                            file_count(added)
+                        )
                     }
                     Err(e) => {
                         let e = first_line(&e);
-                        tf!("无法列出 {name}：{e}", "Couldn’t list {name}: {e}")
+                        tf!("无法列出“{name}”：{e}", "Couldn’t list “{name}”: {e}")
                     }
                 };
                 this.say(message, cx);
@@ -1080,11 +1102,23 @@ impl Gdirect {
         let Some(parent) = self.location.folder().map(str::to_owned) else {
             return;
         };
-        self.operate(
-            tf!("正在新建 {name}…", "Creating {name}…"),
+        self.operate_with(
+            tf!("正在新建“{name}”…", "Creating “{name}”…"),
             move |api| {
-                let file = api.create(&parent, &name, true)?;
-                Ok(tf!("已新建文件夹 {}", "Created folder {}", file.name))
+                api.create(&parent, &name, true)
+                    .map_err(|e| format!("{e:#}"))
+            },
+            |this, result, cx| match result {
+                Ok(file) => {
+                    // The listing that follows shows it selected, scrolled to.
+                    this.selected.clear();
+                    this.pending_select = vec![file.id.clone()];
+                    this.say(
+                        tf!("已新建文件夹“{}”", "Created folder “{}”", file.name),
+                        cx,
+                    );
+                }
+                Err(e) => this.say(first_line(&e), cx),
             },
             cx,
         );
@@ -1092,10 +1126,10 @@ impl Gdirect {
 
     pub fn rename(&mut self, file: File, name: String, cx: &mut Context<Self>) {
         self.operate(
-            tf!("正在重命名 {}…", "Renaming {}…", file.name),
+            tf!("正在重命名“{}”…", "Renaming “{}”…", file.name),
             move |api| {
                 let renamed = api.rename(&file.id, &name)?;
-                Ok(tf!("已重命名为 {}", "Renamed to {}", renamed.name))
+                Ok(tf!("已重命名为“{}”", "Renamed to “{}”", renamed.name))
             },
             cx,
         );
@@ -1390,8 +1424,8 @@ impl Gdirect {
         let Some(folder) = self.location.folder().filter(|_| self.location.writable()) else {
             self.say(
                 t(
-                    "不能上传到这里；请打开可以添加文件的文件夹",
-                    "Can’t upload here. Open a folder you can add files to",
+                    "不能上传到这里，请打开可以添加文件的文件夹。",
+                    "Can’t upload here. Open a folder you can add files to.",
                 ),
                 cx,
             );
@@ -1404,8 +1438,8 @@ impl Gdirect {
         }
         self.say(
             tf!(
-                "已加入上传队列 · {} → {}",
-                "Queued for upload · {} → {}",
+                "已加入上传队列 · {} → “{}”",
+                "Queued for upload · {} → “{}”",
                 item_count(n),
                 parent.1
             ),
@@ -1714,8 +1748,16 @@ impl Gdirect {
     }
 
     /// The route chip's stand-in in narrow windows: a dot in the route's
-    /// colour, its route and latency in a tooltip; a click opens Routes.
+    /// colour and its latency in short, the route in a tooltip; a click
+    /// opens Routes.
     fn render_route_dot(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let latency = self.current_route().and_then(|(_, ms, _)| ms).map(|ms| {
+            if ms < 1000 {
+                format!("{ms} ms")
+            } else {
+                format!("{:.1} s", ms as f32 / 1000.)
+            }
+        });
         let (ink, tip): (ColorRole, SharedString) = match self.current_route() {
             Some((ip, Some(ms), _)) => (
                 format::latency_role(Some(ms)),
@@ -1730,17 +1772,22 @@ impl Gdirect {
             }
             None => (ColorRole::ERROR, t("未连接", "Not connected").into()),
         };
-        let button = div()
+        let button = ui::type_role(div(), TypeRole::LabelLarge)
             .id("route-dot")
-            .size(rem(40.))
+            .h(rem(40.))
+            .min_w(rem(40.))
+            .px(rem(if latency.is_some() { 12. } else { 0. }))
+            .gap(rem(8.))
             .flex_none()
             .rounded_full()
             .flex()
             .items_center()
             .justify_center()
             .cursor_pointer()
+            .text_color(color(ColorRole::ON_SURFACE_VARIANT))
             .hover(|s| s.bg(color(ColorRole::ON_SURFACE).opacity(0.08)))
             .child(div().size(rem(12.)).rounded_full().bg(color(ink)))
+            .children(latency.map(|text| ui::latin(div()).whitespace_nowrap().child(text)))
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.go(Page::Endpoints, cx)));
         MaterialTooltip::plain("route-tip", tip).trigger(button)
     }
@@ -1982,7 +2029,8 @@ impl Gdirect {
                 )));
             }
             // One line: the last crumb shortens to an ellipsis, the others keep their names.
-            let label = ui::type_role(div(), TypeRole::TitleLarge)
+            // Folder names are user content; the places' names read the same in it.
+            let label = ui::latin(ui::type_role(div(), TypeRole::TitleLarge))
                 .px(rem(8.))
                 .py(rem(4.))
                 .rounded(RADIUS_SMALL)
@@ -2400,15 +2448,15 @@ impl Gdirect {
                     t("换个筛选条件试试。", "Try other filters.").into()
                 } else if self.filters.any() || self.filters.full_text {
                     tf!(
-                        "没有符合筛选条件且名称包含“{}”的项目",
-                        "No items match “{}” with the current filters",
+                        "没有符合筛选条件且名称包含“{}”的项目。",
+                        "No items match “{}” with the current filters.",
                         spec.text
                     )
                     .into()
                 } else {
                     tf!(
-                        "云端硬盘中没有名称包含“{}”的项目",
-                        "Nothing in Drive has “{}” in its name",
+                        "云端硬盘中没有名称包含“{}”的项目。",
+                        "Nothing in Drive has “{}” in its name.",
                         spec.text
                     )
                     .into()
@@ -2442,8 +2490,8 @@ impl Gdirect {
                     "network_ping",
                     t("正在连接…", "Connecting…"),
                     t(
-                        "已保存的线路超过一天未验证，正在重新检查。进度见“线路”页。",
-                        "Your saved routes haven’t been checked for a day, so they’re being checked again. See Routes for progress.",
+                        "正在检查已保存的线路。进度见“线路”页。",
+                        "Checking your saved routes. See Routes for progress.",
                     ),
                 )
             } else if self.connecting {
@@ -2491,8 +2539,8 @@ impl Gdirect {
                     "search_off",
                     t("没有匹配的文件", "No matching files"),
                     tf!(
-                        "当前文件夹里没有名称包含“{}”的项目",
-                        "Nothing in this folder has “{}” in its name",
+                        "当前文件夹里没有名称包含“{}”的项目。",
+                        "Nothing in this folder has “{}” in its name.",
                         self.filter
                     ),
                 )
@@ -2529,7 +2577,7 @@ impl Gdirect {
             .child(
                 uniform_list(
                     "rows",
-                    count + more,
+                    count + more + SPACER_ROWS,
                     cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
                         // Nearing the end fetches the next page, unless it just failed.
                         if range.end + PREFETCH >= count && this.list_error.is_none() {
@@ -2550,13 +2598,15 @@ impl Gdirect {
                                         && this.cursor.as_deref() == Some(f.id.as_str());
                                     this.render_row(ix, f, joins, ring, cx)
                                 }
-                                None => this.render_more(cx).into_any_element(),
+                                None if ix == count && more == 1 => {
+                                    this.render_more(cx).into_any_element()
+                                }
+                                None => div().id(("spacer", ix)).h(rem(58.)).into_any_element(),
                             })
                             .collect::<Vec<_>>()
                     }),
                 )
                 .track_scroll(&self.rows)
-                .pb(rem(Self::LISTING_BOTTOM))
                 .flex_1(),
             )
             .into_any_element()
@@ -2599,8 +2649,19 @@ impl Gdirect {
         let (file, view) = (file.clone(), cx.entity().downgrade());
         let how = (self.location.trash(), self.settings.office);
         let menu_id = ElementId::from((id.clone(), "menu"));
+        let (target, track) = (file.id.clone(), view.clone());
         ui::ContextMenu::new(id, move |_, _| {
             file_menu(menu_id.clone(), &file, how, view.clone())
+        })
+        .on_open_change(move |open, _, cx| {
+            let _ = track.update(cx, |this, cx| {
+                if open {
+                    this.context_row = Some(target.clone());
+                } else if this.context_row.as_deref() == Some(target.as_str()) {
+                    this.context_row = None;
+                }
+                cx.notify();
+            });
         })
     }
 
@@ -2630,8 +2691,17 @@ impl Gdirect {
 
     /// The room under the listing's last row, inside its scrolling content:
     /// a snackbar floats over the list, and the list scrolls the last row
-    /// clear of it. Always there, so nothing moves when one appears.
+    /// clear of it. Always there, so nothing moves when one appears. The
+    /// list makes it of blank rows after its last ([`SPACER_ROWS`]): padding
+    /// would shrink the area it draws rows in instead.
     const LISTING_BOTTOM: f32 = 80.;
+
+    /// Whether a file's ⋮ or right-click menu is open.
+    fn menu_open(&self, file: &File) -> bool {
+        [&self.row_menu, &self.context_row]
+            .iter()
+            .any(|open| open.as_deref() == Some(file.id.as_str()))
+    }
 
     /// The list's columns give way, last first, as the window narrows.
     fn show_location(&self) -> bool {
@@ -2747,7 +2817,7 @@ impl Gdirect {
             .gap(rem(8.))
             .when_some(name, |d, name| {
                 d.child(ui::icon(icon, 18., ColorRole::ON_SURFACE_VARIANT))
-                    .child(ui::line(
+                    .child(ui::name_line(
                         TypeRole::BodyMedium,
                         ColorRole::ON_SURFACE_VARIANT,
                         name,
@@ -2768,8 +2838,8 @@ impl Gdirect {
         let selected = self.selected.contains(&file.id);
         let (above, below) = (selected && above, selected && below);
         let corner = |joined: bool| rem(if joined { 4. } else { 28. });
-        // A row whose ⋮ menu is open stays highlighted while it is.
-        let menu_open = self.row_menu.as_deref() == Some(file.id.as_str());
+        // A row whose menu is open stays highlighted while it is.
+        let menu_open = self.menu_open(file);
         let state = self.file_state(file);
         let activate = file.clone();
         div()
@@ -2806,7 +2876,7 @@ impl Gdirect {
                             .items_center()
                             .gap(rem(16.))
                             .child(kind_tile(file, 32., selected))
-                            .child(ui::line(
+                            .child(ui::name_line(
                                 TypeRole::BodyLarge,
                                 ColorRole::ON_SURFACE,
                                 file.name.clone(),
@@ -2904,118 +2974,134 @@ impl Gdirect {
             }))
     }
 
+    /// The grid's columns: as many tiles of at least [`TILE_MIN`] as the
+    /// pane's width holds, each stretched to share the rest.
+    fn grid_columns(&self) -> u16 {
+        let room = self.content_width() - 2. * GRID_PAD;
+        ((room + GRID_GAP) / (TILE_MIN + GRID_GAP)).floor().max(1.) as u16
+    }
+
     fn render_grid(&self, shown: Vec<&File>, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("grid")
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
-            .px(rem(16.))
-            .pb(rem(Self::LISTING_BOTTOM))
+            .px(rem(GRID_PAD))
             .relative()
             .on_mouse_down(MouseButton::Left, self.focus_list(cx))
             .child(self.folder_context_menu(cx))
-            .child(div().flex().flex_wrap().gap(rem(12.)).children(
-                shown.into_iter().enumerate().map(|(ix, file)| {
-                    let selected = self.selected.contains(&file.id);
-                    let menu_open = self.row_menu.as_deref() == Some(file.id.as_str());
-                    let activate = file.clone();
-                    let state = self.file_state(file);
-                    div()
-                        .id(("tile", ix))
-                        .relative()
-                        .child(self.file_context_menu(("tile-context", ix), file, cx))
-                        .w(rem(176.))
-                        .p(rem(12.))
-                        .flex()
-                        .flex_col()
-                        .gap(rem(12.))
-                        .rounded(rem(16.))
-                        .bg(color(if selected {
-                            ColorRole::SECONDARY_CONTAINER
-                        } else if menu_open {
-                            ColorRole::SURFACE_CONTAINER_HIGH
-                        } else {
-                            ColorRole::SURFACE_CONTAINER_LOW
-                        }))
-                        .when(!selected, |d| {
-                            d.hover(|s| s.bg(color(ColorRole::SURFACE_CONTAINER_HIGH)))
-                        })
-                        .child(
-                            div()
-                                .h(rem(96.))
-                                .rounded(rem(12.))
-                                .bg(color(ColorRole::SURFACE_CONTAINER_LOWEST))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .relative()
-                                .child(kind_tile(file, 48., false))
-                                // A selected tile says so in its corner too.
-                                .when(selected, |d| {
-                                    d.child(
-                                        div()
-                                            .absolute()
-                                            .top(rem(8.))
-                                            .left(rem(8.))
-                                            .size(rem(24.))
-                                            .rounded_full()
-                                            .bg(color(ColorRole::PRIMARY))
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .child(ui::icon("check", 18., ColorRole::ON_PRIMARY)),
-                                    )
-                                }),
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .top(rem(4.))
-                                .right(rem(4.))
-                                .child(self.render_row_menu(ix, file, cx)),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(rem(6.))
-                                .child(
-                                    ui::line(
-                                        TypeRole::BodyMedium,
-                                        ColorRole::ON_SURFACE,
-                                        file.name.clone(),
-                                    )
-                                    .flex_1(),
-                                )
-                                .when(file.starred && !self.location.trash(), |d| {
-                                    d.child(starred_mark(16.))
-                                })
-                                .when_some(state, |d, (icon, ink, _)| {
-                                    d.child(ui::icon(icon, 16., ink))
-                                }),
-                        )
-                        .child(ui::text(
-                            TypeRole::BodySmall,
-                            ColorRole::ON_SURFACE_VARIANT,
-                            if file.folder() {
-                                format::modified(self.date_of(file))
+            .child(
+                div()
+                    .grid()
+                    .grid_cols(self.grid_columns())
+                    .gap(rem(GRID_GAP))
+                    .children(shown.into_iter().enumerate().map(|(ix, file)| {
+                        let selected = self.selected.contains(&file.id);
+                        let menu_open = self.menu_open(file);
+                        let activate = file.clone();
+                        let state = self.file_state(file);
+                        div()
+                            .id(("tile", ix))
+                            .relative()
+                            .child(self.file_context_menu(("tile-context", ix), file, cx))
+                            .min_w_0()
+                            .p(rem(12.))
+                            .flex()
+                            .flex_col()
+                            .gap(rem(12.))
+                            .rounded(rem(16.))
+                            .bg(color(if selected {
+                                ColorRole::SECONDARY_CONTAINER
+                            } else if menu_open {
+                                ColorRole::SURFACE_CONTAINER_HIGH
                             } else {
-                                format!(
-                                    "{} · {}",
-                                    format::size(file),
+                                ColorRole::SURFACE_CONTAINER_LOW
+                            }))
+                            .when(!selected, |d| {
+                                d.hover(|s| s.bg(color(ColorRole::SURFACE_CONTAINER_HIGH)))
+                            })
+                            .child(
+                                div()
+                                    .h(rem(96.))
+                                    .rounded(rem(12.))
+                                    .bg(color(ColorRole::SURFACE_CONTAINER_LOWEST))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .relative()
+                                    .child(kind_tile(file, 48., false))
+                                    // A selected tile says so in its corner too.
+                                    .when(selected, |d| {
+                                        d.child(
+                                            div()
+                                                .absolute()
+                                                .top(rem(8.))
+                                                .left(rem(8.))
+                                                .size(rem(24.))
+                                                .rounded_full()
+                                                .bg(color(ColorRole::PRIMARY))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .child(ui::icon(
+                                                    "check",
+                                                    18.,
+                                                    ColorRole::ON_PRIMARY,
+                                                )),
+                                        )
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top(rem(4.))
+                                    .right(rem(4.))
+                                    .child(self.render_row_menu(ix, file, cx)),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(rem(6.))
+                                    .child(
+                                        ui::name_line(
+                                            TypeRole::BodyMedium,
+                                            ColorRole::ON_SURFACE,
+                                            file.name.clone(),
+                                        )
+                                        .flex_1(),
+                                    )
+                                    .when(file.starred && !self.location.trash(), |d| {
+                                        d.child(starred_mark(16.))
+                                    })
+                                    .when_some(state, |d, (icon, ink, _)| {
+                                        d.child(ui::icon(icon, 16., ink))
+                                    }),
+                            )
+                            .child(ui::text(
+                                TypeRole::BodySmall,
+                                ColorRole::ON_SURFACE_VARIANT,
+                                if file.folder() {
                                     format::modified(self.date_of(file))
-                                )
-                            },
-                        ))
-                        .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                            this.click(&activate, event, window, cx)
-                        }))
-                }),
-            ))
+                                } else {
+                                    format!(
+                                        "{} · {}",
+                                        format::size(file),
+                                        format::modified(self.date_of(file))
+                                    )
+                                },
+                            ))
+                            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                                this.click(&activate, event, window, cx)
+                            }))
+                    })),
+            )
             .when(self.next_page.is_some(), |d| {
                 d.child(self.render_more(cx).pt(rem(8.)))
             })
+            // The room under the last tiles, a blank block as the list's is.
+            .child(div().h(rem(Self::LISTING_BOTTOM)))
     }
 }
 
@@ -3077,6 +3163,7 @@ fn file_menu(
             .on_click(move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
                 let _ = view.update(cx, |this, cx| {
                     this.row_menu = None;
+                    this.context_row = None;
                     act(this, file.clone(), window, cx);
                 });
             })
@@ -3136,7 +3223,7 @@ fn file_menu(
         let mut edit = Vec::new();
         if can.rename {
             edit.push(item(
-                t("重命名", "Rename").into(),
+                t("重命名…", "Rename…").into(),
                 "edit",
                 |this, f, window, cx| this.open_dialog(Dialog::Rename(Box::new(f)), window, cx),
             ));

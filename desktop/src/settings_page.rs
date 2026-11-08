@@ -203,7 +203,10 @@ impl Gdirect {
                 .children(groups.into_iter().map(|group| {
                     segmented_list(group.into_iter().map(|(pane, sub, icon, tint)| {
                         let title = pane_title(pane);
+                        // Tinted segments on the surface, so each group reads
+                        // as a card, as the panes' groups do.
                         ListItem::new(title, title)
+                            .container(ColorRole::SURFACE_CONTAINER_LOW)
                             .supporting(sub)
                             .leading(ListLeading::Tinted(ui::symbol(icon, true), tint, 40.))
                             .selected(two_panes && self.pane == pane)
@@ -317,7 +320,7 @@ impl Gdirect {
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .child(ui::line(
+                            .child(ui::name_line(
                                 TypeRole::BodyLarge,
                                 ColorRole::ON_SURFACE,
                                 email.clone(),
@@ -582,14 +585,19 @@ impl Gdirect {
             (false, _, _, Some(tun)) => Some(tf!("当前：经过 {tun}", "Now: through {tun}",)),
             _ => None,
         };
-        let bypass_text = t(
-            "TUN 模式的代理或 VPN 开着时，gdirect 连接 Google 仍走物理网卡；关闭后由代理规则决定。切换后会重新扫描线路",
-            "With a TUN-mode proxy or VPN on, gdirect still reaches Google through your network adapter. Turn off to let your proxy rules decide. Switching rescans routes",
-        );
-        let bypass_text = match bypass_now {
-            Some(now) => format!("{bypass_text}{}{now}", t("。", ". ")),
-            None => bypass_text.to_owned(),
-        };
+        // What it does, then on a quieter line of its own what it does now.
+        let bypass_text = div()
+            .flex()
+            .flex_col()
+            .gap(rem(2.))
+            .child(ui::supporting(t(
+                "TUN 模式的代理或 VPN 开着时，gdirect 连接 Google 仍走物理网卡；关闭后由代理规则决定。切换后会重新扫描线路，大约需要半分钟。",
+                "With a TUN-mode proxy or VPN on, gdirect still reaches Google through your network adapter. Turn off to let your proxy rules decide. Switching rescans routes, which takes about half a minute.",
+            )))
+            .when_some(bypass_now, |d, now| {
+                d.child(ui::text(TypeRole::BodySmall, ColorRole::ON_SURFACE_VARIANT, now))
+            })
+            .into_any_element();
         div()
             .flex()
             .flex_col()
@@ -626,15 +634,15 @@ impl Gdirect {
                         "badge",
                         t("TLS 身份", "TLS identity"),
                         Some(t(
-                            "自动：先用真实 SNI，被重置时改用伪装身份并按 IP 记住。“不发送”只用于下载",
-                            "Automatic: tries the real SNI first, switches to a disguised identity when reset and remembers it per IP. “Don’t send” applies to downloads only",
+                            "自动：先用真实 SNI，被重置时改用伪装身份并按 IP 记住。“不发送”只用于下载。",
+                            "Automatic: tries the real SNI first, switches to a disguised identity when reset and remembers it per IP. “Don’t send” applies to downloads only.",
                         ).into()),
                         identity,
                     ),
-                    ui::setting_row(
+                    ui::setting_row_with(
                         "alt_route",
                         t("绕过 TUN 代理直连 Google", "Connect to Google directly, bypassing TUN proxies"),
-                        Some(bypass_text.into()),
+                        Some(bypass_text),
                         Some(
                             MaterialSwitch::new(
                                 "bypass-tun",
@@ -661,8 +669,8 @@ impl Gdirect {
                         "vpn_lock",
                         t("登录时使用的代理", "Sign-in proxy"),
                         Some(t(
-                            "跟随系统代理（HTTPS_PROXY 等）。只用于登录和账号验证；传输始终直连已扫描的地址",
-                            "Follows the system proxy (HTTPS_PROXY and similar). Used only for sign-in and account checks; transfers always connect directly to scanned addresses",
+                            "跟随系统代理（HTTPS_PROXY 等）。只用于登录和账号验证；传输始终直连已扫描的地址。",
+                            "Follows the system proxy (HTTPS_PROXY and similar). Used only for sign-in and account checks; transfers always connect directly to scanned addresses.",
                         ).into()),
                         None,
                     ),
@@ -692,10 +700,13 @@ impl Gdirect {
     fn pane_mount(&self, card_w: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let s = &self.settings;
         let mounted = self.mount.as_ref();
+        // The rclone a mount would run, found the way the engine finds it.
+        let rclone = gdirect::mount::rclone();
+        let found = rclone.is_absolute();
         let status_bg = if mounted.is_some() {
             ColorRole::TERTIARY_CONTAINER
         } else {
-            ColorRole::SURFACE_CONTAINER_LOWEST
+            ui::card()
         };
         let status_fg = if mounted.is_some() {
             ColorRole::ON_TERTIARY_CONTAINER
@@ -750,7 +761,8 @@ impl Gdirect {
                     } else {
                         ButtonVariant::Filled
                     })
-                    .disabled(self.account.is_none())
+                    // Mounting needs rclone; unmounting does not.
+                    .disabled(self.account.is_none() || (mounted.is_none() && !found))
                     .loading(
                         self.mount_busy,
                         if mounted.is_some() {
@@ -837,23 +849,15 @@ impl Gdirect {
                                     .into_any_element(),
                             ),
                         ),
-                        {
-                            // The rclone a mount would run, found the way the engine finds it.
-                            let rclone = gdirect::mount::rclone();
-                            let found = rclone.is_absolute();
+                        if found {
                             ui::setting_row_with(
-                                if found { "check_circle" } else { "error" },
+                                "check_circle",
                                 "rclone",
-                                Some(if found {
-                                    ui::path("rclone-path", format::home(&rclone))
-                                } else {
-                                    ui::supporting(t(
-                                        "未找到。macOS 用 brew install rclone 安装，或者用 gdirect 安装脚本的 --with-mount。",
-                                        "Not found. On macOS run brew install rclone, or use the gdirect installer with --with-mount.",
-                                    ))
-                                }),
+                                Some(ui::path("rclone-path", format::home(&rclone))),
                                 None,
                             )
+                        } else {
+                            self.rclone_missing(cx)
                         },
                     ]))
                     .child(ui::footnote(t(
@@ -861,6 +865,80 @@ impl Gdirect {
                         "Mounting uses rclone 1.75.2+ and reaches Google over the scanned routes. Writes go to the cache first, then upload in the background. macOS uses its built-in NFS, so no FUSE is needed.",
                     ))),
             )
+    }
+
+    /// The rclone row when there is none: how to install it, the command
+    /// in monospace with a button that copies it.
+    fn rclone_missing(&self, cx: &mut Context<Self>) -> AnyElement {
+        let (how, command) = if cfg!(target_os = "macos") {
+            (
+                t(
+                    "未找到，挂载前需要安装。用 Homebrew 安装，或者用 gdirect 安装脚本的 --with-mount：",
+                    "Not found; mounting needs it. Install it with Homebrew, or use the gdirect installer with --with-mount:",
+                ),
+                "brew install rclone",
+            )
+        } else if cfg!(target_os = "windows") {
+            (
+                t(
+                    "未找到，挂载前需要安装。用 winget 安装，或者用 Scoop（scoop install rclone）：",
+                    "Not found; mounting needs it. Install it with winget, or with Scoop (scoop install rclone):",
+                ),
+                "winget install Rclone.Rclone",
+            )
+        } else {
+            (
+                t(
+                    "未找到，挂载前需要安装。发行版的软件包常常早于 1.75.2，可以用 rclone 官方脚本安装，或者用 gdirect 安装脚本的 --with-mount：",
+                    "Not found; mounting needs it. Distribution packages are often older than 1.75.2, so install it with rclone’s script, or use the gdirect installer with --with-mount:",
+                ),
+                "sudo -v ; curl https://rclone.org/install.sh | sudo bash",
+            )
+        };
+        let command_line = div()
+            .mt(rem(6.))
+            .flex()
+            .items_center()
+            .gap(rem(4.))
+            .child(
+                ui::mono(command)
+                    .min_w_0()
+                    .px(rem(10.))
+                    .py(rem(6.))
+                    .rounded(rem(8.))
+                    .bg(color(ColorRole::SURFACE_CONTAINER_HIGHEST))
+                    .text_color(color(ColorRole::ON_SURFACE)),
+            )
+            .child(
+                IconButton::new(
+                    "copy-rclone",
+                    Symbol::CONTENT_COPY,
+                    t("复制命令", "Copy command"),
+                )
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(command.to_owned()));
+                    this.say(t("已复制命令", "Copied the command"), cx);
+                })),
+            );
+        ui::setting_row_with(
+            "error",
+            "rclone",
+            Some(
+                div()
+                    .flex()
+                    .flex_col()
+                    // The installer's flag keeps its hyphens (Roboto); the
+                    // full-width punctuation falls back to the CJK face.
+                    .child(ui::latin(ui::text(
+                        TypeRole::BodyMedium,
+                        ColorRole::ON_SURFACE_VARIANT,
+                        how,
+                    )))
+                    .child(command_line)
+                    .into_any_element(),
+            ),
+            None,
+        )
     }
 
     fn pane_appearance(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1257,7 +1335,7 @@ impl ShortcutsView {
                     .rounded(rem(8.))
                     .px(rem(6.))
                     .py(rem(4.))
-                    .hover(|s| s.bg(color(ColorRole::SURFACE_CONTAINER_HIGH)))
+                    .hover(|s| s.bg(color(ColorRole::ON_SURFACE).opacity(0.08)))
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         this.start(id.clone(), window, cx)
                     }))
@@ -1285,7 +1363,7 @@ impl ShortcutsView {
                     .rounded(rem(8.))
                     .px(rem(4.))
                     .py(rem(3.))
-                    .hover(|s| s.bg(color(ColorRole::SURFACE_CONTAINER_HIGH)))
+                    .hover(|s| s.bg(color(ColorRole::ON_SURFACE).opacity(0.08)))
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         this.start(id.clone(), window, cx)
                     }))
@@ -1365,13 +1443,13 @@ impl ShortcutsView {
                         ColorRole::ERROR,
                         if os == OperatingSystem::Mac {
                             t(
-                                "快捷键要包含 ⌘、⌃ 或 ⌥，或者是功能键。按 Esc 取消",
-                                "A shortcut needs ⌘, ⌃ or ⌥, or a function key. Press Esc to cancel",
+                                "快捷键要包含 ⌘、⌃ 或 ⌥，或者是功能键。按 Esc 取消。",
+                                "A shortcut needs ⌘, ⌃ or ⌥, or a function key. Press Esc to cancel.",
                             )
                         } else {
                             t(
-                                "快捷键要包含 Ctrl 或 Alt，或者是功能键。按 Esc 取消",
-                                "A shortcut needs Ctrl or Alt, or a function key. Press Esc to cancel",
+                                "快捷键要包含 Ctrl 或 Alt，或者是功能键。按 Esc 取消。",
+                                "A shortcut needs Ctrl or Alt, or a function key. Press Esc to cancel.",
                             )
                         },
                     )
@@ -1486,8 +1564,8 @@ impl Render for ShortcutsView {
                     .gap(rem(12.))
                     .child(
                         ui::footnote(t(
-                            "文本框里的编辑快捷键（复制、粘贴、撤销等）不受影响。",
-                            "Editing shortcuts in text fields (copy, paste, undo…) are not affected.",
+                            "文本编辑快捷键（复制、粘贴、撤销等）不受影响。",
+                            "Text-editing shortcuts (copy, paste, undo…) aren’t affected.",
                         ))
                         .flex_1()
                         .min_w(rem(200.)),
@@ -1525,7 +1603,7 @@ fn key_caps(keys: &str, os: OperatingSystem) -> Div {
                 .items_center()
                 .justify_center()
                 .rounded(rem(6.))
-                .bg(color(ColorRole::SURFACE_CONTAINER_HIGH))
+                .bg(color(ColorRole::SURFACE_CONTAINER_HIGHEST))
                 .border_1()
                 .border_color(color(ColorRole::OUTLINE_VARIANT))
                 .text_color(color(ColorRole::ON_SURFACE)),

@@ -611,11 +611,12 @@ impl Gdirect {
                         title,
                     ))
                     .children(route)
-                    .child(ui::text(
+                    // Names and paths: their hyphens in Roboto.
+                    .child(ui::latin(ui::text(
                         TypeRole::BodyMedium,
                         ColorRole::ON_PRIMARY_CONTAINER,
                         sub,
-                    )),
+                    ))),
             )
             .when(failed, |d| {
                 d.child(
@@ -735,7 +736,7 @@ impl Gdirect {
                             .items_center()
                             .gap(rem(12.))
                             .child(
-                                ui::line(
+                                ui::name_line(
                                     TypeRole::TitleMedium,
                                     ColorRole::ON_SURFACE,
                                     row.name.clone(),
@@ -883,7 +884,11 @@ fn done_row(
                 .flex()
                 .flex_col()
                 .gap(rem(2.))
-                .child(ui::line(TypeRole::TitleMedium, ColorRole::ON_SURFACE, name))
+                .child(ui::name_line(
+                    TypeRole::TitleMedium,
+                    ColorRole::ON_SURFACE,
+                    name,
+                ))
                 .child(
                     div()
                         .flex()

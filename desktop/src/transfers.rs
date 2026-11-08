@@ -391,8 +391,8 @@ pub fn run_download(
     progress: std::sync::mpsc::Sender<Stats>,
 ) -> anyhow::Result<(String, PathBuf)> {
     let unwritable = t(
-        "无法写入下载目录，请检查它的权限和剩余空间",
-        "Can't write to the download folder. Check its permissions and free space",
+        "无法写入下载目录，请检查它的权限和剩余空间。",
+        "Can't write to the download folder. Check its permissions and free space.",
     );
     if let Some(dir) = job.output.parent() {
         std::fs::create_dir_all(dir).context(unwritable)?;
@@ -435,8 +435,8 @@ pub fn run_download(
     anyhow::ensure!(
         !cancel.load(Ordering::Relaxed),
         t(
-            "已取消，已下载的部分会保留",
-            "Cancelled. Downloaded data is kept"
+            "已取消，已下载的部分会保留。",
+            "Cancelled. Downloaded data is kept."
         )
     );
     result?;
@@ -510,12 +510,12 @@ pub fn explain(error: &anyhow::Error) -> String {
     {
         let reason = match code {
             1 => t(
-                "连接或 TLS 握手失败，可在“线路”页换一个地址",
-                "Connection or TLS handshake failed. Try another address on the Routes page",
+                "连接或 TLS 握手失败，可在“线路”页换一个地址。",
+                "Connection or TLS handshake failed. Try another address on the Routes page.",
             ),
             2 => t(
-                "连接超时，可在“线路”页重新扫描",
-                "Connection timed out. Try rescanning on the Routes page",
+                "连接超时，可在“线路”页重新扫描。",
+                "Connection timed out. Try rescanning on the Routes page.",
             ),
             3 => t(
                 "文件不存在，或没有与此账号共享",
@@ -525,8 +525,8 @@ pub fn explain(error: &anyhow::Error) -> String {
             9 => t("磁盘空间不足", "Not enough disk space"),
             13 => t("目标文件已存在", "The target file already exists"),
             15..=18 => t(
-                "无法写入文件，请检查下载目录的权限和剩余空间",
-                "Can't write the file. Check the download folder's permissions and free space",
+                "无法写入文件，请检查下载目录的权限和剩余空间。",
+                "Can't write the file. Check the download folder's permissions and free space.",
             ),
             19 => t("域名解析失败", "DNS lookup failed"),
             22 => t(
@@ -534,8 +534,8 @@ pub fn explain(error: &anyhow::Error) -> String {
                 "Google Drive refused the download (quota, permissions or download limit)",
             ),
             24 => t(
-                "授权被拒绝，请在“设置 › 账号”重新登录",
-                "Authorization was refused. Sign in again in Settings › Account",
+                "授权被拒绝，请在“设置 › 账号”重新登录。",
+                "Authorization was refused. Sign in again in Settings › Account.",
             ),
             _ => t("下载出错", "Download error"),
         };
@@ -546,8 +546,8 @@ pub fn explain(error: &anyhow::Error) -> String {
     }
     if text.contains("MD5 does not match") {
         return t(
-            "下载完成，但 MD5 与云端硬盘记录不一致；文件已保留，以便检查",
-            "Download finished, but the MD5 doesn't match Google Drive's record. The file was kept so you can check it",
+            "下载完成，但 MD5 与云端硬盘记录不一致。文件已保留，以便检查。",
+            "Download finished, but the MD5 doesn't match Google Drive's record. The file was kept so you can check it.",
         )
         .into();
     }
@@ -560,8 +560,8 @@ pub fn explain(error: &anyhow::Error) -> String {
     }
     if text.contains("local file changed during upload") {
         return t(
-            "上传期间本地文件被修改，请在文件稳定后重试",
-            "The local file changed during upload. Retry once it stops changing",
+            "上传期间本地文件被修改，请在文件稳定后重试。",
+            "The local file changed during upload. Retry once it stops changing.",
         )
         .into();
     }
