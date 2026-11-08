@@ -25,7 +25,6 @@ extern "C" int gdirect_download_ex(const char* url, const char* dir, const char*
   try {
     gdirect_ip = ip;
     gdirect_sni = sni;
-    gdirect_hosthdr.clear();
     if (!library_ready()) { gdirect_ip = gdirect_sni = nullptr; return -1; }
     aria2::KeyVals opts = {
       {"dir", dir}, {"out", name}, {"continue", "true"},
@@ -83,7 +82,6 @@ extern "C" int gdirect_download_ex(const char* url, const char* dir, const char*
     if (session) { try { aria2::sessionFinal(session); } catch (...) {} }
   }
   gdirect_ip = gdirect_sni = nullptr;
-  gdirect_hosthdr.clear();
   if (!callback) std::fprintf(stderr, "\n");
   return result;
 }

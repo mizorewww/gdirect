@@ -1,3 +1,130 @@
+diff --color=auto -ru a/src/HttpRequest.cc b/src/HttpRequest.cc
+--- a/src/HttpRequest.cc
++++ b/src/HttpRequest.cc
+@@ -32,6 +32,8 @@
+  * files in the program, then also delete it here.
+  */
+ /* copyright --> */
++#include "gdirect_route.h"
++
+ #include "HttpRequest.h"
+ 
+ #include <cassert>
+@@ -190,7 +192,10 @@
+       builtinHds.emplace_back("Accept-Encoding:", acceptableEncodings);
+     }
+   }
+-  builtinHds.emplace_back("Host:", getHostText(getURIHost(), getPort()));
++  const std::string& gdirectHost = request_->getGdirectHostHeader();
++  builtinHds.emplace_back("Host:", gdirectHost.empty()
++                                       ? getHostText(getURIHost(), getPort())
++                                       : gdirectHost);
+   if (noCache_) {
+     builtinHds.emplace_back("Pragma:", "no-cache");
+     builtinHds.emplace_back("Cache-Control:", "no-cache");
+@@ -279,6 +284,11 @@
+   }
+   // append additional headers given by user.
+   for (const auto& hd : headers_) {
++    if (util::istartsWith(hd, "Authorization:") &&
++        (request_->getGdirectHostHeader().empty()
++             ? getHost()
++             : request_->getGdirectHostHeader()) !=
++            "www.googleapis.com") continue;
+     requestLine += hd;
+     requestLine += "\r\n";
+   }
+diff --color=auto -ru a/src/Platform.cc b/src/Platform.cc
+--- a/src/Platform.cc
++++ b/src/Platform.cc
+@@ -119,11 +119,15 @@
+ 
+ #ifdef HAVE_OPENSSL
+ #  if OPENSSL_VERSION_NUMBER >= 0x30000000L
+-  // RC4 is in the legacy provider.
++#    ifdef ENABLE_BITTORRENT
++  // Only BitTorrent message stream encryption needs legacy RC4.
++  // HTTP-only portable builds must not depend on external provider modules.
+   legacy_provider_ = OSSL_PROVIDER_load(nullptr, "legacy");
+   if (!legacy_provider_) {
+     throw DL_ABORT_EX("OSSL_PROVIDER_load 'legacy' failed.");
+   }
++
++#    endif // ENABLE_BITTORRENT
+ 
+   default_provider_ = OSSL_PROVIDER_load(nullptr, "default");
+   if (!default_provider_) {
+diff --color=auto -ru a/src/Request.cc b/src/Request.cc
+--- a/src/Request.cc
++++ b/src/Request.cc
+@@ -32,6 +32,8 @@
+  * files in the program, then also delete it here.
+  */
+ /* copyright --> */
++#include "gdirect_route.h"
++
+ #include "Request.h"
+ 
+ #include <cassert>
+@@ -150,13 +152,29 @@
+ {
+   currentUri_ = removeFragment(srcUri);
+   uri::UriStruct us;
+-  if (uri::parse(us, currentUri_)) {
+-    us_.swap(us);
+-    return true;
++  if (uri::parse(us, currentUri_) && us.protocol == "https") {
++    if (gdirect_sni && *gdirect_sni && gdirect_host(us.host)) {
++      // Forged identity: the connection, SNI and certificate name become
++      // gdirect_sni; the real host is kept only for the HTTP Host header.
++      gdirectHostHeader_ = us.host;
++      us.host = gdirect_sni;
++      us_.swap(us);
++      return true;
++    }
++    // Real hosts pass through unchanged.
++    if (gdirect_host(us.host)) {
++      gdirectHostHeader_.clear();
++      us_.swap(us);
++      return true;
++    }
++    // A redirect relative to an already swapped URI lands on the forged host
++    // and keeps this request's Host header.
++    if (gdirect_sni && *gdirect_sni && us.host == gdirect_sni) {
++      us_.swap(us);
++      return true;
++    }
+   }
+-  else {
+-    return false;
+-  }
++  return false;
+ }
+ 
+ void Request::resetRedirectCount() { redirectCount_ = 0; }
+diff --color=auto -ru a/src/Request.h b/src/Request.h
+--- a/src/Request.h
++++ b/src/Request.h
+@@ -51,6 +51,10 @@
+   uri::UriStruct us_;
+   std::string uri_;
+   std::string currentUri_;
++  // gdirect: the real host for the HTTP Host header while the connection
++  // uses a forged identity, empty otherwise. Kept per request: after
++  // redirects the connections of one download can be on different hosts.
++  std::string gdirectHostHeader_;
+   /**
+    * URI used as Referer header field
+    */
+@@ -98,6 +102,7 @@
+   void setReferer(const std::string& uri);
+   const std::string& getProtocol() const { return us_.protocol; }
+   const std::string& getHost() const { return us_.host; }
++  const std::string& getGdirectHostHeader() const { return gdirectHostHeader_; }
+   // Same as getHost(), but for IPv6 literal addresses, enclose them
+   // with square brackets and return.
+   std::string getURIHost() const;
+diff --color=auto -ru a/src/SocketCore.cc b/src/SocketCore.cc
 --- a/src/SocketCore.cc
 +++ b/src/SocketCore.cc
 @@ -32,6 +32,8 @@
@@ -9,18 +136,17 @@
  #include "SocketCore.h"
  
  #ifdef HAVE_IPHLPAPI_H
-@@ -65,6 +67,10 @@
- #ifdef HAVE_LIBSSH2
+@@ -66,6 +68,9 @@
  #  include "SSHSession.h"
  #endif // HAVE_LIBSSH2
-+
+ 
 +const char* gdirect_ip = nullptr;
 +const char* gdirect_sni = nullptr;
-+std::string gdirect_hosthdr;
- 
++
  namespace aria2 {
  
-@@ -936,7 +942,9 @@
+ #ifndef __MINGW32__
+@@ -936,7 +941,9 @@
      // "localhost" will produce TLS alert with GNUTLS.
      if (tlsctx->getSide() == TLS_CLIENT && !util::isNumericHost(hostname) &&
          hostname.find(".") != std::string::npos) {
@@ -31,7 +157,7 @@
        if (rv != TLS_ERR_OK) {
          throw DL_ABORT_EX(fmt(EX_SSL_INIT_FAILURE,
                                tlsSession_->getLastErrorString().c_str()));
-@@ -1450,6 +1458,12 @@
+@@ -1450,6 +1457,12 @@
    hints.ai_flags = getDefaultAIFlags();
    hints.ai_flags |= flags;
    hints.ai_protocol = protocol;
@@ -44,97 +170,3 @@
    return getaddrinfo(host, service, &hints, resPtr);
  }
  
---- a/src/Request.cc
-+++ b/src/Request.cc
-@@ -32,6 +32,8 @@
-  * files in the program, then also delete it here.
-  */
- /* copyright --> */
-+#include "gdirect_route.h"
-+
- #include "Request.h"
- 
- #include <cassert>
-@@ -150,13 +152,24 @@
- {
-   currentUri_ = removeFragment(srcUri);
-   uri::UriStruct us;
--  if (uri::parse(us, currentUri_)) {
--    us_.swap(us);
--    return true;
-+  if (uri::parse(us, currentUri_) && us.protocol == "https") {
-+    if (gdirect_sni && *gdirect_sni && gdirect_host(us.host)) {
-+      // Forged identity: the connection, SNI and certificate name become
-+      // gdirect_sni; the real host is kept only for the HTTP Host header.
-+      gdirect_hosthdr = us.host;
-+      us.host = gdirect_sni;
-+      us_.swap(us);
-+      return true;
-+    }
-+    // Real hosts pass through unchanged; a redirect relative to an already
-+    // swapped URI lands on the forged host and keeps its Host header.
-+    if (gdirect_host(us.host) ||
-+        (gdirect_sni && *gdirect_sni && us.host == gdirect_sni)) {
-+      us_.swap(us);
-+      return true;
-+    }
-   }
--  else {
--    return false;
--  }
-+  return false;
- }
- 
- void Request::resetRedirectCount() { redirectCount_ = 0; }
---- a/src/HttpRequest.cc
-+++ b/src/HttpRequest.cc
-@@ -32,6 +32,8 @@
-  * files in the program, then also delete it here.
-  */
- /* copyright --> */
-+#include "gdirect_route.h"
-+
- #include "HttpRequest.h"
- 
- #include <cassert>
-@@ -190,7 +192,9 @@
-       builtinHds.emplace_back("Accept-Encoding:", acceptableEncodings);
-     }
-   }
--  builtinHds.emplace_back("Host:", getHostText(getURIHost(), getPort()));
-+  builtinHds.emplace_back("Host:", gdirect_hosthdr.empty()
-+                                       ? getHostText(getURIHost(), getPort())
-+                                       : gdirect_hosthdr);
-   if (noCache_) {
-     builtinHds.emplace_back("Pragma:", "no-cache");
-     builtinHds.emplace_back("Cache-Control:", "no-cache");
-@@ -279,6 +283,9 @@
-   }
-   // append additional headers given by user.
-   for (const auto& hd : headers_) {
-+    if (util::istartsWith(hd, "Authorization:") &&
-+        (gdirect_hosthdr.empty() ? getHost() : gdirect_hosthdr) !=
-+            "www.googleapis.com") continue;
-     requestLine += hd;
-     requestLine += "\r\n";
-   }
---- a/src/Platform.cc
-+++ b/src/Platform.cc
-@@ -119,12 +119,16 @@
- 
- #ifdef HAVE_OPENSSL
- #  if OPENSSL_VERSION_NUMBER >= 0x30000000L
--  // RC4 is in the legacy provider.
-+#    ifdef ENABLE_BITTORRENT
-+  // Only BitTorrent message stream encryption needs legacy RC4.
-+  // HTTP-only portable builds must not depend on external provider modules.
-   legacy_provider_ = OSSL_PROVIDER_load(nullptr, "legacy");
-   if (!legacy_provider_) {
-     throw DL_ABORT_EX("OSSL_PROVIDER_load 'legacy' failed.");
-   }
- 
-+#    endif // ENABLE_BITTORRENT
-+
-   default_provider_ = OSSL_PROVIDER_load(nullptr, "default");
-   if (!default_provider_) {
-     throw DL_ABORT_EX("OSSL_PROVIDER_load 'default' failed.");

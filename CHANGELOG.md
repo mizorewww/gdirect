@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Downloads under the forged TLS identity kept the real Host header in one process-wide slot, so with several connections a redirect on one could give another the wrong Host header, and with it the OAuth token on a Drive download host. Each connection now keeps its own.
+
 ## 0.12.0
 
 ### Added
