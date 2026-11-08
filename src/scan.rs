@@ -3,7 +3,7 @@ use anyhow::{Context, Result, ensure};
 use std::{
     collections::{HashSet, VecDeque},
     io::Read,
-    net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, ToSocketAddrs},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket},
     path::Path,
     sync::{
         Mutex,
@@ -28,6 +28,16 @@ const OFFSETS: [u8; 7] = [100, 113, 155, 132, 138, 91, 123];
 /// Blocks that hold most of Google's general front ends; swept before the
 /// rest of Google's space.
 const CORE: &str = "142.250.0.0/15 172.217.0.0/16 172.253.0.0/16 173.194.0.0/16 74.125.0.0/16 192.178.0.0/15 64.233.160.0/19 66.102.0.0/20 108.177.0.0/17 209.85.128.0/17 216.58.192.0/19 216.239.32.0/19 108.170.192.0/18 72.14.192.0/18";
+/// Google's regional IPv6 front ends follow `PREFIX:SITE:SUBNET::HOST`, with
+/// sites from 4001 and subnets from c00; every host of a front-end /64
+/// answers. One host per /64 is probed, and the rest of a /64 that works.
+const CORE6: [&str; 4] = ["2404:6800::", "2607:f8b0::", "2a00:1450::", "2800:3f0::"];
+const SITES6: std::ops::RangeInclusive<u128> = 0x4001..=0x4020;
+const SUBNETS6: std::ops::RangeInclusive<u128> = 0xc00..=0xc3f;
+const OFFSETS6: [u16; 7] = [0x5f, 0x64, 0x84, 0x8a, 0x8b, 0x71, 0x54];
+/// IPv4 core addresses swept per IPv6 candidate, so IPv4 keeps finding
+/// endpoints quickly on networks where IPv6 is blocked.
+const V4_PER_V6: usize = 3;
 /// Endpoints transfers may use, fastest first: only Google's own front ends.
 /// Anything else stored by older releases (third-party relays) is ignored.
 pub fn usable(routes: Vec<crate::store::Route>, google: &Ranges) -> Vec<crate::store::Route> {
@@ -35,6 +45,17 @@ pub fn usable(routes: Vec<crate::store::Route>, google: &Ranges) -> Vec<crate::s
         .into_iter()
         .filter(|r| google.contains(r.ip))
         .collect()
+}
+/// Whether this machine has a global IPv6 route. Connecting a UDP socket
+/// sends nothing; it only picks a source address. A TUN proxy that hands out
+/// a private (ULA) address does not count.
+fn ipv6_route() -> bool {
+    UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0))
+        .and_then(|socket| {
+            socket.connect(("2001:4860:4860::8888", 443))?;
+            socket.local_addr()
+        })
+        .is_ok_and(|local| public(local.ip()))
 }
 fn public(ip: IpAddr) -> bool {
     match ip {
@@ -106,8 +127,38 @@ fn hosts(net: u32) -> impl Iterator<Item = IpAddr> {
         .iter()
         .map(move |&o| IpAddr::V4(Ipv4Addr::from(net | u32::from(o))))
 }
+fn hosts6(net: u128) -> impl Iterator<Item = IpAddr> {
+    OFFSETS6
+        .iter()
+        .map(move |&o| IpAddr::V6(Ipv6Addr::from(net | u128::from(o))))
+}
+/// The same front ends as `ip`: the rest of its /24 or /64.
+fn neighbours(ip: IpAddr) -> Vec<IpAddr> {
+    match ip {
+        IpAddr::V4(v4) => hosts(u32::from(v4) & !0xff).collect(),
+        IpAddr::V6(v6) => hosts6(u128::from(v6) & !u128::from(u64::MAX)).collect(),
+    }
+}
+/// The /64s the IPv6 front-end pattern describes.
+fn core6_nets() -> Vec<u128> {
+    let mut nets = Vec::new();
+    for prefix in CORE6 {
+        let base = u128::from(
+            prefix
+                .parse::<Ipv6Addr>()
+                .expect("IPv6 core prefix must parse"),
+        );
+        for site in SITES6 {
+            for subnet in SUBNETS6.clone() {
+                nets.push(base | site << 80 | subnet << 64);
+            }
+        }
+    }
+    nets
+}
 /// Sweep order: earlier verified endpoints, DNS answers, then Google's core
-/// front-end blocks and finally the rest of its space, each shuffled. No IPs
+/// IPv4 front-end blocks (with `ipv6`, interleaved with the IPv6 front-end
+/// pattern) and finally the rest of its IPv4 space, each shuffled. No IPs
 /// are built in: lists of working ones go stale, and a random batch of core
 /// /24s already holds several that work. Only addresses inside `google` are
 /// ever considered.
@@ -115,6 +166,7 @@ fn plan(
     google: &Ranges,
     known: &[IpAddr],
     dns: &[IpAddr],
+    ipv6: bool,
     shuffle: &mut Shuffle,
 ) -> VecDeque<IpAddr> {
     let core = Ranges::parse(&CORE.replace(' ', "\n")).expect("core blocks must parse");
@@ -133,10 +185,19 @@ fn plan(
         .partition(|n| core.contains(IpAddr::V4(Ipv4Addr::from(*n))));
     shuffle.apply(&mut core_nets);
     shuffle.apply(&mut rest_nets);
-    for net in core_nets.into_iter().chain(rest_nets) {
-        for ip in hosts(net) {
+    let mut v6 = if ipv6 { core6_nets() } else { Vec::new() };
+    shuffle.apply(&mut v6);
+    let mut v6 = v6.into_iter().map(|net| hosts6(net).next().unwrap());
+    for (i, ip) in core_nets.into_iter().flat_map(hosts).enumerate() {
+        add(ip, &mut order);
+        if (i + 1) % V4_PER_V6 == 0
+            && let Some(ip) = v6.next()
+        {
             add(ip, &mut order);
         }
+    }
+    for ip in v6.chain(rest_nets.into_iter().flat_map(hosts)) {
+        add(ip, &mut order);
     }
     order
 }
@@ -314,11 +375,17 @@ pub fn run(db: &Store, path: Option<&Path>) -> Result<()> {
             .flatten()
             .map(|a| a.ip())
             .collect();
-        let mut queue = plan(&google, &known, &dns, &mut Shuffle::new());
+        let ipv6 = ipv6_route();
+        let mut queue = plan(&google, &known, &dns, ipv6, &mut Shuffle::new());
         let mut tried: HashSet<IpAddr> = HashSet::new();
         let mut reached: HashSet<IpAddr> = HashSet::new();
         eprintln!(
-            "Sweeping Google front ends for {TARGET} that serve Drive from this network (TCP, then TLS + Drive API + test download)…"
+            "Sweeping Google front ends ({}) for {TARGET} that serve Drive from this network (TCP, then TLS + Drive API + test download)…",
+            if ipv6 {
+                "IPv4 and IPv6"
+            } else {
+                "IPv4; no IPv6 route"
+            }
         );
         let (mut probed, mut open, mut good) = (0, 0, 0);
         let mut intercepted = false;
@@ -342,13 +409,11 @@ pub fn run(db: &Store, path: Option<&Path>) -> Result<()> {
             let verdicts = verify(&candidates, TARGET - good);
             let working = record(db, verdicts, |ip| known.contains(&ip), &mut warned)?;
             good += working.len();
-            // Front ends come in groups: the rest of a working /24 goes next.
-            for ip in working.iter().rev() {
-                if let IpAddr::V4(v4) = ip {
-                    for neighbour in hosts(u32::from(*v4) & !0xff) {
-                        if !tried.contains(&neighbour) {
-                            queue.push_front(neighbour);
-                        }
+            // Front ends come in groups: the rest of a working /24 or /64 goes next.
+            for &ip in working.iter().rev() {
+                for neighbour in neighbours(ip) {
+                    if !tried.contains(&neighbour) {
+                        queue.push_front(neighbour);
                     }
                 }
             }
@@ -396,7 +461,7 @@ mod tests {
             ip("172.217.115.4"),
             ip("142.250.27.100"),
         ];
-        let order = plan(&google, &known, &dns, &mut Shuffle(42));
+        let order = plan(&google, &known, &dns, false, &mut Shuffle(42));
         // Stored and DNS answers first, relays and poisoned answers dropped, no repeats.
         assert_eq!(order[0], ip("142.250.27.100"));
         assert_eq!(order[1], ip("172.217.115.4"));
@@ -412,6 +477,37 @@ mod tests {
                 ![187, 207, 219].contains(&v4.octets()[3]) || known.contains(a) || dns.contains(a),
             _ => true,
         }));
+        assert!(order.iter().all(IpAddr::is_ipv4));
+    }
+    #[test]
+    fn ipv6_pattern_is_interleaved_with_ipv4() {
+        let google = crate::ranges::embedded();
+        let order = plan(&google, &[], &[], true, &mut Shuffle(42));
+        let v6: Vec<_> = order.iter().filter(|a| a.is_ipv6()).collect();
+        // Every pattern /64 is Google's own and gets one probe.
+        assert_eq!(v6.len(), core6_nets().len());
+        assert!(v6.iter().all(|a| a.to_string().ends_with("::5f")));
+        assert!(
+            order
+                .iter()
+                .any(|a| a.to_string() == "2404:6800:4003:c00::5f")
+        );
+        // The first batch is mostly IPv4.
+        let first = order.iter().take(2048).filter(|a| a.is_ipv6()).count();
+        assert_eq!(first, 2048 / (V4_PER_V6 + 1));
+    }
+    #[test]
+    fn neighbours_share_the_network() {
+        let ip = |s: &str| -> IpAddr { s.parse().unwrap() };
+        let v4 = neighbours(ip("142.250.27.100"));
+        assert!(v4.contains(&ip("142.250.27.113")));
+        assert_eq!(v4.len(), OFFSETS.len());
+        let v6 = neighbours(ip("2404:6800:4003:c00::abcd"));
+        assert!(v6.contains(&ip("2404:6800:4003:c00::5f")));
+        assert!(
+            v6.iter()
+                .all(|a| a.to_string().starts_with("2404:6800:4003:c00::"))
+        );
     }
     #[test]
     fn only_google_endpoints_are_usable() {
@@ -428,13 +524,14 @@ mod tests {
                 route("142.250.27.100"),
                 route("1.2.3.4"),
                 route("183.56.143.147"),
+                route("2404:6800:4003:c00::5f"),
                 route("192.179.60.132"),
             ]
         };
         // Order is kept (the store returns fastest first).
         assert_eq!(
             ips(usable(routes(), &google)),
-            ["142.250.27.100", "192.179.60.132"]
+            ["142.250.27.100", "2404:6800:4003:c00::5f", "192.179.60.132"]
         );
     }
     #[test]

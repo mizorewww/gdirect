@@ -12,6 +12,7 @@
 
 ### Added
 
+- IPv6: when the machine has a global IPv6 address, `scan` also sweeps Google's IPv6 front ends, following the address pattern of its regional front ends and moving on to the rest of each /64 that verifies. IPv6 candidates are mixed into the IPv4 sweep, so a network that blocks IPv6 still finds IPv4 endpoints as fast. `--ip` and `scan --ips` accept IPv6 addresses, and downloads work over them. Whether Google's IPv6 front ends are reachable from mainland China has not been measured yet.
 - Recursive folder upload: `gdirect upload DIR --recursive` mirrors a local folder tree under a new Drive folder, including empty folders. An interrupted run resumes with the same command — folders already created are reused and finished files are skipped — and `--restart` starts over with a new Drive folder. Symbolic links and special files inside the folder are skipped. In `browse`, `u` now accepts a folder path and shows live upload progress in the status bar.
 
 ## 0.9.0

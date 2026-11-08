@@ -5,6 +5,7 @@ import http.server
 import os
 from pathlib import Path
 import signal
+import socket
 import ssl
 import subprocess
 import sys
@@ -16,6 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA = bytes(range(256)) * 32768
 requests = []
 snis = []
+
+class Server6(http.server.ThreadingHTTPServer):
+    address_family = socket.AF_INET6
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_):
@@ -79,18 +83,19 @@ int progress(int64_t done,int64_t total,int speed,int connections,void* data){
 }
 int main(int n,char**v){
  if(n!=8)return 99;
+ const char* ip=std::getenv("GDIRECT_TEST_IP");if(!ip)ip="127.0.0.1";
  if(std::getenv("GDIRECT_TEST_REPEAT")){
   // browse runs one download after another, each on a fresh worker thread.
   for(int i=0;i<3;i++){
    std::string name=std::string(v[3])+"."+std::to_string(i);int result=99,count=0;
-   std::thread worker([&]{result=gdirect_download_ex(v[1],v[2],name.c_str(),"127.0.0.1",v[4],v[5],v[6],v[7][0]-'0',progress,&count,false);});
+   std::thread worker([&]{result=gdirect_download_ex(v[1],v[2],name.c_str(),ip,v[4],v[5],v[6],v[7][0]-'0',progress,&count,false);});
    worker.join();if(result)return result;
   }
   return 0;
  }
- if(!std::getenv("GDIRECT_TEST_CALLBACK"))return gdirect_download(v[1],v[2],v[3],"127.0.0.1",v[4],v[5],v[6],v[7][0]-'0');
+ if(!std::getenv("GDIRECT_TEST_CALLBACK"))return gdirect_download(v[1],v[2],v[3],ip,v[4],v[5],v[6],v[7][0]-'0');
  int result=99,count=0;
- std::thread worker([&]{result=gdirect_download_ex(v[1],v[2],v[3],"127.0.0.1",v[4],v[5],v[6],v[7][0]-'0',progress,&count,false);});
+ std::thread worker([&]{result=gdirect_download_ex(v[1],v[2],v[3],ip,v[4],v[5],v[6],v[7][0]-'0',progress,&count,false);});
  worker.join();std::printf("callbacks=%d\\n",count);return count>0 ? result : 98;
 }
 ''')
@@ -162,6 +167,22 @@ int main(int n,char**v){
             for i in range(3):
                 check(f'repeat.bin.{i}')
             print('PASS: several downloads in one process')
+            try:
+                server6 = Server6(('::1',0), Handler)
+            except OSError as e:
+                print(f'SKIP: IPv6 loopback unavailable ({e})')
+            else:
+                server6.socket = context.wrap_socket(server6.socket,server_side=True)
+                threading.Thread(target=server6.serve_forever,daemon=True).start()
+                try:
+                    cmd=command('v6.bin')
+                    cmd[1]=f'https://drive.usercontent.google.com:{server6.server_port}/blob'
+                    p=subprocess.run(cmd,env=dict(os.environ,GDIRECT_TEST_IP='::1'),capture_output=True,text=True,timeout=30)
+                    assert p.returncode==0, (p.returncode,p.stdout,p.stderr)
+                    check('v6.bin')
+                    print('PASS: pinned IPv6 address')
+                finally:
+                    server6.shutdown();server6.server_close()
         finally:
             server.shutdown();server.server_close()
 
