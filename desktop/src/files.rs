@@ -700,7 +700,17 @@ impl Gdirect {
 
     fn render_listing(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.api.is_none() {
-            let body = if self.connecting {
+            let body = if let Some((_, scan)) = &self.scan {
+                ui::empty(
+                    "radar",
+                    format!(
+                        "正在扫描 Google 前端 · 已验证 {} / {}",
+                        scan.good,
+                        scan.target.max(1)
+                    ),
+                    "首次使用要找出从本机网络可直达的地址，大约需要一分钟。进度和结果见“线路”页。",
+                )
+            } else if self.connecting {
                 ui::empty(
                     "network_ping",
                     "正在选择线路",

@@ -62,7 +62,14 @@ impl Gdirect {
                 // a later one moves an unpinned connection to the fastest front end.
                 let reroute = finished && this.settings.pinned.is_none();
                 if (this.api.is_none() || reroute) && this.account.is_some() && !this.connecting {
-                    this.connect(cx);
+                    if this.settings.pinned.is_some() || this.has_route() {
+                        this.connect(cx);
+                    } else if this.api.is_none() && this.scan_error.is_none() {
+                        this.connect_error = Some(
+                            "没有找到可直达的 Google 前端，请在“线路”页重新扫描或导入候选 IP。"
+                                .into(),
+                        );
+                    }
                 }
                 cx.notify();
             },

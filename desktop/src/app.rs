@@ -340,6 +340,14 @@ impl Gdirect {
             .collect();
     }
 
+    /// Whether a front end verified in the last day is stored to connect through.
+    pub fn has_route(&self) -> bool {
+        let google = gdirect::ranges::current(&self.db);
+        self.db
+            .routes(16)
+            .is_ok_and(|routes| !gdirect::scan::usable(routes, &google).is_empty())
+    }
+
     /// Picks the route and builds the Drive client for the default account,
     /// then lists the current folder.
     pub fn connect(&mut self, cx: &mut Context<Self>) {
@@ -351,6 +359,13 @@ impl Gdirect {
             self.api = None;
             return;
         };
+        // Without a fresh endpoint the route would scan unseen; scan in the
+        // open instead, with progress and the interception warning. The scan
+        // connects when it finds one.
+        if self.settings.pinned.is_none() && !self.has_route() {
+            self.start_scan(None, cx);
+            return;
+        }
         self.connecting = true;
         self.connect_error = None;
         let db_path = self.db_path.clone();
