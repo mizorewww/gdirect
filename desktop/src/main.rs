@@ -1,4 +1,6 @@
 //! gdirect's desktop client: browse, transfer and mount Google Drive.
+// A GUI app on Windows: no console window opens with it.
+#![cfg_attr(windows, windows_subsystem = "windows")]
 mod accounts;
 mod app;
 mod endpoints;

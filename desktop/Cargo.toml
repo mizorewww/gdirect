@@ -12,6 +12,9 @@ publish = false
 name = "gdirect-desktop"
 path = "src/main.rs"
 
+[build-dependencies]
+embed-resource = "3"
+
 [dependencies]
 gdirect = { path = ".." }
 anyhow = "1"

@@ -1,0 +1,2 @@
+// The Windows executable's icon (Explorer, the taskbar and shortcuts).
+1 ICON "gdirect.ico"

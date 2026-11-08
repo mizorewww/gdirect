@@ -1,0 +1,5 @@
+# The engine's build script links MinGW's C++ runtime statically, but a link
+# argument does not reach other packages' binaries; the client asks for it here
+# so the Windows executable needs no MinGW DLLs.
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "link-arg=-static"]
