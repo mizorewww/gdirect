@@ -589,63 +589,73 @@ impl Gdirect {
                         .leading(ui::icon("filter_list", 24., ColorRole::ON_SURFACE_VARIANT)),
                 ),
             )
-            .child(div().flex_1())
-            // The route chip leaves narrow windows; the Routes page has it.
-            .when(self.wide(960.), |d| {
-                d.child(match route {
-                    Some((ip, ms, _)) => MaterialButton::new("route")
-                        .variant(ButtonVariant::Outlined)
-                        .tone(ButtonTone::Neutral)
-                        .accessibility_label(tf!("当前线路 {ip}", "Current route {ip}"))
-                        .on_click(
-                            cx.listener(|this, _: &ClickEvent, _, cx| this.go(Page::Endpoints, cx)),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(rem(8.))
+            // The filter takes the room it can use; the route and account
+            // controls keep to the right edge.
+            .child(
+                div()
+                    .ml_auto()
+                    .flex()
+                    .items_center()
+                    .gap(rem(12.))
+                    // The route chip leaves narrow windows; the Routes page has it.
+                    .when(self.wide(960.), |d| {
+                        d.child(match route {
+                            Some((ip, ms, _)) => MaterialButton::new("route")
+                                .variant(ButtonVariant::Outlined)
+                                .tone(ButtonTone::Neutral)
+                                .accessibility_label(tf!("当前线路 {ip}", "Current route {ip}"))
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.go(Page::Endpoints, cx)
+                                }))
                                 .child(
                                     div()
-                                        .size(rem(8.))
-                                        .rounded_full()
-                                        .bg(color(ColorRole::SUCCESS)),
+                                        .flex()
+                                        .items_center()
+                                        .gap(rem(8.))
+                                        .child(
+                                            div()
+                                                .size(rem(8.))
+                                                .rounded_full()
+                                                .bg(color(ColorRole::SUCCESS)),
+                                        )
+                                        .child(ui::mono(ip))
+                                        .when_some(ms, |d, ms| {
+                                            d.child(
+                                                div()
+                                                    .text_color(color(
+                                                        ColorRole::ON_SURFACE_VARIANT,
+                                                    ))
+                                                    .child(format!("{ms} ms")),
+                                            )
+                                        }),
                                 )
-                                .child(ui::mono(ip))
-                                .when_some(ms, |d, ms| {
-                                    d.child(
-                                        div()
-                                            .text_color(color(ColorRole::ON_SURFACE_VARIANT))
-                                            .child(format!("{ms} ms")),
-                                    )
-                                }),
-                        )
-                        .into_any_element(),
-                    None if self.connecting => MaterialButton::new("route")
-                        .variant(ButtonVariant::Outlined)
-                        .tone(ButtonTone::Neutral)
-                        .loading(true, t("正在选择线路", "Choosing a route"))
-                        .child(t("正在选择线路…", "Choosing a route…"))
-                        .into_any_element(),
-                    None => MaterialButton::new("route")
-                        .variant(ButtonVariant::Outlined)
-                        .tone(ButtonTone::Neutral)
-                        .icon(Symbol::ERROR)
-                        .on_click(
-                            cx.listener(|this, _: &ClickEvent, _, cx| this.go(Page::Endpoints, cx)),
-                        )
-                        .child(t("未连接", "Not connected"))
-                        .into_any_element(),
-                })
-            })
-            .child(
-                MenuPopup::new("account-popup", trigger, menu)
-                    .anchor(Anchor::TopRight)
-                    .open(self.account_menu)
-                    .on_open_change(cx.listener(|this, open: &bool, _, cx| {
-                        this.account_menu = *open;
-                        cx.notify();
-                    })),
+                                .into_any_element(),
+                            None if self.connecting => MaterialButton::new("route")
+                                .variant(ButtonVariant::Outlined)
+                                .tone(ButtonTone::Neutral)
+                                .loading(true, t("正在选择线路", "Choosing a route"))
+                                .child(t("正在选择线路…", "Choosing a route…"))
+                                .into_any_element(),
+                            None => MaterialButton::new("route")
+                                .variant(ButtonVariant::Outlined)
+                                .tone(ButtonTone::Neutral)
+                                .icon(Symbol::ERROR)
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.go(Page::Endpoints, cx)
+                                }))
+                                .child(t("未连接", "Not connected"))
+                                .into_any_element(),
+                        })
+                    })
+                    .child(
+                        MenuPopup::new("account-popup", trigger, menu)
+                            .anchor(Anchor::TopRight)
+                            .open(self.account_menu)
+                            .on_open_change(cx.listener(|this, open: &bool, _, cx| {
+                                this.account_menu = *open;
+                                cx.notify();
+                            })),
+                    ),
             )
     }
 
