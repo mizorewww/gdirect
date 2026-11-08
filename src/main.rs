@@ -10,9 +10,13 @@ mod store;
 mod test_network;
 mod tui;
 mod upload;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use clap::{Args, Parser, Subcommand};
-use std::{net::IpAddr, path::PathBuf};
+use std::{
+    net::IpAddr,
+    path::{Path, PathBuf},
+};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Parser)]
 #[command(version, about = "Browse, download and upload Google Drive files")]
@@ -147,16 +151,22 @@ enum Commands {
     },
     /// Unmount a background mount (default: the default account's, or the only one)
     Unmount,
-    /// Upload a local file (repeat the command to resume)
+    /// Upload a local file, or a folder with --recursive (repeat the command to resume)
     Upload {
-        /// Local file to upload
+        /// Local file, or folder with --recursive
         file: PathBuf,
+        /// Upload a folder and everything inside it
+        #[arg(short = 'r', long)]
+        recursive: bool,
         /// Destination folder ID
         #[arg(long, default_value = "root")]
         parent: String,
-        /// Name in Drive (default: local file name)
+        /// Name in Drive (default: the local file or folder name)
         #[arg(long)]
         name: Option<String>,
+        /// Start a recursive upload over instead of resuming an interrupted one
+        #[arg(long, requires = "recursive")]
+        restart: bool,
         #[command(flatten)]
         route: Route,
     },
@@ -346,14 +356,39 @@ fn run(cli: Cli) -> Result<()> {
         }
         Commands::Upload {
             file,
+            recursive,
             parent,
             name,
+            restart,
             route,
         } => {
+            // Check the local path before scanning for endpoints, so a typo or a
+            // missing --recursive fails immediately.
+            let metadata = std::fs::metadata(&file)
+                .with_context(|| format!("cannot open {}", file.display()))?;
+            if metadata.is_dir() {
+                ensure!(
+                    recursive,
+                    "{} is a folder; add --recursive to upload it and its contents",
+                    file.display()
+                );
+            } else {
+                ensure!(
+                    !recursive,
+                    "--recursive expects a folder, but {} is not a folder",
+                    file.display()
+                );
+            }
             let account = account()?;
             let api = direct_route(&db, &route, cli.google_only)?.api(db_path, account)?;
-            let uploaded = api.upload(&file, &parent, name.as_deref())?;
-            println!("{}\t{}", uploaded.id, uploaded.name);
+            if metadata.is_dir() {
+                let uploaded = upload_folder(&api, &file, &parent, name.as_deref(), restart)?;
+                eprintln!("{}", uploaded.summary());
+                println!("{}\t{}", uploaded.id, uploaded.name);
+            } else {
+                let uploaded = api.upload(&file, &parent, name.as_deref())?;
+                println!("{}\t{}", uploaded.id, uploaded.name);
+            }
         }
         Commands::Download {
             file,
@@ -418,6 +453,55 @@ fn logout(db: &store::Store, all: bool, name: Option<&str>) -> Result<()> {
         }
     }
     Ok(())
+}
+/// Uploads a folder recursively, drawing one updating line per file.
+fn upload_folder(
+    api: &api::Api,
+    path: &Path,
+    parent: &str,
+    name: Option<&str>,
+    restart: bool,
+) -> Result<upload::TreeUpload> {
+    eprintln!("Scanning {}…", path.display());
+    let mut current = String::new();
+    let result = api.upload_dir(path, parent, name, restart, |progress| {
+        if progress.path != current {
+            if !current.is_empty() {
+                eprintln!();
+            }
+            current = progress.path.clone();
+        }
+        let percent = upload::percent(progress.file_done, progress.file_total);
+        eprint!(
+            "\r[{}/{}] {} · {percent}%",
+            progress.files_done,
+            progress.files_total,
+            tail(&progress.path, 56)
+        );
+    });
+    if !current.is_empty() {
+        eprintln!();
+    }
+    result
+}
+/// Keeps the end of a long relative path, where the file name is.
+fn tail(text: &str, max: usize) -> String {
+    if text.width() <= max {
+        return text.to_owned();
+    }
+    let mut kept = Vec::new();
+    let mut width = 0;
+    for c in text.chars().rev() {
+        let c_width = c.width().unwrap_or(0);
+        // One column stays for the leading ellipsis.
+        if width + c_width + 1 > max {
+            break;
+        }
+        kept.push(c);
+        width += c_width;
+    }
+    kept.reverse();
+    format!("…{}", kept.into_iter().collect::<String>())
 }
 fn start_download(
     api: &api::Api,
@@ -516,6 +600,21 @@ mod tests {
         assert!(parse(&["scan", "-o", "x"]).is_err());
         assert!(parse(&["ls", "--sni", "g.cn"]).is_ok());
         assert!(parse(&["upload", "f", "--ip", "1.1.1.1", "-j", "2"]).is_err());
+        assert!(parse(&["upload", "dir", "--restart"]).is_err());
+        let Some(Commands::Upload {
+            recursive,
+            restart,
+            name,
+            ..
+        }) = parse(&["upload", "dir", "-r", "--restart", "--name", "backup"])
+            .unwrap()
+            .command
+        else {
+            panic!()
+        };
+        assert!(recursive && restart);
+        assert_eq!(name.as_deref(), Some("backup"));
+        assert!(parse(&["upload", "f", "-r"]).is_ok());
         assert!(parse(&["mount", "--ip", "1.1.1.1"]).is_err());
         assert!(parse(&["mount", "-j", "4"]).is_ok());
         assert!(matches!(
@@ -542,5 +641,12 @@ mod tests {
             panic!()
         };
         assert_eq!(transfer.route.sni().as_deref(), Some(""));
+    }
+    #[test]
+    fn long_upload_paths_keep_their_file_name() {
+        assert_eq!(tail("a/b.txt", 20), "a/b.txt");
+        assert_eq!(tail("abcdefghij", 4), "…hij");
+        assert_eq!(tail("你好世界", 5), "…世界");
+        assert_eq!(tail("", 4), "");
     }
 }
