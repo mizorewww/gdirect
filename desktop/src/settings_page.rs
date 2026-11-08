@@ -130,11 +130,11 @@ impl Gdirect {
                     match self.settings.pinned {
                         Some(ip) => tf!(
                             "固定 {ip} · TLS 身份 · 证书",
-                            "Pinned to {ip} · TLS · certificates"
+                            "Pinned to {ip} · TLS identity · certificates"
                         ),
                         None => t(
                             "自动选择线路 · TLS 身份 · 证书",
-                            "Auto route · TLS · certificates",
+                            "Auto route · TLS identity · certificates",
                         )
                         .into(),
                     },

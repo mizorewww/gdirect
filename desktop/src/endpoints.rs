@@ -675,7 +675,9 @@ impl Gdirect {
             .text_color(color(ColorRole::ON_SURFACE_VARIANT))
             .child(
                 div()
-                    .flex_1()
+                    // Narrow, the address takes only its width and the status the rest.
+                    .when(show_bar, |d| d.flex_1())
+                    .when(!show_bar, |d| d.flex_none())
                     .min_w(rem(address_w))
                     .child(t("地址", "Address")),
             )
@@ -738,7 +740,9 @@ impl Gdirect {
                     })
                     .child(
                         div()
-                            .flex_1()
+                            // Narrow, the address takes only its width and the status the rest.
+                            .when(show_bar, |d| d.flex_1())
+                            .when(!show_bar, |d| d.flex_none())
                             .min_w(rem(address_w))
                             .flex()
                             .items_center()

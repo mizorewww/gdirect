@@ -132,7 +132,7 @@ impl Gdirect {
     /// at the top of those places, and modified elsewhere.
     fn date_of<'a>(&self, file: &'a File) -> Option<&'a str> {
         let time = match (&self.location.place, self.location.path.is_empty()) {
-            (Place::Trash, true) => &file.trashed_time,
+            (Place::Trash, true) if self.trash_dated() => &file.trashed_time,
             (Place::Recent, true) => &file.viewed_by_me_time,
             (Place::Shared, true) => &file.shared_with_me_time,
             _ => &file.modified_time,
@@ -140,9 +140,15 @@ impl Gdirect {
         time.as_deref().or(file.modified_time.as_deref())
     }
 
+    /// Drive reports when an item was trashed only for shared-drive items, so
+    /// the trash shows that date only when every row has it.
+    fn trash_dated(&self) -> bool {
+        !self.entries.is_empty() && self.entries.iter().all(|f| f.trashed_time.is_some())
+    }
+
     fn date_label(&self) -> &'static str {
         match (&self.location.place, self.location.path.is_empty()) {
-            (Place::Trash, true) => t("删除日期", "Trashed"),
+            (Place::Trash, true) if self.trash_dated() => t("删除日期", "Trashed"),
             (Place::Recent, true) => t("上次打开", "Last opened"),
             (Place::Shared, true) => t("共享日期", "Shared"),
             _ => t("修改时间", "Modified"),
@@ -647,6 +653,11 @@ impl Gdirect {
             sort: (SortKey::Name, true),
             filters: places::Filters::default(),
         });
+        // Starting the search put this place on Back's list; returning to it
+        // takes it off again, so Back goes further.
+        if self.history.last().map(|v| &v.location) == Some(&back.location) {
+            self.history.pop();
+        }
         self.sort = back.sort;
         self.location = back.location;
         self.entered(cx);
@@ -876,7 +887,17 @@ impl Gdirect {
             if this.typing(window, cx) {
                 return cx.propagate();
             }
-            match this.picked().as_slice() {
+            let picked = match this.picked() {
+                none if none.is_empty() => this
+                    .cursor
+                    .as_ref()
+                    .and_then(|id| this.entries.iter().find(|f| &f.id == id))
+                    .cloned()
+                    .into_iter()
+                    .collect(),
+                some => some,
+            };
+            match picked.as_slice() {
                 [] => {}
                 [one] => {
                     let one = one.clone();
@@ -2391,8 +2412,10 @@ impl Gdirect {
                             .icon("grid", Symbol::GRID_VIEW)
                             .labels(GroupLabels::Never)
                             .selected(if self.grid { "grid" } else { "list" })
-                            .on_change(cx.listener(|this, value: &SharedString, _, cx| {
+                            .on_change(cx.listener(|this, value: &SharedString, window, cx| {
                                 this.grid = value.as_ref() == "grid";
+                                // Keys belong to the listing, not the toggle.
+                                window.focus(&this.files_focus, cx);
                                 cx.notify();
                             })),
                     ),
@@ -2468,10 +2491,12 @@ impl Gdirect {
         let picked = self.picked();
         // The count in the interface's face, the name in user content's.
         let label = match picked.as_slice() {
-            [one] => div()
+            // Named only where the name has room beside the actions.
+            [one] if self.content_width() >= 720. => div()
                 .flex()
                 .items_center()
                 .min_w_0()
+                .mr(rem(8.))
                 .overflow_hidden()
                 .child(
                     ui::text(
@@ -2492,7 +2517,7 @@ impl Gdirect {
                     )
                     .text_ellipsis_middle(),
                 ),
-            many => div().flex().min_w_0().child(ui::line(
+            many => div().flex().min_w_0().mr(rem(8.)).child(ui::line(
                 TypeRole::TitleMedium,
                 ColorRole::ON_SURFACE,
                 tf!("已选择 {} 项", "{} selected", many.len()),
@@ -3051,7 +3076,7 @@ impl Gdirect {
             .border_b_1()
             .border_color(color(ColorRole::OUTLINE_VARIANT))
             .text_color(color(ColorRole::ON_SURFACE_VARIANT))
-            .child(div().flex_1().min_w_0().child(column(
+            .child(div().flex_1().min_w_0().pr(rem(16.)).child(column(
                 "sort-name",
                 t("名称", "Name"),
                 SortKey::Name,
@@ -3176,6 +3201,7 @@ impl Gdirect {
                         div()
                             .flex_1()
                             .min_w_0()
+                            .pr(rem(16.))
                             .flex()
                             .items_center()
                             .gap(rem(16.))
