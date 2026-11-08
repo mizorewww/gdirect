@@ -143,8 +143,8 @@ impl Queues {
         self.next
     }
 
-    /// Drive allows duplicate names; give each download its own output path,
-    /// apart from files already on disk that are not this one.
+    /// Drive allows duplicate names; give each queued download its own output
+    /// path. Unrelated files already on disk are avoided when it starts.
     fn output_for(&self, dir: &Path, name: &str, file_id: &str) -> PathBuf {
         let taken = |p: &Path| {
             self.downloads
@@ -322,27 +322,62 @@ impl Queues {
     }
 }
 
-/// Runs one download to completion; `progress` gets live statistics.
+fn control(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.aria2", path.display()))
+}
+
+/// Where a download goes on disk: its queued path, unless an unrelated file
+/// is already there. A finished copy with the same MD5 stays (the engine
+/// skips it), and a partial one with its aria2 control file resumes.
+fn output_on_disk(path: &Path, md5: Option<&str>) -> anyhow::Result<PathBuf> {
+    let usable = |p: &Path| -> anyhow::Result<bool> {
+        Ok(!p.exists() || control(p).exists() || download::matches_md5(p, md5)?)
+    };
+    if usable(path)? {
+        return Ok(path.to_owned());
+    }
+    let dir = path.parent().unwrap_or(Path::new(""));
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    let ext = path.extension().map(|e| e.to_string_lossy());
+    for n in 2.. {
+        let candidate = match &ext {
+            Some(ext) => dir.join(format!("{stem} ({n}).{ext}")),
+            None => dir.join(format!("{stem} ({n})")),
+        };
+        if usable(&candidate)? {
+            return Ok(candidate);
+        }
+    }
+    unreachable!()
+}
+
+/// Runs one download to completion; `progress` gets live statistics. Returns
+/// a note for the finished list and the path the file was saved to.
 pub fn run_download(
     api: &Api,
     job: &Download,
     options: &Options,
     cancel: Arc<AtomicBool>,
     progress: std::sync::mpsc::Sender<Stats>,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<(String, PathBuf)> {
     if let Some(dir) = job.output.parent() {
         std::fs::create_dir_all(dir)?;
     }
+    let md5 = if options.md5 && job.export.is_none() {
+        job.file.md5_checksum.clone()
+    } else {
+        None
+    };
+    let output = output_on_disk(&job.output, md5.as_deref())?;
     let token = api.download_token()?;
     anyhow::ensure!(!cancel.load(Ordering::Relaxed), "已取消");
     // The API client may already have failed over; downloads follow it.
     let (ip, sni, backups) = api.route();
-    let existed =
-        job.output.exists() && !PathBuf::from(format!("{}.aria2", job.output.display())).exists();
+    let existed = output.exists() && !control(&output).exists();
     let result = download::run(
         download::Args {
             file: job.file.id.clone(),
-            output: job.output.clone(),
+            output: output.clone(),
             ip,
             sni: options.sni.clone().or(sni),
             auto: options.sni.is_none(),
@@ -350,11 +385,7 @@ pub fn run_download(
             db: Some(api.db.clone()),
             token: Some(token),
             export: job.export.clone(),
-            md5: if options.md5 && job.export.is_none() {
-                job.file.md5_checksum.clone()
-            } else {
-                None
-            },
+            md5,
             connections: options.connections,
             ca_cert: options.ca_cert.clone(),
         },
@@ -368,12 +399,11 @@ pub fn run_download(
         "已取消，已下载的部分会保留"
     );
     result?;
-    let size = job
-        .output
+    let size = output
         .metadata()
         .map(|m| format::bytes(m.len()))
         .unwrap_or_default();
-    Ok(if existed {
+    let note = if existed {
         "已存在且校验和一致，跳过下载".into()
     } else if job.export.is_some() {
         format!("{size} · 由 Google 文档导出")
@@ -381,7 +411,8 @@ pub fn run_download(
         format!("{size} · MD5 校验通过")
     } else {
         size
-    })
+    };
+    Ok((note, output))
 }
 
 /// Lists every file below `folder`, paired with its directory relative to it.
@@ -409,4 +440,33 @@ pub fn walk(
         progress(files.len());
     }
     Ok(files)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_on_disk_avoids_unrelated_files() {
+        let dir = std::env::temp_dir().join(format!("gdirect-desktop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("report.pdf");
+        // Nothing there yet: the queued path.
+        assert_eq!(output_on_disk(&path, None).unwrap(), path);
+        // An unrelated file: the next free name.
+        std::fs::write(&path, b"other").unwrap();
+        assert_eq!(
+            output_on_disk(&path, Some("00000000000000000000000000000000")).unwrap(),
+            dir.join("report (2).pdf")
+        );
+        // The same file (MD5 of "other"): kept, so the engine skips it.
+        assert_eq!(
+            output_on_disk(&path, Some("795f3202b17cb6bc3d4b771d8c6c9eaf")).unwrap(),
+            path
+        );
+        // A partial download resumes in place.
+        std::fs::write(control(&path), b"").unwrap();
+        assert_eq!(output_on_disk(&path, None).unwrap(), path);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

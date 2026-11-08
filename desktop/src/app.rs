@@ -643,10 +643,13 @@ impl Gdirect {
                             .take()
                             .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed));
                         job.state = match result {
-                            Ok(note) => transfers::State::Done {
-                                at: chrono::Local::now(),
-                                note,
-                            },
+                            Ok((note, output)) => {
+                                job.output = output;
+                                transfers::State::Done {
+                                    at: chrono::Local::now(),
+                                    note,
+                                }
+                            }
                             Err(_) if cancelled => transfers::State::Paused,
                             Err(e) => transfers::State::Failed(format!("{e:#}")),
                         };
