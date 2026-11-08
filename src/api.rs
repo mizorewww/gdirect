@@ -3,7 +3,7 @@ use anyhow::{Context, Result, ensure};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     sync::{
@@ -13,7 +13,15 @@ use std::{
     time::Duration,
 };
 
-const FIELDS: &str = "id,name,mimeType,size,modifiedTime,md5Checksum,resourceKey";
+/// File fields requested everywhere a [`File`] is read, so every path returns
+/// the same shape.
+pub const FIELDS: &str = "id,name,mimeType,size,modifiedTime,md5Checksum,resourceKey,\
+parents,starred,trashed,explicitlyTrashed,trashedTime,driveId,webViewLink,createdTime,\
+viewedByMeTime,sharedWithMeTime,shared,owners(displayName,emailAddress,me),\
+sharingUser(displayName,emailAddress,me),lastModifyingUser(displayName,emailAddress,me),\
+shortcutDetails(targetId,targetMimeType),capabilities(canAddChildren,canRename,canTrash,\
+canDelete,canUntrash,canDownload,canShare,canCopy)";
+const FOLDER_MIME: &str = "application/vnd.google-apps.folder";
 pub(crate) const API_HOST: &str = "www.googleapis.com";
 pub(crate) const TOKEN_HOST: &str = "oauth2.googleapis.com";
 /// TLS identity used when a censor resets the real SNI: connect and verify
@@ -38,7 +46,9 @@ pub(crate) fn client_builder() -> reqwest::blocking::ClientBuilder {
     }
     builder
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+/// A Drive item. Everything after `resource_key` defaults, so JSON cached
+/// before those fields existed still reads.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct File {
     pub id: String,
@@ -48,10 +58,299 @@ pub struct File {
     pub modified_time: Option<String>,
     pub md5_checksum: Option<String>,
     pub resource_key: Option<String>,
+    #[serde(default)]
+    pub parents: Vec<String>,
+    #[serde(default)]
+    pub starred: bool,
+    #[serde(default)]
+    pub trashed: bool,
+    #[serde(default)]
+    pub explicitly_trashed: bool,
+    #[serde(default)]
+    pub trashed_time: Option<String>,
+    #[serde(default)]
+    pub drive_id: Option<String>,
+    #[serde(default)]
+    pub web_view_link: Option<String>,
+    #[serde(default)]
+    pub created_time: Option<String>,
+    #[serde(default)]
+    pub viewed_by_me_time: Option<String>,
+    #[serde(default)]
+    pub shared_with_me_time: Option<String>,
+    #[serde(default)]
+    pub shared: bool,
+    #[serde(default)]
+    pub owners: Vec<User>,
+    #[serde(default)]
+    pub sharing_user: Option<User>,
+    #[serde(default)]
+    pub last_modifying_user: Option<User>,
+    #[serde(default)]
+    pub shortcut_details: Option<ShortcutDetails>,
+    #[serde(default)]
+    pub capabilities: Option<Capabilities>,
+}
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct User {
+    pub display_name: Option<String>,
+    pub email_address: Option<String>,
+    pub me: bool,
+}
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ShortcutDetails {
+    pub target_id: String,
+    pub target_mime_type: Option<String>,
+}
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Capabilities {
+    pub can_add_children: bool,
+    pub can_rename: bool,
+    pub can_trash: bool,
+    pub can_delete: bool,
+    pub can_untrash: bool,
+    pub can_download: bool,
+    pub can_share: bool,
+    pub can_copy: bool,
+}
+/// Which collection a [`Query`] searches.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Corpora {
+    /// My Drive and items shared with the user.
+    User,
+    /// One Shared drive, by ID.
+    Drive(String),
+    /// Everything the user can reach, Shared drives included.
+    AllDrives,
+}
+/// A `files.list` request; see the constructors for the common views.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Query {
+    pub q: String,
+    pub corpora: Corpora,
+    pub order_by: Option<String>,
+    pub page_size: u32,
+}
+/// One page of [`Api::query`] results.
+#[derive(Clone, Debug, Default)]
+pub struct Page {
+    pub files: Vec<File>,
+    /// Token for the next page; None on the last one.
+    pub next: Option<String>,
+    /// Drive did not search every corpus (only with [`Corpora::AllDrives`]).
+    pub incomplete: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchKind {
+    Folder,
+    Document,
+    Spreadsheet,
+    Presentation,
+    Pdf,
+    Image,
+    Video,
+    Audio,
+    Archive,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Owner {
+    #[default]
+    Any,
+    Me,
+    NotMe,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchSpec {
+    pub text: String,
+    /// Search contents too (`fullText contains`), not just names.
+    pub full_text: bool,
+    pub kind: Option<SearchKind>,
+    pub owner: Owner,
+    /// RFC 3339 time, e.g. "2026-01-01T00:00:00".
+    pub modified_after: Option<String>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedDrive {
+    pub id: String,
+    pub name: String,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Quota {
+    /// None for unlimited storage.
+    pub limit: Option<u64>,
+    pub usage: u64,
+    pub usage_in_drive: u64,
+    pub usage_in_trash: u64,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct About {
+    pub email: String,
+    pub storage: Quota,
+}
+/// Escapes `s` for use inside a single-quoted Drive query literal.
+pub fn quote(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('\'', "\\'")
+}
+impl SearchKind {
+    fn clause(self) -> &'static str {
+        match self {
+            Self::Folder => "mimeType = 'application/vnd.google-apps.folder'",
+            Self::Document => {
+                "(mimeType = 'application/vnd.google-apps.document' or mimeType = 'application/msword' or mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')"
+            }
+            Self::Spreadsheet => {
+                "(mimeType = 'application/vnd.google-apps.spreadsheet' or mimeType = 'application/vnd.ms-excel' or mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')"
+            }
+            Self::Presentation => {
+                "(mimeType = 'application/vnd.google-apps.presentation' or mimeType = 'application/vnd.ms-powerpoint' or mimeType = 'application/vnd.openxmlformats-officedocument.presentationml.presentation')"
+            }
+            Self::Pdf => "mimeType = 'application/pdf'",
+            Self::Image => "mimeType contains 'image/'",
+            Self::Video => "mimeType contains 'video/'",
+            Self::Audio => "mimeType contains 'audio/'",
+            Self::Archive => {
+                "(mimeType = 'application/zip' or mimeType = 'application/x-zip-compressed' or mimeType = 'application/x-7z-compressed' or mimeType = 'application/x-rar-compressed' or mimeType = 'application/vnd.rar' or mimeType = 'application/x-tar' or mimeType = 'application/gzip')"
+            }
+        }
+    }
+}
+impl Query {
+    fn new(q: String, corpora: Corpora, order_by: Option<&str>, page_size: u32) -> Self {
+        Self {
+            q,
+            corpora,
+            order_by: order_by.map(Into::into),
+            page_size,
+        }
+    }
+    /// The live children of a folder, folders first; `drive_id` names the
+    /// Shared drive it lives in, if any.
+    pub fn folder(id: &str, drive_id: Option<&str>) -> Self {
+        Self::new(
+            format!("'{}' in parents and trashed = false", quote(id)),
+            drive_id.map_or(Corpora::User, |d| Corpora::Drive(d.into())),
+            Some("folder,name_natural"),
+            1000,
+        )
+    }
+    pub fn shared_with_me() -> Self {
+        Self::new(
+            "sharedWithMe = true and trashed = false".into(),
+            Corpora::User,
+            Some("sharedWithMeTime desc"),
+            1000,
+        )
+    }
+    pub fn starred() -> Self {
+        Self::new(
+            "starred = true and trashed = false".into(),
+            Corpora::User,
+            Some("folder,name_natural"),
+            1000,
+        )
+    }
+    /// Recently used files (no folders), newest first.
+    pub fn recent() -> Self {
+        Self::new(
+            format!("trashed = false and mimeType != '{FOLDER_MIME}'"),
+            Corpora::User,
+            Some("recency desc"),
+            100,
+        )
+    }
+    pub fn trash() -> Self {
+        Self::new(
+            "trashed = true".into(),
+            Corpora::User,
+            Some("trashedTime desc"),
+            1000,
+        )
+    }
+    /// A search across every drive. Full-text results come in relevance
+    /// order (Drive refuses `orderBy` there); name searches by name.
+    pub fn search(spec: &SearchSpec) -> Self {
+        let mut clauses = Vec::new();
+        let text = spec.text.trim();
+        if !text.is_empty() {
+            let field = if spec.full_text { "fullText" } else { "name" };
+            clauses.push(format!("{field} contains '{}'", quote(text)));
+        }
+        clauses.push("trashed = false".into());
+        if let Some(kind) = spec.kind {
+            clauses.push(kind.clause().into());
+        }
+        match spec.owner {
+            Owner::Any => {}
+            Owner::Me => clauses.push("'me' in owners".into()),
+            Owner::NotMe => clauses.push("not 'me' in owners".into()),
+        }
+        if let Some(after) = &spec.modified_after {
+            clauses.push(format!("modifiedTime > '{}'", quote(after)));
+        }
+        Self::new(
+            clauses.join(" and "),
+            Corpora::AllDrives,
+            (!spec.full_text).then_some("folder,name_natural"),
+            1000,
+        )
+    }
+    /// The `files.list` query string for one page.
+    fn params(&self, page_token: Option<&str>) -> Vec<(String, String)> {
+        let mut query: Vec<(String, String)> = vec![
+            ("q".into(), self.q.clone()),
+            (
+                "fields".into(),
+                format!("nextPageToken,incompleteSearch,files({FIELDS})"),
+            ),
+            ("pageSize".into(), self.page_size.clamp(1, 1000).to_string()),
+            ("supportsAllDrives".into(), "true".into()),
+            ("includeItemsFromAllDrives".into(), "true".into()),
+        ];
+        match &self.corpora {
+            Corpora::User => query.push(("corpora".into(), "user".into())),
+            Corpora::Drive(id) => {
+                query.push(("corpora".into(), "drive".into()));
+                query.push(("driveId".into(), id.clone()));
+            }
+            Corpora::AllDrives => query.push(("corpora".into(), "allDrives".into())),
+        }
+        if let Some(order) = &self.order_by {
+            query.push(("orderBy".into(), order.clone()));
+        }
+        if let Some(token) = page_token.filter(|t| !t.is_empty()) {
+            query.push(("pageToken".into(), token.into()));
+        }
+        query
+    }
+}
+/// Reads `about` (fields `user(emailAddress),storageQuota`); Drive sends the
+/// byte counts as strings.
+fn parse_about(data: &serde_json::Value) -> Result<About> {
+    let number = |v: &serde_json::Value| -> Option<u64> {
+        v.as_str()
+            .and_then(|s| s.parse().ok())
+            .or_else(|| v.as_u64())
+    };
+    let quota = &data["storageQuota"];
+    Ok(About {
+        email: data["user"]["emailAddress"]
+            .as_str()
+            .context("Drive API did not return an account")?
+            .into(),
+        storage: Quota {
+            limit: number(&quota["limit"]),
+            usage: number(&quota["usage"]).unwrap_or_default(),
+            usage_in_drive: number(&quota["usageInDrive"]).unwrap_or_default(),
+            usage_in_trash: number(&quota["usageInDriveTrash"]).unwrap_or_default(),
+        },
+    })
 }
 impl File {
     pub fn folder(&self) -> bool {
-        self.mime_type == "application/vnd.google-apps.folder"
+        self.mime_type == FOLDER_MIME
     }
     pub fn workspace(&self) -> bool {
         self.mime_type.starts_with("application/vnd.google-apps.")
@@ -94,6 +393,8 @@ pub(crate) fn gate(forged: Option<&str>, url: &url::Url) -> url::Url {
 }
 /// A verified endpoint and the TLS identity stored for it (None = real name).
 pub type Endpoint = (IpAddr, Option<String>);
+/// Item ID -> (name, first parent).
+type Tree = HashMap<String, (String, Option<String>)>;
 struct Live {
     client: Client,
     ip: Option<IpAddr>,
@@ -111,6 +412,8 @@ pub struct Api {
     live: Arc<Mutex<Live>>,
     /// Set to stop an upload between chunks; see [`Api::cancellable`].
     cancel: Option<Arc<AtomicBool>>,
+    /// Folder ID -> (name, parent) learned by [`Api::ancestors`].
+    tree: Arc<Mutex<Tree>>,
 }
 impl Api {
     pub fn new(
@@ -135,6 +438,7 @@ impl Api {
             account,
             auto,
             cancel: None,
+            tree: Arc::default(),
         })
     }
     /// A client whose uploads stop, between chunks, once `cancel` is set. The
@@ -430,6 +734,11 @@ impl Api {
     /// Moves a file or folder out of all its current folders into `parent`.
     /// Returns false when it is already there.
     pub fn move_to(&self, id: &str, parent: &str) -> Result<bool> {
+        Ok(self.move_to_returning(id, parent)?.is_some())
+    }
+    /// [`Api::move_to`] that returns the folders the item was in, so the move
+    /// can be undone; None when it is already in `parent` alone.
+    pub fn move_to_returning(&self, id: &str, parent: &str) -> Result<Option<Vec<String>>> {
         ensure!(
             crate::drive::valid_id(id) && crate::drive::valid_id(parent),
             "invalid file ID"
@@ -441,7 +750,8 @@ impl Api {
                 ("supportsAllDrives".into(), "true".into()),
             ],
         )?;
-        let parents: Vec<String> = serde_json::from_value(data["parents"].clone())?;
+        let parents: Vec<String> =
+            serde_json::from_value(data["parents"].clone()).unwrap_or_default();
         // "root" is an alias; Drive reports the real ID, so compare after resolving it.
         let target = if parent == "root" {
             self.metadata("root")?.id
@@ -449,7 +759,7 @@ impl Api {
             parent.to_owned()
         };
         if parents == [target.as_str()] {
-            return Ok(false);
+            return Ok(None);
         }
         let remove = parents
             .iter()
@@ -463,30 +773,173 @@ impl Api {
             &[("addParents", &target), ("removeParents", &remove)],
             serde_json::json!({}),
         )?;
-        Ok(true)
+        Ok(Some(parents))
     }
-    pub fn list(&self, folder: &str) -> Result<Vec<File>> {
-        ensure!(crate::drive::valid_id(folder), "invalid folder ID");
-        let mut files = Vec::new();
-        let mut page = String::new();
+    /// Restores a trashed file or folder.
+    pub fn untrash(&self, id: &str) -> Result<File> {
+        ensure!(crate::drive::valid_id(id), "invalid file ID");
+        let body = serde_json::json!({"trashed": false});
+        self.write(reqwest::Method::PATCH, &format!("files/{id}"), &[], body)
+    }
+    /// Deletes a file or folder for good, skipping the trash.
+    pub fn delete(&self, id: &str) -> Result<()> {
+        ensure!(crate::drive::valid_id(id), "invalid file ID");
+        self.request(
+            reqwest::Method::DELETE,
+            &format!("files/{id}"),
+            &[("supportsAllDrives".into(), "true".into())],
+            None,
+        )?;
+        Ok(())
+    }
+    /// Permanently deletes everything in the user's trash.
+    pub fn empty_trash(&self) -> Result<()> {
+        self.request(reqwest::Method::DELETE, "files/trash", &[], None)?;
+        Ok(())
+    }
+    pub fn set_starred(&self, id: &str, starred: bool) -> Result<File> {
+        ensure!(crate::drive::valid_id(id), "invalid file ID");
+        let body = serde_json::json!({"starred": starred});
+        self.write(reqwest::Method::PATCH, &format!("files/{id}"), &[], body)
+    }
+    /// Creates a shortcut named `name` in `parent` pointing at `target_id`.
+    pub fn create_shortcut(&self, parent: &str, target_id: &str, name: &str) -> Result<File> {
+        ensure!(
+            crate::drive::valid_id(parent) && crate::drive::valid_id(target_id),
+            "invalid file ID"
+        );
+        let body = serde_json::json!({
+            "name": checked_name(name)?,
+            "mimeType": "application/vnd.google-apps.shortcut",
+            "parents": [parent],
+            "shortcutDetails": {"targetId": target_id},
+        });
+        self.write(reqwest::Method::POST, "files", &[], body)
+    }
+    /// Every Shared drive the user can see.
+    pub fn drives(&self) -> Result<Vec<SharedDrive>> {
+        #[derive(Deserialize)]
+        struct Raw {
+            id: String,
+            #[serde(default)]
+            name: String,
+        }
+        let mut drives = Vec::new();
+        let mut page: Option<String> = None;
         loop {
-            let mut query=vec![("q".into(),format!("'{folder}' in parents and trashed = false")),
-                ("fields".into(),"nextPageToken,files(id,name,mimeType,size,modifiedTime,md5Checksum,resourceKey)".into()),
-                ("pageSize".into(),"1000".into()),("orderBy".into(),"folder,name_natural".into()),
-                ("supportsAllDrives".into(),"true".into()),("includeItemsFromAllDrives".into(),"true".into())];
-            if !page.is_empty() {
-                query.push(("pageToken".into(), page));
+            let mut query: Vec<(String, String)> = vec![
+                ("pageSize".into(), "100".into()),
+                ("fields".into(), "nextPageToken,drives(id,name)".into()),
+            ];
+            if let Some(token) = page.take() {
+                query.push(("pageToken".into(), token));
             }
-            let data = self.get("files", &query)?;
-            files.extend(serde_json::from_value::<Vec<File>>(data["files"].clone())?);
+            let data = self.get("drives", &query)?;
+            let raw: Vec<Raw> = serde_json::from_value(data["drives"].clone()).unwrap_or_default();
+            drives.extend(raw.into_iter().map(|d| SharedDrive {
+                id: d.id,
+                name: d.name,
+            }));
             page = data["nextPageToken"]
                 .as_str()
-                .unwrap_or_default()
-                .to_owned();
-            if page.is_empty() {
-                break;
+                .filter(|t| !t.is_empty())
+                .map(Into::into);
+            if page.is_none() {
+                return Ok(drives);
             }
         }
+    }
+    /// The signed-in account and its storage use.
+    pub fn about(&self) -> Result<About> {
+        let data = self.get(
+            "about",
+            &[("fields".into(), "user(emailAddress),storageQuota".into())],
+        )?;
+        parse_about(&data)
+    }
+    /// The folders above `id`, from the top (My Drive or a Shared drive)
+    /// down to its parent, as (ID, name). Folders seen once are remembered
+    /// for the life of this client.
+    pub fn ancestors(&self, id: &str) -> Result<Vec<(String, String)>> {
+        ensure!(crate::drive::valid_id(id), "invalid file ID");
+        let mut chain = Vec::new();
+        let mut next = self.node(id)?.1;
+        // Drive has no cycles, but a bound keeps a bad reply from looping.
+        while let Some(parent) = next.take() {
+            ensure!(chain.len() < 256, "folder chain too deep");
+            let (name, up) = self.node(&parent)?;
+            chain.push((parent, name));
+            next = up;
+        }
+        chain.reverse();
+        Ok(chain)
+    }
+    /// (name, first parent) of one item, from the cache or Drive.
+    fn node(&self, id: &str) -> Result<(String, Option<String>)> {
+        if let Some(hit) = self.tree.lock().unwrap().get(id) {
+            return Ok(hit.clone());
+        }
+        let data = self.get(
+            &format!("files/{id}"),
+            &[
+                ("fields".into(), "id,name,parents,driveId".into()),
+                ("supportsAllDrives".into(), "true".into()),
+            ],
+        )?;
+        let parent = data["parents"][0].as_str().map(String::from);
+        let mut name = data["name"].as_str().unwrap_or_default().to_owned();
+        // A Shared drive's top folder reports a generic name; ask the drive.
+        if parent.is_none()
+            && data["driveId"].as_str() == Some(id)
+            && let Ok(drive) =
+                self.get(&format!("drives/{id}"), &[("fields".into(), "name".into())])
+            && let Some(real) = drive["name"].as_str()
+        {
+            name = real.into();
+        }
+        let node = (name, parent);
+        self.tree
+            .lock()
+            .unwrap()
+            .insert(id.to_owned(), node.clone());
+        if let Some(real) = data["id"].as_str().filter(|real| *real != id) {
+            // "root" resolves to the real ID; remember both.
+            self.tree
+                .lock()
+                .unwrap()
+                .insert(real.to_owned(), node.clone());
+        }
+        Ok(node)
+    }
+    /// One page of a `files.list` query.
+    pub fn query(&self, q: &Query, page_token: Option<&str>) -> Result<Page> {
+        let data = self.get("files", &q.params(page_token))?;
+        Ok(Page {
+            files: serde_json::from_value(data["files"].clone())?,
+            next: data["nextPageToken"]
+                .as_str()
+                .filter(|t| !t.is_empty())
+                .map(Into::into),
+            incomplete: data["incompleteSearch"].as_bool().unwrap_or(false),
+        })
+    }
+    /// Every page of a query.
+    pub fn query_all(&self, q: &Query) -> Result<Vec<File>> {
+        let mut files = Vec::new();
+        let mut token: Option<String> = None;
+        loop {
+            let page = self.query(q, token.as_deref())?;
+            files.extend(page.files);
+            token = page.next;
+            if token.is_none() {
+                return Ok(files);
+            }
+        }
+    }
+    /// All live children of a folder, also stored as the folder's cached listing.
+    pub fn list(&self, folder: &str) -> Result<Vec<File>> {
+        ensure!(crate::drive::valid_id(folder), "invalid folder ID");
+        let files = self.query_all(&Query::folder(folder, None))?;
         Store::open(&self.db)?.cache(
             self.account.as_deref().unwrap_or_default(),
             folder,
@@ -523,6 +976,10 @@ fn checked(response: reqwest::blocking::Response) -> Result<serde_json::Value> {
     let status = response.status();
     let body = response.text().map_err(|e| e.without_url())?;
     if status.is_success() {
+        // 204 No Content (deletes) carries no body at all.
+        if body.trim().is_empty() {
+            return Ok(serde_json::Value::Null);
+        }
         return serde_json::from_str(&body).context("Drive API returned invalid JSON");
     }
     anyhow::bail!("{}", drive_error(status, &body))
@@ -658,11 +1115,183 @@ mod tests {
             modified_time: None,
             md5_checksum: None,
             resource_key: None,
+            ..File::default()
         };
         assert!(file("application/zip").downloadable());
         assert!(file("application/vnd.google-apps.document").downloadable());
         assert!(!file("application/vnd.google-apps.shortcut").downloadable());
         assert!(!file("application/vnd.google-apps.form").downloadable());
+    }
+    #[test]
+    fn quotes_drive_literals() {
+        assert_eq!(quote("plain"), "plain");
+        assert_eq!(quote("it's"), r"it\'s");
+        assert_eq!(quote(r"a\b"), r"a\\b");
+        assert_eq!(quote(r"\'"), r"\\\'");
+    }
+    #[test]
+    fn query_constructors() {
+        let q = Query::folder("abc", None);
+        assert_eq!(q.q, "'abc' in parents and trashed = false");
+        assert_eq!(q.order_by.as_deref(), Some("folder,name_natural"));
+        assert_eq!(q.corpora, Corpora::User);
+        assert_eq!(
+            Query::folder("abc", Some("d1")).corpora,
+            Corpora::Drive("d1".into())
+        );
+        let q = Query::shared_with_me();
+        assert_eq!(q.q, "sharedWithMe = true and trashed = false");
+        assert_eq!(q.order_by.as_deref(), Some("sharedWithMeTime desc"));
+        let q = Query::starred();
+        assert_eq!(q.q, "starred = true and trashed = false");
+        assert_eq!(q.order_by.as_deref(), Some("folder,name_natural"));
+        let q = Query::recent();
+        assert_eq!(
+            q.q,
+            "trashed = false and mimeType != 'application/vnd.google-apps.folder'"
+        );
+        assert_eq!(q.order_by.as_deref(), Some("recency desc"));
+        assert_eq!(q.page_size, 100);
+        let q = Query::trash();
+        assert_eq!(q.q, "trashed = true");
+        assert_eq!(q.order_by.as_deref(), Some("trashedTime desc"));
+    }
+    #[test]
+    fn query_params_name_corpora_and_shared_drives() {
+        let get = |params: &[(String, String)], key: &str| {
+            params
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+        };
+        let params = Query::folder("abc", Some("d1")).params(Some("tok"));
+        assert_eq!(get(&params, "corpora").as_deref(), Some("drive"));
+        assert_eq!(get(&params, "driveId").as_deref(), Some("d1"));
+        assert_eq!(get(&params, "pageToken").as_deref(), Some("tok"));
+        assert_eq!(get(&params, "supportsAllDrives").as_deref(), Some("true"));
+        assert_eq!(
+            get(&params, "includeItemsFromAllDrives").as_deref(),
+            Some("true")
+        );
+        assert!(get(&params, "fields").unwrap().contains(FIELDS));
+        let params = Query::search(&SearchSpec {
+            text: "x".into(),
+            full_text: true,
+            ..Default::default()
+        })
+        .params(None);
+        assert_eq!(get(&params, "corpora").as_deref(), Some("allDrives"));
+        assert_eq!(get(&params, "orderBy"), None);
+        assert_eq!(get(&params, "pageToken"), None);
+        assert_eq!(get(&params, "driveId"), None);
+    }
+    #[test]
+    fn search_specs() {
+        let q = Query::search(&SearchSpec {
+            text: "report's".into(),
+            ..Default::default()
+        });
+        assert_eq!(q.q, r"name contains 'report\'s' and trashed = false");
+        assert_eq!(q.order_by.as_deref(), Some("folder,name_natural"));
+        assert_eq!(q.corpora, Corpora::AllDrives);
+        let q = Query::search(&SearchSpec {
+            text: "budget".into(),
+            full_text: true,
+            kind: Some(SearchKind::Pdf),
+            owner: Owner::Me,
+            modified_after: Some("2026-01-01T00:00:00".into()),
+        });
+        assert_eq!(
+            q.q,
+            "fullText contains 'budget' and trashed = false and mimeType = 'application/pdf' \
+             and 'me' in owners and modifiedTime > '2026-01-01T00:00:00'"
+        );
+        assert_eq!(q.order_by, None);
+        let q = Query::search(&SearchSpec {
+            kind: Some(SearchKind::Image),
+            owner: Owner::NotMe,
+            ..Default::default()
+        });
+        assert_eq!(
+            q.q,
+            "trashed = false and mimeType contains 'image/' and not 'me' in owners"
+        );
+        let q = Query::search(&SearchSpec {
+            text: "x".into(),
+            kind: Some(SearchKind::Folder),
+            ..Default::default()
+        });
+        assert!(q.q.ends_with("mimeType = 'application/vnd.google-apps.folder'"));
+        let q = Query::search(&SearchSpec {
+            kind: Some(SearchKind::Spreadsheet),
+            ..Default::default()
+        });
+        assert!(q.q.contains("application/vnd.google-apps.spreadsheet"));
+    }
+    #[test]
+    fn files_read_old_and_full_json() {
+        let old: File = serde_json::from_str(
+            r#"{"id":"a","name":"n","mimeType":"text/plain","size":"3","modifiedTime":null,"md5Checksum":null,"resourceKey":null}"#,
+        )
+        .unwrap();
+        assert_eq!(old.size.as_deref(), Some("3"));
+        assert!(old.parents.is_empty() && !old.starred && !old.trashed);
+        assert!(old.owners.is_empty() && old.capabilities.is_none());
+        let cached: Vec<File> =
+            serde_json::from_str(r#"[{"id":"a","name":"n","mimeType":"x"}]"#).unwrap();
+        assert_eq!(cached[0].id, "a");
+        let full: File = serde_json::from_str(
+            r#"{"id":"a","name":"n","mimeType":"application/vnd.google-apps.shortcut",
+            "parents":["p"],"starred":true,"trashed":true,"explicitlyTrashed":true,
+            "trashedTime":"2026-01-02T00:00:00Z","driveId":"d","webViewLink":"https://x",
+            "createdTime":"c","viewedByMeTime":"v","sharedWithMeTime":"s","shared":true,
+            "owners":[{"displayName":"Me","emailAddress":"me@x","me":true}],
+            "sharingUser":{"displayName":"Bo"},"lastModifyingUser":{"emailAddress":"l@x"},
+            "shortcutDetails":{"targetId":"t","targetMimeType":"application/pdf"},
+            "capabilities":{"canAddChildren":true,"canRename":true,"canTrash":true,
+            "canDelete":false,"canUntrash":true,"canDownload":true,"canShare":true,"canCopy":true}}"#,
+        )
+        .unwrap();
+        assert_eq!(full.parents, ["p"]);
+        assert!(full.starred && full.trashed && full.explicitly_trashed && full.shared);
+        assert_eq!(full.drive_id.as_deref(), Some("d"));
+        assert!(full.owners[0].me);
+        assert_eq!(
+            full.sharing_user.unwrap().display_name.as_deref(),
+            Some("Bo")
+        );
+        assert_eq!(full.shortcut_details.unwrap().target_id, "t");
+        let caps = full.capabilities.unwrap();
+        assert!(caps.can_rename && caps.can_untrash && !caps.can_delete);
+        // A round trip keeps the new fields for the folder cache.
+        let again: File = serde_json::from_str(&serde_json::to_string(&old).unwrap()).unwrap();
+        assert_eq!(again.id, "a");
+    }
+    #[test]
+    fn about_reads_string_numbers() {
+        let about = parse_about(&serde_json::json!({
+            "user": {"emailAddress": "a@x"},
+            "storageQuota": {"limit": "16106127360", "usage": "1024",
+                "usageInDrive": "512", "usageInDriveTrash": "2"}
+        }))
+        .unwrap();
+        assert_eq!(about.email, "a@x");
+        assert_eq!(
+            about.storage,
+            Quota {
+                limit: Some(16106127360),
+                usage: 1024,
+                usage_in_drive: 512,
+                usage_in_trash: 2,
+            }
+        );
+        let unlimited = parse_about(&serde_json::json!({
+            "user": {"emailAddress": "a@x"}, "storageQuota": {"usage": "5"}
+        }))
+        .unwrap();
+        assert_eq!(unlimited.storage.limit, None);
+        assert_eq!(unlimited.storage.usage, 5);
+        assert!(parse_about(&serde_json::json!({})).is_err());
     }
     #[test]
     fn names_cannot_escape() {

@@ -72,7 +72,7 @@ struct Clipboard {
 enum Prompt {
     /// A name ending in / creates a folder.
     Create,
-    Rename(File),
+    Rename(Box<File>),
     Trash(Vec<File>),
     Upload,
     Filter,
@@ -1031,7 +1031,8 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, api: Api, options: Option
                 KeyCode::Char('u') => view.input = Some(Input::new(Prompt::Upload, String::new())),
                 KeyCode::Char('r') => {
                     if let Some(file) = view.selected().cloned() {
-                        let mut input = Input::new(Prompt::Rename(file.clone()), file.name.clone());
+                        let mut input =
+                            Input::new(Prompt::Rename(Box::new(file.clone())), file.name.clone());
                         // Start before the extension, as most renames keep it.
                         if let Some((stem, _)) = file.name.rsplit_once('.')
                             && !file.folder()
@@ -1110,6 +1111,7 @@ mod tests {
             modified_time: None,
             md5_checksum: None,
             resource_key: None,
+            ..File::default()
         }
     }
     const DIR: &str = "application/vnd.google-apps.folder";
