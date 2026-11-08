@@ -210,52 +210,135 @@ impl Gdirect {
 
     /// Shown until the first account signs in.
     pub fn render_welcome(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let guide = if crate::i18n::chinese() {
+            "https://github.com/mizorewww/gdirect/blob/main/docs/configuration/README.zh-CN.md"
+        } else {
+            "https://github.com/mizorewww/gdirect/blob/main/docs/configuration/README.md"
+        };
+        // A numbered step: what to do, then why or how.
+        let step = |n: &'static str, title: &'static str, body: &'static str| {
+            div()
+                .flex()
+                .gap(rem(16.))
+                .child(
+                    ui::text(TypeRole::TitleSmall, ColorRole::ON_PRIMARY_CONTAINER, n)
+                        .flex_none()
+                        .size(rem(28.))
+                        .rounded_full()
+                        .bg(color(ColorRole::PRIMARY_CONTAINER))
+                        .flex()
+                        .items_center()
+                        .justify_center(),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(rem(4.))
+                        .child(ui::text(
+                            TypeRole::TitleMedium,
+                            ColorRole::ON_SURFACE,
+                            title,
+                        ))
+                        .child(ui::text(
+                            TypeRole::BodyMedium,
+                            ColorRole::ON_SURFACE_VARIANT,
+                            body,
+                        )),
+                )
+        };
         div()
             .id("welcome")
             .size_full()
             .overflow_y_scroll()
             .flex()
-            .items_center()
             .justify_center()
             .child(
                 div()
-                    .max_w(rem(560.))
-                    .p(rem(32.))
+                    .w_full()
+                    .max_w(rem(600.))
+                    .px(rem(24.))
+                    .py(rem(40.))
                     .flex()
                     .flex_col()
-                    .gap(rem(16.))
+                    .gap(rem(20.))
                     .child(
                         div()
-                            .size(rem(72.))
-                            .rounded(rem(24.))
+                            .size(rem(64.))
+                            .rounded(rem(20.))
                             .bg(color(ColorRole::PRIMARY_CONTAINER))
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(ui::symbol("add_to_drive", true).size(rem(40.)).color(color(ColorRole::ON_PRIMARY_CONTAINER))),
+                            .child(ui::symbol("add_to_drive", true).size(rem(36.)).color(color(ColorRole::ON_PRIMARY_CONTAINER))),
                     )
-                    .child(ui::text(TypeRole::HeadlineMedium, ColorRole::ON_SURFACE, t("登录 Google 云盘", "Sign in to Google Drive")))
+                    .child(ui::text(TypeRole::HeadlineMedium, ColorRole::ON_SURFACE, t("连接你的 Google 云盘", "Connect your Google Drive")))
                     .child(ui::text(
                         TypeRole::BodyLarge,
                         ColorRole::ON_SURFACE_VARIANT,
                         t(
-                            "gdirect 用你自己的 Google 桌面应用 OAuth 客户端登录，直接连到可达的 Google 前端传输文件。选择从 Google Cloud 控制台下载的客户端 JSON，然后在浏览器中选择账号。",
-                            "gdirect signs in with your own Google desktop-app OAuth client and transfers files straight through a reachable Google front end. Choose the client JSON you downloaded from the Google Cloud console, then pick an account in your browser.",
+                            "gdirect 不内置共用的登录凭据：你要先在 Google Cloud 里免费创建一个只属于你的“桌面应用”客户端，再用它登录。只需做一次，大约 10 分钟。",
+                            "gdirect has no shared sign-in credentials built in: you first create a free “Desktop app” client of your own in Google Cloud, then sign in with it. You do this once; it takes about 10 minutes.",
                         ),
                     ))
                     .child(
                         div()
                             .flex()
+                            .flex_col()
+                            .gap(rem(16.))
+                            .p(rem(20.))
+                            .rounded(rem(20.))
+                            .bg(color(ColorRole::SURFACE_CONTAINER_LOW))
+                            .child(
+                                step(
+                                    "1",
+                                    t("创建你的客户端", "Create your client"),
+                                    t(
+                                        "在 Google Cloud 控制台新建项目，启用 Google Drive API，配置同意屏幕并把你的 Google 账号加为测试用户，然后创建“桌面应用”类型的 OAuth 客户端，下载它的 JSON 文件。配置指南里每一步都有截图。",
+                                        "In the Google Cloud console, create a project, enable the Google Drive API, set up the consent screen and add your Google account as a test user, then create an OAuth client of type “Desktop app” and download its JSON file. The setup guide shows every step with screenshots.",
+                                    ),
+                                ),
+                            )
+                            .child(
+                                div().pl(rem(44.)).child(
+                                    MaterialButton::new("open-guide")
+                                        .variant(ButtonVariant::Tonal)
+                                        .icon(Symbol::OPEN_IN_NEW)
+                                        .on_click(move |_, _, cx| cx.open_url(guide))
+                                        .child(t("打开配置指南", "Open the setup guide")),
+                                ),
+                            )
+                            .child(step(
+                                "2",
+                                t("选择下载的 JSON 文件", "Choose the downloaded JSON file"),
+                                t(
+                                    "点下面的按钮，选中刚下载的 client_secret_….json。gdirect 会保存它，以后不再需要这个文件。",
+                                    "Click the button below and pick the client_secret_….json you just downloaded. gdirect keeps a copy, so you won’t need the file again.",
+                                ),
+                            ))
+                            .child(step(
+                                "3",
+                                t("在浏览器里登录", "Sign in in your browser"),
+                                t(
+                                    "浏览器会打开 Google 登录页。看到“Google 尚未验证此应用”时点“继续”——这是你自己创建的应用。授权后回到这里，文件就会出现。",
+                                    "Your browser opens Google’s sign-in page. If it says “Google hasn’t verified this app”, choose Continue — it is the app you just created. After you allow access, come back here and your files appear.",
+                                ),
+                            )),
+                    )
+                    .child(
+                        div()
+                            .flex()
                             .flex_wrap()
                             .gap(rem(8.))
-                            .pt(rem(8.))
                             .child(
                                 MaterialButton::new("choose-client")
                                     .button_size(ButtonSize::Medium)
                                     .icon(Symbol::KEY)
                                     .loading(self.signing_in, t("正在等待浏览器登录", "Waiting for browser sign-in"))
                                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.choose_client(cx)))
-                                    .child(t("选择客户端 JSON…", "Choose client JSON…")),
+                                    .child(t("选择客户端 JSON 并登录…", "Choose client JSON and sign in…")),
                             )
                             .when(self.oauth_client, |d| {
                                 d.child(
@@ -265,21 +348,26 @@ impl Gdirect {
                                         .icon(Symbol::LOGIN)
                                         .disabled(self.signing_in)
                                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.login(None, cx)))
-                                        .child(t("使用已保存的客户端", "Use saved client")),
+                                        .child(t("用已保存的客户端登录", "Sign in with the saved client")),
                                 )
                             }),
                     )
-                    .child(
-                        notice_banner(
-                            "welcome-tip",
-                            NoticeKind::Info,
-                            t(
-                                "应用处于测试阶段时，每个账号都要加为测试用户，登录 7 天后过期。",
-                                "While the app is in testing, add each account as a test user. Sign-ins expire after 7 days.",
-                            ),
-                        )
-                        .mt(rem(8.)),
-                    ),
+                    .child(notice_banner(
+                        "welcome-network",
+                        NoticeKind::Info,
+                        t(
+                            "登录这一步需要能访问 Google（accounts.google.com）。如果 Google 被屏蔽，请暂时开着代理；登录后浏览和传输文件都不需要代理。",
+                            "Signing in needs access to Google (accounts.google.com). If Google is blocked, keep a proxy on for this step only; browsing and transfers afterwards need no proxy.",
+                        ),
+                    ))
+                    .child(notice_banner(
+                        "welcome-testing",
+                        NoticeKind::Info,
+                        t(
+                            "客户端保持“测试”状态时，只有加为测试用户的账号能登录，而且登录 7 天后失效；到时在“设置 › 账号”里重新登录即可。",
+                            "While your client stays in “Testing”, only accounts added as test users can sign in, and a sign-in lasts 7 days; after that, sign in again under Settings › Account.",
+                        ),
+                    )),
             )
     }
 }
