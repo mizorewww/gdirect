@@ -335,11 +335,13 @@ impl Gdirect {
                             .flex()
                             .items_center()
                             .gap(rem(8.))
+                            // Green, amber or red by latency, as a route's health reads.
                             .child(div().size(rem(8.)).rounded_full().bg(color(
-                                if self.api.is_some() {
-                                    ColorRole::SUCCESS
-                                } else {
-                                    ColorRole::OUTLINE
+                                match (self.api.is_some(), ms) {
+                                    (false, _) => ColorRole::OUTLINE,
+                                    (true, Some(ms)) if ms >= 1000 => ColorRole::ERROR,
+                                    (true, Some(ms)) if ms >= 300 => ColorRole::WARNING,
+                                    _ => ColorRole::SUCCESS,
                                 },
                             )))
                             .child(ui::text(
@@ -509,7 +511,7 @@ impl Gdirect {
             .into_any_element();
         }
         // Narrow windows drop the TLS column, then the latency bars.
-        let show_tls = self.wide(1040.);
+        let show_tls = self.wide(1000.);
         let show_bar = self.wide(860.);
         let (address_w, latency_w) = if show_bar {
             (COLUMNS[0], COLUMNS[1])
