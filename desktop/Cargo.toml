@@ -40,10 +40,6 @@ gpui-base = { path = "../../gpui-kit-material/vendor/gpui-base" }
 gpui-pre = { path = "../../gpui-kit-material/vendor/gpui-pre" }
 gpui-pre-apple = { path = "../../gpui-kit-material/vendor/gpui-pre-apple" }
 gpui-pre-web = { path = "../../gpui-kit-material/vendor/gpui-pre-web" }
-gpui-pre-macos = { path = "../../gpui-kit-material/vendor/gpui-pre-macos" }
-gpui-pre-linux = { path = "../../gpui-kit-material/vendor/gpui-pre-linux" }
-gpui-pre-wgpu = { path = "../../gpui-kit-material/vendor/gpui-pre-wgpu" }
-gpui-pre-windows = { path = "../../gpui-kit-material/vendor/gpui-pre-windows" }
 gpui-fast = { path = "../../gpui-kit-material/vendor/gpui-fast" }
 gpui-fast-apple = { path = "../../gpui-kit-material/vendor/gpui-fast-apple" }
 gpui-fast-web = { path = "../../gpui-kit-material/vendor/gpui-fast-web" }
@@ -51,7 +47,6 @@ gpui-fast-macos = { path = "../../gpui-kit-material/vendor/gpui-fast-macos" }
 gpui-fast-linux = { path = "../../gpui-kit-material/vendor/gpui-fast-linux" }
 gpui-fast-wgpu = { path = "../../gpui-kit-material/vendor/gpui-fast-wgpu" }
 gpui-fast-windows = { path = "../../gpui-kit-material/vendor/gpui-fast-windows" }
-wgpu = { path = "../../gpui-kit-material/vendor/wgpu" }
 
 [patch."https://github.com/longbridge/gpui-kit"]
 gpui-kit = { path = "../../gpui-kit-material/vendor/gpui-kit" }
