@@ -663,7 +663,7 @@ impl Gdirect {
         let last = self.path.len() - 1;
         let mut crumbs = div()
             .flex_1()
-            .min_w(rem(200.))
+            .min_w(rem(120.))
             .flex()
             .flex_wrap()
             .items_center()
@@ -705,19 +705,19 @@ impl Gdirect {
                     .child(CircularProgress::new("loading", t("正在加载", "Loading")).size(20.)),
             );
         }
+        let wide = self.wide(860.);
         let paste = self.clipboard.as_ref().map(|(files, cut)| {
+            let n = files.len();
             MaterialButton::new("paste")
                 .variant(ButtonVariant::Tonal)
                 .icon(Symbol::CONTENT_PASTE)
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.paste(cx)))
-                .child(if *cut {
-                    tf!("移动到此处 · {}", "Move here · {}", item_count(files.len()))
-                } else {
-                    tf!(
-                        "粘贴到此处 · {}",
-                        "Paste here · {}",
-                        item_count(files.len())
-                    )
+                .child(match (*cut, wide) {
+                    (true, true) => tf!("移动到此处 · {}", "Move here · {}", item_count(n)),
+                    (false, true) => tf!("粘贴到此处 · {}", "Paste here · {}", item_count(n)),
+                    // Narrow windows keep the count and drop the words around it.
+                    (true, false) => tf!("移动 · {n}", "Move · {n}"),
+                    (false, false) => tf!("粘贴 · {n}", "Paste · {n}"),
                 })
         });
         div()
@@ -730,34 +730,44 @@ impl Gdirect {
             .pl(rem(16.))
             .pr(rem(16.))
             .child(crumbs)
-            .when_some(paste, |d, b| d.child(b))
-            .when(self.clipboard.is_some(), |d| {
-                d.child(
-                    IconButton::new(
-                        "clear-clipboard",
-                        Symbol::CLOSE,
-                        t("清除剪贴板", "Clear clipboard"),
-                    )
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.clipboard = None;
-                        cx.notify();
-                    })),
-                )
-            })
+            // The controls wrap as one group, at the right.
             .child(
-                ConnectedButtonGroup::new("view", t("视图", "View"))
-                    .options([
-                        ("list", t("列表视图", "List view")),
-                        ("grid", t("网格视图", "Grid view")),
-                    ])
-                    .icon("list", Symbol::VIEW_LIST)
-                    .icon("grid", Symbol::GRID_VIEW)
-                    .labels(GroupLabels::Never)
-                    .selected(if self.grid { "grid" } else { "list" })
-                    .on_change(cx.listener(|this, value: &SharedString, _, cx| {
-                        this.grid = value.as_ref() == "grid";
-                        cx.notify();
-                    })),
+                div()
+                    .ml_auto()
+                    .flex()
+                    .items_center()
+                    .gap(rem(8.))
+                    .when_some(paste, |d, b| d.child(b))
+                    .when(self.clipboard.is_some(), |d| {
+                        d.child(
+                            IconButton::new(
+                                "clear-clipboard",
+                                Symbol::CLOSE,
+                                t("清除剪贴板", "Clear clipboard"),
+                            )
+                            .on_click(cx.listener(
+                                |this, _: &ClickEvent, _, cx| {
+                                    this.clipboard = None;
+                                    cx.notify();
+                                },
+                            )),
+                        )
+                    })
+                    .child(
+                        ConnectedButtonGroup::new("view", t("视图", "View"))
+                            .options([
+                                ("list", t("列表视图", "List view")),
+                                ("grid", t("网格视图", "Grid view")),
+                            ])
+                            .icon("list", Symbol::VIEW_LIST)
+                            .icon("grid", Symbol::GRID_VIEW)
+                            .labels(GroupLabels::Never)
+                            .selected(if self.grid { "grid" } else { "list" })
+                            .on_change(cx.listener(|this, value: &SharedString, _, cx| {
+                                this.grid = value.as_ref() == "grid";
+                                cx.notify();
+                            })),
+                    ),
             )
     }
 
@@ -792,7 +802,7 @@ impl Gdirect {
             .child(
                 ui::line(TypeRole::TitleMedium, ColorRole::ON_SURFACE, label)
                     .flex_1()
-                    .min_w(rem(120.)),
+                    .min_w(rem(48.)),
             )
             .child(
                 MaterialButton::new("download")
