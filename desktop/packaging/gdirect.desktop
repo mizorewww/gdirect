@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=gdirect
+Comment=Browse, transfer and mount Google Drive
+Exec=gdirect-desktop
+Icon=gdirect
+Terminal=false
+Categories=Network;FileTransfer;

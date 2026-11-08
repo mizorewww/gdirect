@@ -1,0 +1,33 @@
+<!-- The Windows installer: gdirect-desktop.exe under Program Files, a Start
+     menu shortcut, and upgrades in place (WiX v5: wix build -d Version=…). -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="gdirect" Manufacturer="gdirect" Version="$(Version)"
+           UpgradeCode="FFE1831C-22A3-46CD-8FCC-1041208E6578" Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of gdirect is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Icon Id="gdirect.ico" SourceFile="$(Bundle)\gdirect.ico" />
+    <Property Id="ARPPRODUCTICON" Value="gdirect.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/mizorewww/gdirect" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="gdirect">
+        <Component Id="Executable">
+          <File Id="GdirectDesktopExe" Source="$(Bundle)\gdirect-desktop.exe" KeyPath="yes" />
+        </Component>
+        <Component Id="Notices">
+          <File Source="$(Bundle)\LICENSE.txt" KeyPath="yes" />
+          <File Source="$(Bundle)\FONTS-OFL.txt" />
+          <File Source="$(Bundle)\OPENSSL-LICENSE.txt" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut">
+        <Shortcut Id="StartMenuGdirect" Name="gdirect" Description="Browse, transfer and mount Google Drive"
+                  Target="[INSTALLFOLDER]gdirect-desktop.exe" WorkingDirectory="INSTALLFOLDER" Icon="gdirect.ico" />
+        <RegistryValue Root="HKMU" Key="Software\gdirect" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+  </Package>
+</Wix>
