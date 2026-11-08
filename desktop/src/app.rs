@@ -634,6 +634,7 @@ impl Gdirect {
             let id = job.id;
             let cancel = Arc::new(AtomicBool::new(false));
             job.cancel = Some(cancel.clone());
+            let api = api.clone();
             let snapshot = transfers::Download {
                 id,
                 account: account.clone(),
@@ -697,7 +698,9 @@ impl Gdirect {
             let path = job.path.clone();
             let parent = job.parent.0.clone();
             let folder = job.folder;
-            let api = self.api.clone().unwrap();
+            let cancel = Arc::new(AtomicBool::new(false));
+            job.cancel = Some(cancel.clone());
+            let api = api.cancellable(cancel);
             let tx = self.sender();
             self.background(
                 move || -> anyhow::Result<(String, String)> {
@@ -738,6 +741,10 @@ impl Gdirect {
                 move |this, result, cx| {
                     let parent = this.queues.upload(id).map(|u| u.parent.0.clone());
                     if let Some(job) = this.queues.upload(id) {
+                        let cancelled = job
+                            .cancel
+                            .take()
+                            .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed));
                         match result {
                             Ok((file_id, note)) => {
                                 job.result = Some(file_id);
@@ -746,6 +753,7 @@ impl Gdirect {
                                     note,
                                 };
                             }
+                            Err(_) if cancelled => job.state = transfers::State::Paused,
                             Err(e) => job.state = transfers::State::Failed(transfers::explain(&e)),
                         }
                     }

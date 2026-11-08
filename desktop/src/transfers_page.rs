@@ -28,6 +28,8 @@ enum Action {
     CancelDownload(u64),
     ResumeDownload(u64),
     RemoveDownload(u64),
+    CancelUpload(u64),
+    ResumeUpload(u64),
     RemoveUpload(u64),
 }
 
@@ -48,6 +50,19 @@ impl Gdirect {
                 self.pump(cx);
             }
             Action::RemoveDownload(id) => self.queues.downloads.retain(|d| d.id != id),
+            Action::CancelUpload(id) => {
+                if let Some(job) = self.queues.upload(id)
+                    && let Some(cancel) = &job.cancel
+                {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+            }
+            Action::ResumeUpload(id) => {
+                if let Some(job) = self.queues.upload(id) {
+                    job.state = State::Queued;
+                }
+                self.pump(cx);
+            }
             Action::RemoveUpload(id) => self.queues.uploads.retain(|u| u.id != id),
         }
         cx.notify();
@@ -197,7 +212,11 @@ impl Gdirect {
                             format::bytes(p.bytes_total),
                             format::speed(job.speed)
                         ),
-                        Vec::new(),
+                        vec![(
+                            "stop_circle",
+                            "取消（已上传的部分可续传）",
+                            Action::CancelUpload(job.id),
+                        )],
                     ),
                     State::Running => (
                         "上传中".to_owned(),
@@ -208,7 +227,11 @@ impl Gdirect {
                             format::bytes(p.bytes_total),
                             format::speed(job.speed)
                         ),
-                        Vec::new(),
+                        vec![(
+                            "stop_circle",
+                            "取消（已上传的部分可续传）",
+                            Action::CancelUpload(job.id),
+                        )],
                     ),
                     State::Queued => (
                         self.waiting_for(&job.account),
@@ -229,9 +252,25 @@ impl Gdirect {
                         "失败".to_owned(),
                         ColorRole::ERROR,
                         error.clone(),
-                        vec![("close", "移除", Action::RemoveUpload(job.id))],
+                        vec![
+                            ("refresh", "重试", Action::ResumeUpload(job.id)),
+                            ("close", "从队列移除", Action::RemoveUpload(job.id)),
+                        ],
                     ),
-                    State::Paused | State::Done { .. } => unreachable!(),
+                    State::Paused => (
+                        "已取消 · 可续传".to_owned(),
+                        ColorRole::ON_SURFACE_VARIANT,
+                        format!(
+                            "已上传 {} / {} · 继续时从中断处开始",
+                            format::bytes(p.bytes_done),
+                            format::bytes(p.bytes_total)
+                        ),
+                        vec![
+                            ("play_arrow", "继续", Action::ResumeUpload(job.id)),
+                            ("close", "从队列移除", Action::RemoveUpload(job.id)),
+                        ],
+                    ),
+                    State::Done { .. } => unreachable!(),
                 };
                 Row {
                     key: ("upload", job.id),

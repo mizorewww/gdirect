@@ -83,6 +83,7 @@ pub struct Upload {
     pub sampled: Option<(Instant, u64)>,
     /// The Drive id of the finished upload.
     pub result: Option<String>,
+    pub cancel: Option<Arc<AtomicBool>>,
 }
 
 impl Upload {
@@ -235,6 +236,7 @@ impl Queues {
             speed: 0,
             sampled: None,
             result: None,
+            cancel: None,
         });
     }
 
