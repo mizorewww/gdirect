@@ -129,7 +129,8 @@ pub struct Gdirect {
     toast_serial: u64,
     tx: Sender<Update>,
     _poll: Task<()>,
-    nav: Vec<NavItem>,
+    /// The language the window was last drawn in; see [`Gdirect::follow_language`].
+    drawn_chinese: bool,
     theme_frame_pending: bool,
     _subs: Vec<Subscription>,
 
@@ -190,10 +191,8 @@ impl Gdirect {
         let (tx, rx) = mpsc::channel::<Update>();
         let poll = cx.spawn(async move |this, cx| poll(rx, this, cx).await);
 
-        let filter_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(t("按名称筛选当前文件夹", "Filter this folder by name"))
-        });
+        let filter_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t("按名称筛选", "Filter by name")));
         let name_input = cx.new(|cx| InputState::new(window, cx));
         let connections = cx.new(|_| {
             SliderState::new()
@@ -240,25 +239,6 @@ impl Gdirect {
             }),
         ];
 
-        let nav = vec![
-            NavItem::new("files", t("文件", "Files"), NavIcon::symbol(Symbol::FOLDER)),
-            NavItem::new(
-                "transfers",
-                t("传输", "Transfers"),
-                NavIcon::symbol(Symbol::SWAP_VERT),
-            ),
-            NavItem::new(
-                "endpoints",
-                t("线路", "Routes"),
-                NavIcon::symbol(Symbol::NETWORK_PING),
-            ),
-            NavItem::new(
-                "settings",
-                t("设置", "Settings"),
-                NavIcon::symbol(Symbol::SETTINGS),
-            ),
-        ];
-
         let mut this = Self {
             db_path,
             settings,
@@ -274,7 +254,7 @@ impl Gdirect {
             toast_serial: 0,
             tx,
             _poll: poll,
-            nav,
+            drawn_chinese: crate::i18n::chinese(),
             theme_frame_pending: false,
             _subs: subs,
             path: vec![("root".into(), t("我的云盘", "My Drive").into())],
@@ -375,6 +355,43 @@ impl Gdirect {
             .into_iter()
             .filter(|e| e.ip.parse().is_ok_and(|ip| google.contains(ip)))
             .collect();
+    }
+
+    /// The rail's destinations, in the current language.
+    fn nav_items() -> Vec<NavItem> {
+        vec![
+            NavItem::new("files", t("文件", "Files"), NavIcon::symbol(Symbol::FOLDER)),
+            NavItem::new(
+                "transfers",
+                t("传输", "Transfers"),
+                NavIcon::symbol(Symbol::SWAP_VERT),
+            ),
+            NavItem::new(
+                "endpoints",
+                t("线路", "Routes"),
+                NavIcon::symbol(Symbol::NETWORK_PING),
+            ),
+            NavItem::new(
+                "settings",
+                t("设置", "Settings"),
+                NavIcon::symbol(Symbol::SETTINGS),
+            ),
+        ]
+    }
+
+    /// Text held by components (rather than drawn from `t` each frame)
+    /// follows a language switch.
+    fn follow_language(&mut self, window: &mut Window) {
+        let chinese = crate::i18n::chinese();
+        if std::mem::replace(&mut self.drawn_chinese, chinese) == chinese {
+            return;
+        }
+        let input = self.filter_input.clone();
+        window.on_next_frame(move |window, cx| {
+            input.update(cx, |input, cx| {
+                input.set_placeholder(t("按名称筛选", "Filter by name"), window, cx)
+            });
+        });
     }
 
     /// Whether the window is at least `px` logical pixels wide.
@@ -827,7 +844,7 @@ impl Gdirect {
 
     fn render_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let pending = self.queues.pending();
-        let items = self.nav.iter().cloned().map(|item| {
+        let items = Self::nav_items().into_iter().map(|item| {
             if item.value() == "transfers" && pending > 0 {
                 item.badge(NavBadge::Large(pending.to_string().into()))
             } else {
@@ -929,6 +946,7 @@ pub const TITLE_BAR: Pixels = px(40.);
 impl Render for Gdirect {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.width = f32::from(window.viewport_size().width);
+        self.follow_language(window);
         let labels = CaptionLabels {
             minimize: t("最小化", "Minimize").into(),
             maximize: t("最大化", "Maximize").into(),
