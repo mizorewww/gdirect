@@ -141,6 +141,39 @@ pub fn group(rows: Vec<AnyElement>) -> Div {
         }))
 }
 
+/// The indent of a settings row's text from the row's content edge: the
+/// leading icon (24) and the gap after it (16).
+pub const ROW_INDENT: f32 = 40.;
+
+/// A settings row's title over its supporting element.
+fn row_text(title: SharedString, supporting: Option<AnyElement>) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(rem(2.))
+        .child(text(TypeRole::BodyLarge, ColorRole::ON_SURFACE, title))
+        .children(supporting)
+}
+
+/// Supporting text under a settings row's title.
+pub fn supporting(content: impl Into<SharedString>) -> AnyElement {
+    text(TypeRole::BodyMedium, ColorRole::ON_SURFACE_VARIANT, content).into_any_element()
+}
+
+/// A path as supporting text: one line that ends in an ellipsis, with the
+/// whole path in a tooltip.
+pub fn path(id: &'static str, content: impl Into<SharedString>) -> AnyElement {
+    path_in(id, ColorRole::ON_SURFACE_VARIANT, content)
+}
+
+/// A [`path`] in another ink, for surfaces other than the settings cards.
+pub fn path_in(id: &'static str, ink: ColorRole, content: impl Into<SharedString>) -> AnyElement {
+    let content = content.into();
+    MaterialTooltip::plain(id, content.clone())
+        .trigger(line(TypeRole::BodyMedium, ink, content))
+        .into_any_element()
+}
+
 /// A settings row: an icon, a title over supporting text, and a trailing control.
 pub fn setting_row(
     icon_name: &'static str,
@@ -148,32 +181,102 @@ pub fn setting_row(
     supporting: Option<SharedString>,
     trailing: Option<AnyElement>,
 ) -> AnyElement {
-    // A control that does not fit beside the text wraps below it.
+    setting_row_with(icon_name, title, supporting.map(self::supporting), trailing)
+}
+
+/// [`setting_row`] with any element, such as a [`path`], as supporting text.
+pub fn setting_row_with(
+    icon_name: &'static str,
+    title: impl Into<SharedString>,
+    supporting: Option<AnyElement>,
+    trailing: Option<AnyElement>,
+) -> AnyElement {
+    // The text claims a real width, so a control that does not fit beside it
+    // wraps onto a line of its own, under the title rather than at the edge.
     div()
         .flex()
-        .flex_wrap()
         .items_center()
         .gap(rem(16.))
         .min_h(rem(72.))
         .px(rem(20.))
         .py(rem(12.))
-        .child(icon(icon_name, 24., ColorRole::ON_SURFACE_VARIANT))
+        .child(
+            div()
+                .flex_none()
+                .flex()
+                .child(icon(icon_name, 24., ColorRole::ON_SURFACE_VARIANT)),
+        )
         .child(
             div()
                 .flex_1()
-                .min_w(rem(80.))
+                .min_w_0()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_x(rem(16.))
+                .gap_y(rem(8.))
+                .child(
+                    row_text(title.into(), supporting)
+                        .flex_grow(1.)
+                        .flex_basis(rem(240.))
+                        .min_w(rem(200.)),
+                )
+                .when_some(trailing, |d, t| d.child(div().flex_none().child(t))),
+        )
+        .into_any_element()
+}
+
+/// A settings row whose control always sits under the text, lined up with the
+/// title: for controls too wide to share a line with it.
+pub fn setting_row_stacked(
+    icon_name: &'static str,
+    title: impl Into<SharedString>,
+    supporting: Option<SharedString>,
+    control: impl IntoElement,
+) -> AnyElement {
+    div()
+        .flex()
+        .items_start()
+        .gap(rem(16.))
+        .px(rem(20.))
+        .py(rem(16.))
+        .child(
+            div()
+                .flex_none()
+                .flex()
+                .child(icon(icon_name, 24., ColorRole::ON_SURFACE_VARIANT)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(rem(2.))
-                .child(text(TypeRole::BodyLarge, ColorRole::ON_SURFACE, title))
-                .when_some(supporting, |d, s| {
-                    d.child(text(TypeRole::BodyMedium, ColorRole::ON_SURFACE_VARIANT, s))
-                }),
+                .items_start()
+                .gap(rem(12.))
+                .child(row_text(title.into(), supporting.map(self::supporting)).w_full())
+                .child(control),
         )
-        .when_some(trailing, |d, t| {
-            d.child(div().flex_none().ml_auto().child(t))
-        })
         .into_any_element()
+}
+
+/// The look of a text button that cannot be pressed right now, without the
+/// filled container the kit gives disabled buttons.
+pub fn text_button_disabled(label: impl Into<SharedString>) -> Div {
+    type_role(div(), TypeRole::LabelLarge)
+        .flex_none()
+        .h(rem(40.))
+        .px(rem(12.))
+        .flex()
+        .items_center()
+        .text_color(color(ColorRole::ON_SURFACE))
+        .opacity(0.38)
+        .child(label.into())
+}
+
+/// Small print under a group, inset like a section label.
+pub fn footnote(content: impl Into<SharedString>) -> Div {
+    text(TypeRole::BodySmall, ColorRole::ON_SURFACE_VARIANT, content).px(rem(4.))
 }
 
 pub fn section_label(label: impl Into<SharedString>) -> Div {
