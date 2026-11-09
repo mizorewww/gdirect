@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Desktop client: gpui-kit-material and gpui-kit now come from crates.io (0.1 and 0.9.1), so building it no longer needs a gpui-kit-material checkout beside this repository or a `[patch]` table.
+
 ## 0.13.1
 
 ### Changed

@@ -22,10 +22,9 @@ dirs = "6"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 serde_json = "1"
 sys-locale = "0.3"
-# gpui-kit-material is not on crates.io yet: the sibling checkout, at the Kit
-# revision it is audited against. Its Material Symbols come from crates.io.
-gpui-kit = { git = "https://github.com/longbridge/gpui-kit", rev = "8da4e005258ac0aac9a6a332cce746eeaafa08a8" }
-gpui-kit-material = { path = "../../gpui-kit-material/crates/material" }
+# The Material 3 library and the Kit release it is built on, from crates.io.
+gpui-kit = "0.9.1"
+gpui-kit-material = "0.1"
 gpui-material-symbols = { version = "0.1", default-features = false, features = ["gpui-kit"] }
 
 [workspace]
@@ -39,23 +38,3 @@ debug = "line-tables-only"
 
 [profile.dev.package.gpui-fast]
 opt-level = 3
-
-# Kit, Base and the GPUI engines must be the one patched copy gpui-kit-material
-# is built and tested with (the patch set of its workspace root).
-[patch.crates-io]
-gpui-kit = { path = "../../gpui-kit-material/vendor/gpui-kit" }
-# Base is Kit main's, as gpui-kit-material takes it.
-gpui-base = { git = "https://github.com/longbridge/gpui-kit", rev = "8da4e005258ac0aac9a6a332cce746eeaafa08a8" }
-gpui-pre = { path = "../../gpui-kit-material/vendor/gpui-pre" }
-gpui-pre-apple = { path = "../../gpui-kit-material/vendor/gpui-pre-apple" }
-gpui-pre-web = { path = "../../gpui-kit-material/vendor/gpui-pre-web" }
-gpui-fast = { path = "../../gpui-kit-material/vendor/gpui-fast" }
-gpui-fast-apple = { path = "../../gpui-kit-material/vendor/gpui-fast-apple" }
-gpui-fast-web = { path = "../../gpui-kit-material/vendor/gpui-fast-web" }
-gpui-fast-macos = { path = "../../gpui-kit-material/vendor/gpui-fast-macos" }
-gpui-fast-linux = { path = "../../gpui-kit-material/vendor/gpui-fast-linux" }
-gpui-fast-wgpu = { path = "../../gpui-kit-material/vendor/gpui-fast-wgpu" }
-gpui-fast-windows = { path = "../../gpui-kit-material/vendor/gpui-fast-windows" }
-
-[patch."https://github.com/longbridge/gpui-kit"]
-gpui-kit = { path = "../../gpui-kit-material/vendor/gpui-kit" }

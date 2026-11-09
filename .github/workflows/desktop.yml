@@ -28,19 +28,10 @@ jobs:
     env:
       OPENSSL_STATIC: '1'
     steps:
-      # The client builds against gpui-kit-material checked out beside this
-      # repository, at the revision desktop/gpui-kit-material.rev pins.
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.ref }}
           path: gdirect
-      - id: kit
-        run: echo "rev=$(tr -d '[:space:]' < gdirect/desktop/gpui-kit-material.rev)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
-        with:
-          repository: mizorewww/gpui-kit-material
-          ref: ${{ steps.kit.outputs.rev }}
-          path: gpui-kit-material
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -92,13 +83,6 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
           path: gdirect
-      - id: kit
-        run: echo "rev=$(tr -d '[:space:]' < gdirect/desktop/gpui-kit-material.rev)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
-        with:
-          repository: mizorewww/gpui-kit-material
-          ref: ${{ steps.kit.outputs.rev }}
-          path: gpui-kit-material
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-python@v5
         with:
@@ -150,14 +134,6 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
           path: gdirect
-      - id: kit
-        shell: bash
-        run: echo "rev=$(tr -d '[:space:]' < gdirect/desktop/gpui-kit-material.rev)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
-        with:
-          repository: mizorewww/gpui-kit-material
-          ref: ${{ steps.kit.outputs.rev }}
-          path: gpui-kit-material
       # The engine's libaria2 is built with MinGW, so the client is too, build
       # scripts included: MinGW objects do not link with MSVC's link.exe.
       - uses: dtolnay/rust-toolchain@master

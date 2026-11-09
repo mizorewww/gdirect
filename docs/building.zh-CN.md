@@ -22,17 +22,13 @@ Windows 需要使用 MinGW GNU 工具链编译，步骤如下：
 
 ## 桌面客户端
 
-`desktop/` 是基于 [gpui-kit-material](https://github.com/mizorewww/gpui-kit-material) 的 Material 3 桌面客户端：文件、传输、线路和设置都在一个窗口里，和命令行共用同一套引擎与 SQLite 数据。它是独立的 Cargo 工作区，编译命令行时不会编译图形界面。在 gpui-kit-material 发布到 crates.io 之前，需要把它克隆到本仓库旁边，并使用 Rust 1.98+：
+`desktop/` 是基于 [gpui-kit-material](https://github.com/mizorewww/gpui-kit-material) 的 Material 3 桌面客户端：文件、传输、线路和设置都在一个窗口里，和命令行共用同一套引擎与 SQLite 数据。它是独立的 Cargo 工作区，编译命令行时不会编译图形界面。它的依赖（包括 gpui-kit-material）都来自 crates.io，需要 Rust 1.98+：
 
 ```sh
-git clone https://github.com/mizorewww/gpui-kit-material.git ../gpui-kit-material
-git -C ../gpui-kit-material checkout "$(cat desktop/gpui-kit-material.rev)"
 ./scripts/build-libaria2.sh
 cargo run --release --manifest-path desktop/Cargo.toml
 ```
 
-`desktop/gpui-kit-material.rev` 记录了本客户端编译和发布所对应的 gpui-kit-material 提交。在 `desktop/` 里执行 `cargo build --release --target aarch64-apple-darwin` 后，`python3 scripts/package-desktop.py --target aarch64-apple-darwin` 会把它打包成发布用的 macOS 应用。
+在 `desktop/` 里执行 `cargo build --release --target aarch64-apple-darwin` 后，`python3 scripts/package-desktop.py --target aarch64-apple-darwin` 会把它打包成发布用的 macOS 应用。
 
 `--db PATH` 使用另一个数据文件，和命令行的 `--db` 一样。
-
-gpui-kit-material 正在开发中，并在把引擎补丁逐步迁移到上游。`desktop/Cargo.toml` 把同一批 crate 指向它 `vendor/` 下的副本，所以更新 gpui-kit-material 后如果编译失败，把 `desktop/Cargo.toml` 的 `[patch]` 改成和它 `Cargo.toml` 里的一致即可。
