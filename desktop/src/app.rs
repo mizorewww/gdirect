@@ -149,6 +149,8 @@ pub struct Gdirect {
     pub login_error: Option<SharedString>,
     /// The dialog's scrolling body; its dividers show when it scrolls.
     dialog_scroll: ScrollHandle,
+    /// The dialog form's message last scrolled into view.
+    dialog_notice: Option<SharedString>,
     dialog_overflow: bool,
     /// The Drive client on the chosen route; None until connected.
     pub api: Option<Api>,
@@ -451,6 +453,7 @@ impl Gdirect {
             login_url: None,
             login_error: None,
             dialog_scroll: ScrollHandle::new(),
+            dialog_notice: None,
             dialog_overflow: false,
             api: None,
             connecting: false,
@@ -640,6 +643,9 @@ impl Gdirect {
             return;
         }
         crate::keymap::set_menus(cx);
+        for form in [&self.client_form, &self.dialog_form] {
+            form.update(cx, |form, cx| form.clear_notice(cx));
+        }
         // The Files page sets the filter's again, for its location.
         self.filter_hint = "";
         let search = self.search_input.clone();
@@ -815,9 +821,16 @@ impl Gdirect {
             self.focus_name = Some(stem);
         }
         if let Dialog::Client { sign_in } = dialog {
+            // With nothing saved, what was entered last time stays.
             let saved = self.oauth_client.clone();
-            self.dialog_form
-                .update(cx, |form, cx| form.fill(saved.as_ref(), window, cx));
+            if saved.is_some() {
+                self.dialog_form
+                    .update(cx, |form, cx| form.fill(saved.as_ref(), window, cx));
+            } else {
+                self.dialog_form
+                    .update(cx, |form, cx| form.clear_notice(cx));
+            }
+            self.dialog_notice = None;
             self.client_summary = sign_in && saved.is_some();
             self.login_error = None;
             self.dialog_overflow = false;
@@ -1002,6 +1015,19 @@ impl Gdirect {
         let summary = sign_in && self.client_summary && self.oauth_client.is_some();
         let waiting = sign_in && self.signing_in;
         let client_valid = summary || self.dialog_form.read(cx).valid(cx);
+        // A new message under the buttons is brought into view.
+        let notice = self.dialog_form.read(cx).notice_text();
+        if notice.is_none() {
+            self.dialog_notice = None;
+        }
+        if client && notice.is_some() && notice != self.dialog_notice {
+            self.dialog_notice = notice;
+            let handle = self.dialog_scroll.clone();
+            window.on_next_frame(move |window, _| {
+                handle.set_offset(point(px(0.), -handle.max_offset().y));
+                window.refresh();
+            });
+        }
         // Dividers mark a body that scrolls, once a frame has shown it does.
         if client {
             let handle = self.dialog_scroll.clone();

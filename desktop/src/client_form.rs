@@ -135,6 +135,18 @@ impl ClientForm {
         cx.notify();
     }
 
+    /// The message under the form, if any.
+    pub fn notice_text(&self) -> Option<SharedString> {
+        self.notice.as_ref().map(|n| n.text.clone())
+    }
+
+    /// Drops the message, as one in the other language would read oddly.
+    pub fn clear_notice(&mut self, cx: &mut Context<Self>) {
+        if self.notice.take().is_some() {
+            cx.notify();
+        }
+    }
+
     fn values(&self, cx: &App) -> (String, String) {
         (
             self.id.read(cx).value().to_string(),
@@ -314,7 +326,7 @@ impl ClientForm {
                         Ok(client) => {
                             this.fill(Some(&client), window, cx);
                             (
-                                tf!("已从 {name} 填入客户端", "Client filled in from {name}"),
+                                tf!("已从 {name} 填入客户端。", "Client filled in from {name}."),
                                 true,
                             )
                         }
@@ -363,8 +375,8 @@ fn valid_part(value: &str) -> bool {
 
 fn filled_from_clipboard() -> &'static str {
     t(
-        "已从剪贴板填入客户端",
-        "Client filled in from the clipboard",
+        "已从剪贴板填入客户端。",
+        "Client filled in from the clipboard.",
     )
 }
 
