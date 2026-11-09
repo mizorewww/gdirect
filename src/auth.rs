@@ -69,6 +69,86 @@ impl std::fmt::Display for ClientError {
     }
 }
 impl std::error::Error for ClientError {}
+/// Pasted text read as a client, or as one of its two parts: Google's
+/// console copies the client ID and the secret with separate buttons.
+#[derive(Clone, PartialEq, Eq)]
+pub enum Clip {
+    Client(Client),
+    /// A valid client ID by itself.
+    Id(String),
+    /// A secret in Google's format (`GOCSPX-…`) by itself, or after its label.
+    Secret(String),
+}
+// The secret stays out of logs and panics.
+impl std::fmt::Debug for Clip {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::Client(client) => f.debug_tuple("Client").field(client).finish(),
+            Self::Id(id) => f.debug_tuple("Id").field(id).finish(),
+            Self::Secret(_) => f.write_str("Secret(…)"),
+        }
+    }
+}
+impl Clip {
+    /// Pasted text: what [`Client::from_text`] reads, or a client ID or a
+    /// secret alone.
+    pub fn from_text(text: &str) -> Result<Self, ClientError> {
+        let text = trimmed(text);
+        if text.starts_with('{') {
+            return Client::from_json(text.as_bytes()).map(Self::Client);
+        }
+        let tokens: Vec<&str> = text
+            .split(|c: char| c.is_whitespace() || c == ',' || c == ':')
+            .map(|t| t.trim_matches(|c| c == '"' || c == '\''))
+            .filter(|t| !t.is_empty())
+            .collect();
+        let ids: Vec<&str> = tokens
+            .iter()
+            .copied()
+            .filter(|t| t.ends_with(CLIENT_ID_SUFFIX))
+            .collect();
+        let others: Vec<&str> = tokens
+            .iter()
+            .copied()
+            .filter(|t| !t.ends_with(CLIENT_ID_SUFFIX))
+            .collect();
+        let google: Vec<&str> = others
+            .iter()
+            .copied()
+            .filter(|t| t.starts_with("GOCSPX-"))
+            .collect();
+        // Labelled text, such as "Client secret: GOCSPX-…" copied from the console.
+        let labelled = others
+            .iter()
+            .all(|t| is_label(t) || t.starts_with("GOCSPX-"));
+        let secret = match (&others[..], &google[..]) {
+            ([secret], _) | (_, [secret]) => Some(*secret),
+            _ => None,
+        };
+        match (&ids[..], secret) {
+            ([id], Some(secret)) => {
+                let client = Client::new(id, secret);
+                client.validate()?;
+                Ok(Self::Client(client))
+            }
+            ([id], None) if others.iter().all(|t| is_label(t)) => {
+                Client::new(id, "x").validate()?;
+                Ok(Self::Id((*id).to_owned()))
+            }
+            ([], Some(secret)) if secret.starts_with("GOCSPX-") && labelled => {
+                Ok(Self::Secret(secret.to_owned()))
+            }
+            ([], Some(secret)) if secret.starts_with("GOCSPX-") => Err(ClientError::ClientId),
+            _ => Err(ClientError::Unrecognized),
+        }
+    }
+}
+/// A word of the labels the console shows beside a client's values.
+fn is_label(token: &str) -> bool {
+    ["client", "id", "secret", "oauth"]
+        .iter()
+        .any(|label| token.eq_ignore_ascii_case(label))
+}
 // The secret stays out of logs and panics.
 impl std::fmt::Debug for Client {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -107,47 +187,14 @@ impl Client {
         Ok(client)
     }
     /// Pasted text: a client JSON, or the client ID and secret in either
-    /// order, separated by spaces, new lines, a comma or a colon.
+    /// order, separated by spaces, new lines, a comma or a colon. Only one
+    /// of them is [`ClientError::MissingSecret`] or [`ClientError::ClientId`];
+    /// [`Clip::from_text`] takes it as that part.
     pub fn from_text(text: &str) -> Result<Self, ClientError> {
-        let text = trimmed(text);
-        if text.starts_with('{') {
-            return Self::from_json(text.as_bytes());
-        }
-        let tokens: Vec<&str> = text
-            .split(|c: char| c.is_whitespace() || c == ',' || c == ':')
-            .map(|t| t.trim_matches(|c| c == '"' || c == '\''))
-            .filter(|t| !t.is_empty())
-            .collect();
-        let ids: Vec<&str> = tokens
-            .iter()
-            .copied()
-            .filter(|t| t.ends_with(CLIENT_ID_SUFFIX))
-            .collect();
-        let others: Vec<&str> = tokens
-            .iter()
-            .copied()
-            .filter(|t| !t.ends_with(CLIENT_ID_SUFFIX))
-            .collect();
-        let secret = match others[..] {
-            [secret] => Some(secret),
-            // Labelled text, such as "Client secret: GOCSPX-…" copied from the console.
-            _ => match others
-                .iter()
-                .filter(|t| t.starts_with("GOCSPX-"))
-                .collect::<Vec<_>>()[..]
-            {
-                [secret] => Some(*secret),
-                _ => None,
-            },
-        };
-        match (&ids[..], secret) {
-            ([id], Some(secret)) => {
-                let client = Self::new(id, secret);
-                client.validate()?;
-                Ok(client)
-            }
-            ([], Some(secret)) if secret.starts_with("GOCSPX-") => Err(ClientError::ClientId),
-            _ => Err(ClientError::Unrecognized),
+        match Clip::from_text(text)? {
+            Clip::Client(client) => Ok(client),
+            Clip::Id(_) => Err(ClientError::MissingSecret),
+            Clip::Secret(_) => Err(ClientError::ClientId),
         }
     }
     /// Whether this can be a Desktop app client: a Google client ID and a secret.
@@ -681,7 +728,8 @@ mod tests {
                 .client_secret,
             "legacy-secret"
         );
-        assert_eq!(Client::from_text(ID), Err(ClientError::Unrecognized));
+        assert_eq!(Client::from_text(ID), Err(ClientError::MissingSecret));
+        assert_eq!(Client::from_text(SECRET), Err(ClientError::ClientId));
         assert_eq!(Client::from_text(""), Err(ClientError::Unrecognized));
         assert_eq!(
             Client::from_text("hello world"),
@@ -695,6 +743,53 @@ mod tests {
             Client::from_text(&format!("{ID} a b")),
             Err(ClientError::Unrecognized)
         );
+    }
+    #[test]
+    fn a_lone_client_id_or_secret_is_that_part() {
+        for text in [
+            ID.to_owned(),
+            format!(" \"{ID}\"\n"),
+            format!("Client ID: {ID}"),
+        ] {
+            assert_eq!(Clip::from_text(&text), Ok(Clip::Id(ID.into())), "{text:?}");
+        }
+        for text in [
+            SECRET.to_owned(),
+            format!("'{SECRET}' "),
+            format!("Client secret\n{SECRET}"),
+        ] {
+            assert_eq!(
+                Clip::from_text(&text),
+                Ok(Clip::Secret(SECRET.into())),
+                "{text:?}"
+            );
+        }
+        assert_eq!(
+            Clip::from_text(&format!("{SECRET}\n{ID}")),
+            Ok(Clip::Client(Client::new(ID, SECRET)))
+        );
+        // A malformed ID is not taken as one, nor a secret beside a stray word.
+        assert_eq!(
+            Clip::from_text("abc.apps.googleusercontent.com"),
+            Err(ClientError::ClientId)
+        );
+        assert_eq!(
+            Clip::from_text(&format!("123 {SECRET}")),
+            Err(ClientError::ClientId)
+        );
+        assert_eq!(
+            Clip::from_text("legacy-secret"),
+            Err(ClientError::Unrecognized)
+        );
+        assert_eq!(
+            Clip::from_text(&format!("{ID} a")),
+            Ok(Clip::Client(Client::new(ID, "a")))
+        );
+        assert_eq!(
+            Clip::from_text(&format!("{ID} a b")),
+            Err(ClientError::Unrecognized)
+        );
+        assert!(!format!("{:?}", Clip::Secret(SECRET.into())).contains(SECRET));
     }
     #[test]
     fn client_validation() {
