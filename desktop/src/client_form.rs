@@ -201,12 +201,15 @@ impl ClientForm {
             }
             return;
         }
-        let client = Client::from_text(value).ok().or_else(|| {
-            let joined = pasted.replace('\n', "");
-            (!joined.trim().is_empty() && value.contains(joined.trim()))
-                .then(|| Client::from_text(&pasted).ok())
-                .flatten()
-        });
+        // Typed text is never read as a client either: only what holds the
+        // clipboard's text, as a paste does.
+        let joined = pasted.replace(['\r', '\n'], "");
+        if joined.trim().is_empty() || !value.contains(joined.trim()) {
+            return;
+        }
+        let client = Client::from_text(&pasted)
+            .ok()
+            .or_else(|| Client::from_text(value).ok());
         if let Some(client) = client {
             self.fill(Some(&client), window, cx);
             self.announce(filled_from_clipboard().to_owned(), true, cx);

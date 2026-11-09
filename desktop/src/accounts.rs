@@ -114,7 +114,7 @@ impl Gdirect {
     /// Stops waiting for the browser sign-in.
     pub fn cancel_login(&mut self, cx: &mut Context<Self>) {
         if self.abandon_login() && !self.welcome() && self.dialog.is_none() {
-            self.say(t("已取消登录", "Sign-in cancelled"), cx);
+            self.say(t("已取消登录。", "Sign-in cancelled."), cx);
         }
         cx.notify();
     }

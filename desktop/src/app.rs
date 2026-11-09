@@ -151,6 +151,8 @@ pub struct Gdirect {
     dialog_scroll: ScrollHandle,
     /// The dialog form's message last scrolled into view.
     dialog_notice: Option<SharedString>,
+    /// Frames left to keep the dialog's message scrolled into view.
+    reveal_frames: u8,
     dialog_overflow: bool,
     /// The Drive client on the chosen route; None until connected.
     pub api: Option<Api>,
@@ -454,6 +456,7 @@ impl Gdirect {
             login_error: None,
             dialog_scroll: ScrollHandle::new(),
             dialog_notice: None,
+            reveal_frames: 0,
             dialog_overflow: false,
             api: None,
             connecting: false,
@@ -1022,10 +1025,17 @@ impl Gdirect {
         }
         if client && notice.is_some() && notice != self.dialog_notice {
             self.dialog_notice = notice;
+            // The dividers that come with scrolling take room in turn, so
+            // the bottom is sought again for a few frames until it settles.
+            self.reveal_frames = 4;
+        }
+        if client && self.reveal_frames > 0 {
+            self.reveal_frames -= 1;
             let handle = self.dialog_scroll.clone();
-            window.on_next_frame(move |window, _| {
+            let view = cx.weak_entity();
+            window.on_next_frame(move |_, cx| {
                 handle.set_offset(point(px(0.), -handle.max_offset().y));
-                window.refresh();
+                let _ = view.update(cx, |_, cx| cx.notify());
             });
         }
         // Dividers mark a body that scrolls, once a frame has shown it does.
