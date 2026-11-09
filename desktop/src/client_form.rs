@@ -123,6 +123,7 @@ impl ClientForm {
         let (id, secret) = client
             .map(|c| (c.client_id.clone(), c.client_secret.clone()))
             .unwrap_or_default();
+        self.last = [id.clone(), secret.clone()];
         self.id
             .update(cx, |input, cx| input.set_value(id, window, cx));
         self.secret
@@ -204,7 +205,11 @@ impl ClientForm {
         // Typed text is never read as a client either: only what holds the
         // clipboard's text, as a paste does.
         let joined = pasted.replace(['\r', '\n'], "");
-        if joined.trim().is_empty() || !value.contains(joined.trim()) {
+        // ...and only when this change put it there.
+        if joined.trim().is_empty()
+            || !value.contains(joined.trim())
+            || previous.contains(joined.trim())
+        {
             return;
         }
         let client = Client::from_text(&pasted)
@@ -224,8 +229,13 @@ impl ClientForm {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        for (input, value) in [(&self.id, id), (&self.secret, secret)] {
+        // What a field shows is what the next change is compared with.
+        for (ix, (input, value)) in [(&self.id, id), (&self.secret, secret)]
+            .into_iter()
+            .enumerate()
+        {
             if let Some(value) = value {
+                self.last[ix] = value.clone();
                 input.update(cx, |input, cx| input.set_value(value, window, cx));
             }
         }
