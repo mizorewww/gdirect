@@ -445,8 +445,7 @@ impl Gdirect {
     /// The saved OAuth client, its secret masked, and what can be done with it.
     fn client_rows(&self, cx: &mut Context<Self>) -> Div {
         let change = |id: &'static str, label: &'static str| {
-            material_button(id, ButtonVariant::Text)
-                .disabled(self.signing_in)
+            ui::flat_text_button(material_button(id, ButtonVariant::Text), self.signing_in)
                 .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                     this.open_dialog(Dialog::Client { sign_in: false }, window, cx)
                 }))

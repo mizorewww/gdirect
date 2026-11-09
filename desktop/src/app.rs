@@ -317,7 +317,7 @@ impl Gdirect {
             .new(|cx| InputState::new(window, cx).placeholder(crate::files::search_placeholder()));
         let name_input = cx.new(|cx| InputState::new(window, cx));
         let client_form = cx.new(|cx| ClientForm::new(true, window, cx));
-        let dialog_form = cx.new(|cx| ClientForm::new(false, window, cx));
+        let dialog_form = cx.new(|cx| ClientForm::new(true, window, cx));
         let connections = cx.new(|_| {
             SliderState::new()
                 .min(1.)
@@ -973,6 +973,15 @@ impl Gdirect {
                 false,
                 false,
             ),
+            // Without a saved client there is nothing to change, and no
+            // account it signed in.
+            Some(Dialog::Client { sign_in: false }) if self.oauth_client.is_none() => (
+                t("设置 OAuth 客户端", "Set up OAuth client").into(),
+                Some(t("用于之后的登录。", "Used to sign in.").into()),
+                t("保存", "Save"),
+                false,
+                false,
+            ),
             Some(Dialog::Client { sign_in: false }) => (
                 t("更换 OAuth 客户端", "Change OAuth client").into(),
                 Some(
@@ -1010,6 +1019,8 @@ impl Gdirect {
         let view = cx.weak_entity();
         MaterialDialog::new("dialog")
             .modal(self.dialog.is_some())
+            // Over the window below its title bar, which still moves it.
+            .contained(true)
             .size(DialogSize::Small)
             // A question's text reads on fewer, fuller lines than the name
             // field needs.
@@ -1049,6 +1060,9 @@ impl Gdirect {
                         ButtonVariant::Text,
                         waiting,
                     );
+                    // Under its buttons, in the dialog: the snackbar would
+                    // be drawn beneath it.
+                    let notice = crate::client_form::notice(&self.dialog_form, cx);
                     div()
                         .flex()
                         .flex_col()
@@ -1070,6 +1084,7 @@ impl Gdirect {
                                 .child(file)
                                 .child(paste)
                         })
+                        .children(notice.filter(|_| !waiting).map(|n| n.pl(rem(12.))))
                 };
                 d.content(
                     div()
@@ -1110,7 +1125,15 @@ impl Gdirect {
                     b.bg(color(ColorRole::ERROR))
                         .text_color(color(ColorRole::ON_ERROR))
                 })
-                .disabled(client && !client_valid)
+                .map(|b| {
+                    // Loading disables it too.
+                    let disabled = client && !client_valid;
+                    if danger {
+                        b.disabled(disabled)
+                    } else {
+                        ui::flat_text_button(b, disabled || waiting)
+                    }
+                })
                 .loading(
                     waiting,
                     t("正在等待浏览器登录", "Waiting for sign-in in the browser"),
@@ -1156,14 +1179,16 @@ impl Gdirect {
                         .min_w_0(),
                     )
                     .child(
-                        material_button("client-summary-change", ButtonVariant::Text)
-                            .disabled(waiting)
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.client_summary = false;
-                                cx.notify();
-                            }))
-                            .accessibility_label(t("更换客户端", "Change client"))
-                            .child(t("更换…", "Change…")),
+                        ui::flat_text_button(
+                            material_button("client-summary-change", ButtonVariant::Text),
+                            waiting,
+                        )
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.client_summary = false;
+                            cx.notify();
+                        }))
+                        .accessibility_label(t("更换客户端", "Change client"))
+                        .child(t("更换…", "Change…")),
                     ),
             )
             .child(
@@ -1623,13 +1648,22 @@ impl Render for Gdirect {
             }
         };
         // Mounted only while open, so it never animates in from stale content.
-        let dialog = self
-            .dialog
-            .is_some()
-            .then(|| self.render_dialog(window, cx).into_any_element());
+        // Its scrim starts under the title bar: a press there moves the
+        // window rather than dismissing the dialog.
+        let dialog = self.dialog.is_some().then(|| {
+            div()
+                .absolute()
+                .top(TITLE_BAR)
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .child(self.render_dialog(window, cx))
+        });
+        let over_dialog = dialog.is_some();
         Self::on_actions(div(), cx)
             .track_focus(&self.focus)
             .key_context(keymap::APP)
+            .relative()
             .size_full()
             .flex()
             .flex_col()
@@ -1637,15 +1671,23 @@ impl Render for Gdirect {
             .bg(color(ColorRole::SURFACE_CONTAINER))
             .text_color(color(ColorRole::ON_SURFACE))
             .child(
-                TitleBar::new("title-bar", TITLE_BAR, labels)
-                    .bg(color(ColorRole::SURFACE_CONTAINER))
+                div()
+                    // Moving the window leaves the focus in an open dialog,
+                    // where the page's own focus would take it.
+                    .when(over_dialog, |d| {
+                        d.on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                    })
                     .child(
-                        ui::text(
-                            TypeRole::TitleSmall,
-                            ColorRole::ON_SURFACE_VARIANT,
-                            "gdirect",
-                        )
-                        .flex_1(),
+                        TitleBar::new("title-bar", TITLE_BAR, labels)
+                            .bg(color(ColorRole::SURFACE_CONTAINER))
+                            .child(
+                                ui::text(
+                                    TypeRole::TitleSmall,
+                                    ColorRole::ON_SURFACE_VARIANT,
+                                    "gdirect",
+                                )
+                                .flex_1(),
+                            ),
                     ),
             )
             .child(
@@ -1675,25 +1717,29 @@ impl Render for Gdirect {
                                 // in user content's face, Latin first, so a name's
                                 // hyphens do not read as dashes; the CJK face
                                 // still draws the Chinese around them.
-                                d.child(
-                                    ui::latin(div().absolute().inset_0()).child(
-                                        Snackbar::new("toast", message)
-                                            .position(SnackbarPosition::Center)
-                                            .when_some(undo, |s, view| {
-                                                s.action(t("撤销", "Undo"), move |_, _, cx| {
-                                                    let _ =
-                                                        view.update(cx, |this, cx| this.undo(cx));
-                                                })
+                                let snackbar = ui::latin(div().absolute().inset_0()).child(
+                                    Snackbar::new("toast", message)
+                                        .position(SnackbarPosition::Center)
+                                        .when_some(undo, |s, view| {
+                                            s.action(t("撤销", "Undo"), move |_, _, cx| {
+                                                let _ = view.update(cx, |this, cx| this.undo(cx));
                                             })
-                                            .on_dismiss(move |_, cx| {
-                                                let _ = view.update(cx, |this, cx| {
-                                                    this.toast = None;
-                                                    this.undo = None;
-                                                    cx.notify();
-                                                });
-                                            }),
-                                    ),
-                                )
+                                        })
+                                        .on_dismiss(move |_, cx| {
+                                            let _ = view.update(cx, |this, cx| {
+                                                this.toast = None;
+                                                this.undo = None;
+                                                cx.notify();
+                                            });
+                                        }),
+                                );
+                                // An open dialog draws deferred, over the page;
+                                // the snackbar then draws after it, on top.
+                                if over_dialog {
+                                    d.child(deferred(snackbar).with_priority(100))
+                                } else {
+                                    d.child(snackbar)
+                                }
                             }),
                     )
                     .children(self.render_modal_nav(viewport, cx)),

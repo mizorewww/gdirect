@@ -372,6 +372,15 @@ pub fn setting_row_stacked(
         .into_any_element()
 }
 
+/// A text button `disabled` without a container: the kit fills disabled
+/// buttons of every variant, after its Figma kit, where M3's disabled text
+/// button has none.
+pub fn flat_text_button(button: MaterialButton, disabled: bool) -> MaterialButton {
+    button
+        .disabled(disabled)
+        .when(disabled, |b| b.bg(gpui_kit::transparent_black()))
+}
+
 /// The look of a text button that cannot be pressed right now, without the
 /// filled container the kit gives disabled buttons.
 pub fn text_button_disabled(label: impl Into<SharedString>) -> Div {

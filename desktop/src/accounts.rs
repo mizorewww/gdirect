@@ -170,7 +170,8 @@ impl Gdirect {
             .flex()
             .flex_wrap()
             .items_center()
-            .gap_x(rem(8.))
+            // The text buttons' own padding spaces them: the row stays on
+            // one line in the welcome page's column.
             .gap_y(rem(4.))
             .child(
                 div()
@@ -204,8 +205,8 @@ impl Gdirect {
                     material_button("reopen-sign-in", ButtonVariant::Text)
                         .icon(Symbol::OPEN_IN_NEW)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, _| this.reopen_login()))
-                        .accessibility_label(t("重新打开登录页面", "Open the sign-in page again"))
-                        .child(t("重新打开登录页面", "Open the sign-in page again")),
+                        .accessibility_label(t("重新打开登录页", "Reopen sign-in page"))
+                        .child(t("重新打开登录页", "Reopen sign-in page")),
                 )
             })
     }

@@ -3,7 +3,7 @@
 //! page and the account dialog both show it.
 use crate::i18n::t;
 use crate::tf;
-use gdirect::auth::{CLIENT_ID_SUFFIX, Client, ClientError};
+use gdirect::auth::{CLIENT_ID_SUFFIX, Client, ClientError, Clip};
 use gpui_kit::base::input::{InputEvent, InputState};
 use gpui_kit::{prelude::*, *};
 use gpui_kit_material::icons::Symbol;
@@ -61,6 +61,9 @@ pub struct ClientForm {
     id_left: bool,
     secret_left: bool,
     submitted: bool,
+    /// Each field's value as it last changed, to put back when what was
+    /// pasted into it belongs in the other.
+    last: [String; 2],
     _subs: Vec<Subscription>,
 }
 
@@ -80,7 +83,7 @@ impl ClientForm {
                     move |this, state, event: &InputEvent, window, cx| match event {
                         InputEvent::Change => {
                             let value = state.read(cx).value().to_string();
-                            this.recognise(&value, window, cx);
+                            this.recognise(ix, &value, window, cx);
                             let values = this.values(cx);
                             if this.notice.as_ref().is_some_and(|n| n.values != values) {
                                 this.notice = None;
@@ -110,6 +113,7 @@ impl ClientForm {
             id_left: false,
             secret_left: false,
             submitted: false,
+            last: Default::default(),
             _subs: subs,
         }
     }
@@ -153,16 +157,39 @@ impl ClientForm {
         }
     }
 
-    /// A whole client pasted into either field fills in both. A single-line
-    /// field drops the new lines of what is pasted, so text that only reads
-    /// as a client with them is taken from the clipboard itself.
-    fn recognise(&mut self, value: &str, window: &mut Window, cx: &mut Context<Self>) {
+    /// A whole client pasted into either field fills in both, and a client
+    /// ID or secret pasted into the other's field moves to its own. A
+    /// single-line field drops the new lines of what is pasted, so text that
+    /// only reads as a client with them is taken from the clipboard itself.
+    fn recognise(&mut self, ix: usize, value: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let previous = std::mem::replace(&mut self.last[ix], value.to_owned());
         let value = value.trim();
-        if value.is_empty() || (!value.contains(char::is_whitespace) && valid_part(value)) {
+        if value.is_empty() {
+            return;
+        }
+        let pasted = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .unwrap_or_default();
+        if !value.contains(char::is_whitespace) && valid_part(value) {
+            // Typed text never moves: only what the clipboard holds.
+            if value != pasted.trim() {
+                return;
+            }
+            match Clip::from_text(value) {
+                Ok(Clip::Id(id)) if ix == 1 => {
+                    self.put(Some(id), Some(previous), window, cx);
+                    self.announce_part(true, cx);
+                }
+                Ok(Clip::Secret(secret)) if ix == 0 => {
+                    self.put(Some(previous), Some(secret), window, cx);
+                    self.announce_part(false, cx);
+                }
+                _ => {}
+            }
             return;
         }
         let client = Client::from_text(value).ok().or_else(|| {
-            let pasted = cx.read_from_clipboard()?.text()?;
             let joined = pasted.replace('\n', "");
             (!joined.trim().is_empty() && value.contains(joined.trim()))
                 .then(|| Client::from_text(&pasted).ok())
@@ -172,6 +199,41 @@ impl ClientForm {
             self.fill(Some(&client), window, cx);
             self.announce(filled_from_clipboard().to_owned(), true, cx);
         }
+    }
+
+    /// Sets the fields given, leaving the others as they are.
+    fn put(
+        &mut self,
+        id: Option<String>,
+        secret: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for (input, value) in [(&self.id, id), (&self.secret, secret)] {
+            if let Some(value) = value {
+                input.update(cx, |input, cx| input.set_value(value, window, cx));
+            }
+        }
+        cx.notify();
+    }
+
+    /// Reports a client ID (`id`) or secret filled in by itself: the form is
+    /// done when the other field is already valid, or asks for it.
+    fn announce_part(&mut self, id: bool, cx: &mut Context<Self>) {
+        let text = if self.valid(cx) {
+            filled_from_clipboard()
+        } else if id {
+            t(
+                "已填入客户端 ID，再粘贴客户端密钥。",
+                "Client ID filled in. Now paste the client secret.",
+            )
+        } else {
+            t(
+                "已填入客户端密钥，再粘贴客户端 ID。",
+                "Client secret filled in. Now paste the client ID.",
+            )
+        };
+        self.announce(text.to_owned(), true, cx);
     }
 
     pub fn client(&self, cx: &App) -> Client {
@@ -270,21 +332,26 @@ impl ClientForm {
             .read_from_clipboard()
             .and_then(|item| item.text())
             .unwrap_or_default();
-        let (message, ok) = if text.trim().is_empty() {
-            (
-                t("剪贴板是空的", "The clipboard is empty").to_owned(),
-                false,
-            )
-        } else {
-            match Client::from_text(&text) {
-                Ok(client) => {
-                    self.fill(Some(&client), window, cx);
-                    (filled_from_clipboard().to_owned(), true)
-                }
-                Err(e) => (problem(e, Source::Clipboard), false),
+        if text.trim().is_empty() {
+            let empty = t("剪贴板是空的。", "The clipboard is empty.");
+            self.announce(empty.to_owned(), false, cx);
+            return;
+        }
+        match Clip::from_text(&text) {
+            Ok(Clip::Client(client)) => {
+                self.fill(Some(&client), window, cx);
+                self.announce(filled_from_clipboard().to_owned(), true, cx);
             }
-        };
-        self.announce(message, ok, cx);
+            Ok(Clip::Id(id)) => {
+                self.put(Some(id), None, window, cx);
+                self.announce_part(true, cx);
+            }
+            Ok(Clip::Secret(secret)) => {
+                self.put(None, Some(secret), window, cx);
+                self.announce_part(false, cx);
+            }
+            Err(e) => self.announce(problem(e, Source::Clipboard), false, cx),
+        }
     }
 }
 
@@ -483,16 +550,18 @@ pub fn import_buttons(
 ) -> [AnyElement; 2] {
     let file = form.clone();
     let clipboard = form.clone();
+    let flat = |button: MaterialButton| match variant {
+        ButtonVariant::Text => crate::ui::flat_text_button(button, disabled),
+        _ => button.disabled(disabled),
+    };
     [
-        material_button("client-import", variant)
-            .disabled(disabled)
+        flat(material_button("client-import", variant))
             .icon(Symbol::UPLOAD_FILE)
             .on_click(move |_, window, cx| file.update(cx, |form, cx| form.import_file(window, cx)))
             .accessibility_label(t("从 JSON 文件导入…", "Import JSON file…"))
             .child(t("从 JSON 文件导入…", "Import JSON file…"))
             .into_any_element(),
-        material_button("client-paste", variant)
-            .disabled(disabled)
+        flat(material_button("client-paste", variant))
             .icon(Symbol::CONTENT_PASTE)
             .on_click(move |_, window, cx| clipboard.update(cx, |form, cx| form.paste(window, cx)))
             .accessibility_label(t("从剪贴板粘贴", "Paste from clipboard"))
