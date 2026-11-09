@@ -3,6 +3,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 mod accounts;
 mod app;
+mod client_form;
 mod endpoints;
 mod files;
 mod format;

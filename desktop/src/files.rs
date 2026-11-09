@@ -1879,9 +1879,9 @@ impl Gdirect {
             .item(
                 MaterialMenuItem::new(t("添加账号", "Add account"))
                     .leading(ui::symbol("person_add", false))
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.account_menu = false;
-                        this.add_account(cx);
+                        this.add_account(window, cx);
                     })),
             )
             .item(

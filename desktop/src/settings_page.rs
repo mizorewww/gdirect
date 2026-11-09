@@ -417,51 +417,125 @@ impl Gdirect {
                 section(t("Google 账号", "Google accounts"))
                     .child(ui::group(rows))
                     .child(
-                        div().pt(rem(4.)).flex().items_start().child(
-                            MaterialButton::new("add-account")
-                                .variant(ButtonVariant::Tonal)
-                                .icon(Symbol::PERSON_ADD)
-                                .loading(
-                                    self.signing_in,
-                                    t("正在等待浏览器登录", "Waiting for sign-in in the browser"),
+                        div()
+                            .pt(rem(4.))
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap(rem(8.))
+                            .child(
+                                MaterialButton::new("add-account")
+                                    .variant(ButtonVariant::Tonal)
+                                    .icon(Symbol::PERSON_ADD)
+                                    .loading(
+                                        self.signing_in,
+                                        t(
+                                            "正在等待浏览器登录",
+                                            "Waiting for sign-in in the browser",
+                                        ),
+                                    )
+                                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                        this.add_account(window, cx)
+                                    }))
+                                    .accessibility_label(t("添加账号", "Add account"))
+                                    .child(t("添加账号", "Add account")),
+                            )
+                            .when(self.signing_in, |d| {
+                                d.child(
+                                    material_button("cancel-sign-in", ButtonVariant::Text)
+                                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                            this.cancel_login(cx)
+                                        }))
+                                        .accessibility_label(t("取消登录", "Cancel sign-in"))
+                                        .child(t("取消登录", "Cancel sign-in")),
                                 )
-                                .on_click(
-                                    cx.listener(|this, _: &ClickEvent, _, cx| this.add_account(cx)),
-                                )
-                                .child(t("添加账号", "Add account")),
-                        ),
+                            }),
                     ),
             )
+            .child(section(t("OAuth 客户端", "OAuth client")).child(self.client_rows(cx)))
+    }
+
+    /// The saved OAuth client, its secret masked, and what can be done with it.
+    fn client_rows(&self, cx: &mut Context<Self>) -> Div {
+        let change = |id: &'static str, label: &'static str| {
+            material_button(id, ButtonVariant::Text)
+                .disabled(self.signing_in)
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.open_dialog(Dialog::Client { sign_in: false }, window, cx)
+                }))
+                .accessibility_label(label)
+                .child(label)
+        };
+        let Some(client) = &self.oauth_client else {
+            return ui::group(vec![ui::setting_row(
+                "key",
+                t("未设置", "Not set"),
+                Some(
+                    t(
+                        "登录用的“桌面应用”OAuth 客户端",
+                        "The “Desktop app” OAuth client to sign in with",
+                    )
+                    .into(),
+                ),
+                Some(change("client-set-up", t("设置…", "Set up…")).into_any_element()),
+            )]);
+        };
+        let actions = div()
+            .flex()
+            .flex_wrap()
+            .gap(rem(4.))
+            .pl(rem(ui::ROW_INDENT + 8.))
+            .pr(rem(12.))
+            .py(rem(8.))
             .child(
-                section(t("OAuth 客户端", "OAuth client")).child(ui::group(vec![
-                    ui::setting_row(
-                        "key",
-                        if self.oauth_client {
-                            t("桌面应用客户端 · 已保存", "Desktop app client · Saved")
-                        } else {
-                            t("未保存客户端", "No client saved")
-                        },
-                        Some(
+                material_button("client-copy", ButtonVariant::Text)
+                    .icon(Symbol::CONTENT_COPY)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.copy_client(cx)))
+                    .accessibility_label(t("复制为 JSON", "Copy as JSON"))
+                    .child(t("复制为 JSON", "Copy as JSON")),
+            )
+            .child(
+                material_button("client-export", ButtonVariant::Text)
+                    .icon(Symbol::FILE_SAVE)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.export_client(cx)))
+                    .accessibility_label(t("导出 JSON 文件…", "Export JSON file…"))
+                    .child(t("导出 JSON 文件…", "Export JSON file…")),
+            )
+            .child(
+                change("client-change", t("更换客户端…", "Change client…"))
+                    .icon(Symbol::SWAP_HORIZ),
+            );
+        ui::group(vec![
+            ui::setting_row_with(
+                "key",
+                crate::client_form::short_id(&client.client_id),
+                Some(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(ui::latin(ui::text(
+                            TypeRole::BodyMedium,
+                            ColorRole::ON_SURFACE_VARIANT,
+                            tf!(
+                                "客户端密钥 {}",
+                                "Client secret {}",
+                                crate::client_form::masked_secret(&client.client_secret)
+                            ),
+                        )))
+                        .child(ui::text(
+                            TypeRole::BodyMedium,
+                            ColorRole::ON_SURFACE_VARIANT,
                             t(
                                 "应用处于测试阶段时，每个账号都要加为测试用户，登录 7 天后过期",
                                 "While the app is in testing, add each account as a test user; sign-ins expire after 7 days",
-                            )
-                            .into(),
-                        ),
-                        Some(
-                            material_button("client-json", ButtonVariant::Text)
-                                .disabled(self.signing_in)
-                                .on_click(
-                                    cx.listener(|this, _: &ClickEvent, _, cx| {
-                                        this.choose_client(cx)
-                                    }),
-                                )
-                                .child(t("更换 JSON", "Replace JSON"))
-                                .into_any_element(),
-                        ),
-                    ),
-                ])),
-            )
+                            ),
+                        ))
+                        .into_any_element(),
+                ),
+                None,
+            ),
+            actions.into_any_element(),
+        ])
     }
 
     fn pane_transfer(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1583,6 +1657,7 @@ impl ShortcutsView {
                                     this.conflict = None;
                                     cx.notify();
                                 }))
+                                .accessibility_label(t("取消", "Cancel"))
                                 .child(t("取消", "Cancel")),
                         )
                         .child(

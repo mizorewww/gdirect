@@ -3,6 +3,7 @@
 use crate::i18n::t;
 use crate::tf;
 use crate::{
+    client_form::{ClientForm, ClientFormEvent},
     files::Undoable,
     keymap,
     places::{Filters, Location, Place},
@@ -71,6 +72,11 @@ pub enum Dialog {
     DeleteForever(Vec<File>),
     EmptyTrash,
     Logout(String),
+    /// The OAuth client form: to sign in (another account), or to change
+    /// the saved client without signing in.
+    Client {
+        sign_in: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,7 +129,11 @@ pub struct Gdirect {
     pub settings: Settings,
     pub accounts: Vec<String>,
     pub account: Option<String>,
-    pub oauth_client: bool,
+    /// The client the next sign-in uses.
+    pub oauth_client: Option<gdirect::auth::Client>,
+    pub client_form: Entity<ClientForm>,
+    /// Set to stop waiting for the browser sign-in in flight.
+    pub login_cancel: Option<Arc<AtomicBool>>,
     /// The Drive client on the chosen route; None until connected.
     pub api: Option<Api>,
     pub connecting: bool,
@@ -290,6 +300,7 @@ impl Gdirect {
         let search_input = cx
             .new(|cx| InputState::new(window, cx).placeholder(crate::files::search_placeholder()));
         let name_input = cx.new(|cx| InputState::new(window, cx));
+        let client_form = cx.new(|cx| ClientForm::new(window, cx));
         let connections = cx.new(|_| {
             SliderState::new()
                 .min(1.)
@@ -359,6 +370,15 @@ impl Gdirect {
                     }
                 },
             ),
+            cx.observe(&client_form, |_, _, cx| cx.notify()),
+            cx.subscribe_in(
+                &client_form,
+                window,
+                |this, _, event: &ClientFormEvent, window, cx| match event {
+                    ClientFormEvent::Submit => this.submit_client(window, cx),
+                    ClientFormEvent::Say(message) => this.say(message.clone(), cx),
+                },
+            ),
             cx.subscribe(&connections, |this, _, event: &SliderEvent, cx| {
                 let value = match event {
                     SliderEvent::Change(v) | SliderEvent::Release(v) => v.start(),
@@ -393,7 +413,9 @@ impl Gdirect {
             settings,
             accounts: Vec::new(),
             account: None,
-            oauth_client: false,
+            oauth_client: None,
+            client_form,
+            login_cancel: None,
             api: None,
             connecting: false,
             connect_error: None,
@@ -487,6 +509,9 @@ impl Gdirect {
             db,
         };
         this.reload_accounts();
+        let saved = this.oauth_client.clone();
+        this.client_form
+            .update(cx, |form, cx| form.fill(saved.as_ref(), window, cx));
         this.reload_endpoints();
         this.connect(cx);
         // The menu bar in the language the settings chose.
@@ -550,7 +575,7 @@ impl Gdirect {
     pub fn reload_accounts(&mut self) {
         self.accounts = self.db.accounts().unwrap_or_default();
         self.account = self.db.default_account().ok().flatten();
-        self.oauth_client = self.db.setting("oauth_client").ok().flatten().is_some();
+        self.oauth_client = gdirect::auth::saved_client(&self.db, None).ok().flatten();
         self.mount = self.account.as_ref().and_then(|account| {
             let raw = self.db.setting(&Store::mount_key(account)).ok().flatten()?;
             let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
@@ -753,6 +778,11 @@ impl Gdirect {
             });
             self.focus_name = Some(stem);
         }
+        if let Dialog::Client { .. } = dialog {
+            let saved = self.oauth_client.clone();
+            self.client_form
+                .update(cx, |form, cx| form.fill(saved.as_ref(), window, cx));
+        }
         self.focus_cancel = matches!(dialog, Dialog::DeleteForever(_) | Dialog::EmptyTrash);
         self.dialog = Some(dialog);
         cx.notify();
@@ -765,6 +795,10 @@ impl Gdirect {
     }
 
     pub fn confirm_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(Dialog::Client { .. }) = self.dialog {
+            self.submit_client(window, cx);
+            return;
+        }
         let name = self.name_input.read(cx).value().trim().to_string();
         // A name dialog stays open until it has a name to act on.
         if name.is_empty() && matches!(self.dialog, Some(Dialog::NewFolder | Dialog::Rename(_))) {
@@ -783,6 +817,7 @@ impl Gdirect {
             Dialog::DeleteForever(files) => self.delete_forever(files, cx),
             Dialog::EmptyTrash => self.empty_trash(cx),
             Dialog::Logout(account) => self.logout(account, cx),
+            Dialog::Client { .. } => unreachable!("submitted above"),
             _ => {}
         }
         cx.notify();
@@ -886,15 +921,43 @@ impl Gdirect {
                 false,
                 true,
             ),
+            Some(Dialog::Client { sign_in: true }) => (
+                t("添加 Google 账号", "Add a Google account").into(),
+                None,
+                t("登录 Google", "Sign in with Google"),
+                false,
+                false,
+            ),
+            Some(Dialog::Client { sign_in: false }) => (
+                t("更换 OAuth 客户端", "Change OAuth client").into(),
+                Some(
+                    t(
+                        "用于之后的登录，已登录的账号不受影响。",
+                        "Used for future sign-ins; signed-in accounts are unaffected.",
+                    )
+                    .into(),
+                ),
+                t("保存", "Save"),
+                false,
+                false,
+            ),
             None => (SharedString::default(), None, "", false, false),
         };
+        let client = matches!(self.dialog, Some(Dialog::Client { .. }));
+        let client_valid = self.client_form.read(cx).valid(cx);
         let view = cx.weak_entity();
         MaterialDialog::new("dialog")
             .modal(self.dialog.is_some())
             .size(DialogSize::Small)
             // A question's text reads on fewer, fuller lines than the name
             // field needs.
-            .width(if input { 360. } else { 440. })
+            .width(if client {
+                480.
+            } else if input {
+                360.
+            } else {
+                440.
+            })
             .headline(headline)
             .when_some(supporting, |d, s| d.supporting_text(s))
             .when(input, |d| {
@@ -909,6 +972,27 @@ impl Gdirect {
                                 .w_full(),
                         )
                         .children(focus_name),
+                )
+            })
+            .when(client, |d| {
+                let [file, paste] =
+                    crate::client_form::import_buttons(&self.client_form, ButtonVariant::Text);
+                d.content(
+                    div()
+                        .px(rem(24.))
+                        .pt(rem(8.))
+                        .flex()
+                        .flex_col()
+                        .gap(rem(8.))
+                        .child(crate::client_form::fields(&self.client_form, true, cx))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .gap(rem(4.))
+                                .child(file)
+                                .child(paste),
+                        ),
                 )
             })
             .action(
@@ -936,6 +1020,7 @@ impl Gdirect {
                     b.bg(color(ColorRole::ERROR))
                         .text_color(color(ColorRole::ON_ERROR))
                 })
+                .disabled(client && !client_valid)
                 .accessibility_label(confirm.to_owned())
                 .child(confirm.to_owned())
                 .on_click(
@@ -1124,7 +1209,13 @@ impl Gdirect {
         let want = std::mem::take(&mut self.focus_page);
         // Typing keeps its field: a page change the typing caused (search
         // results arriving) never takes the keys from it.
-        let fields = [
+        let welcome = self.accounts.is_empty() && self.page != Page::Settings;
+        let form = self.client_form.read(cx);
+        let form_fields = [
+            form.id.read(cx).focus_handle(cx),
+            form.secret.read(cx).focus_handle(cx),
+        ];
+        let mut fields = vec![
             self.search_input.read(cx).focus_handle(cx),
             self.filter_input.read(cx).focus_handle(cx),
         ];
@@ -1138,6 +1229,12 @@ impl Gdirect {
         if !files {
             stale.push(self.files_focus.clone());
             stale.extend(fields.iter().cloned());
+            fields.clear();
+        }
+        if welcome {
+            fields.extend(form_fields);
+        } else {
+            stale.extend(form_fields);
         }
         window.on_next_frame(move |window, cx| {
             let attached = window.focused(cx).is_some()
@@ -1154,10 +1251,16 @@ impl Gdirect {
     /// right after a page change must not meet the old page's focus.
     pub fn focus_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let files = self.page == Page::Files && !self.accounts.is_empty();
-        let typing = files
-            && [&self.search_input, &self.filter_input]
+        let form = self.client_form.read(cx);
+        let typing = if files {
+            [&self.search_input, &self.filter_input]
                 .iter()
-                .any(|input| input.read(cx).focus_handle(cx).is_focused(window));
+                .any(|input| input.read(cx).focus_handle(cx).is_focused(window))
+        } else {
+            [&form.id, &form.secret]
+                .iter()
+                .any(|input| input.read(cx).focus_handle(cx).is_focused(window))
+        };
         if typing || self.dialog.is_some() {
             return;
         }

@@ -1,24 +1,35 @@
 //! Signing in and out, switching accounts, and the background mount.
 use crate::i18n::t;
 use crate::tf;
-use crate::{app::Gdirect, ui};
-use gdirect::{api::Api, store::Store};
+use crate::{
+    app::{Dialog, Gdirect},
+    client_form, ui,
+};
+use gdirect::{
+    api::Api,
+    auth::{Client, LoginCancelled},
+    store::Store,
+};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::{prelude::*, *};
 use gpui_kit_material::icons::Symbol;
 use gpui_kit_material::prelude::*;
-use std::path::PathBuf;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 impl Gdirect {
-    /// Signs in in the browser, with a client JSON or the saved client.
-    pub fn login(&mut self, client: Option<PathBuf>, cx: &mut Context<Self>) {
+    /// Signs in in the browser with `client`, which is saved once it works.
+    pub fn login(&mut self, client: Client, cx: &mut Context<Self>) {
         if self.signing_in {
             return;
         }
         self.signing_in = true;
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.login_cancel = Some(cancel.clone());
         let db_path = self.db_path.clone();
         let current = self.account.clone();
-        let reauth = client.is_none();
         self.say(
             t(
                 "已在浏览器中打开 Google 登录页…",
@@ -28,11 +39,13 @@ impl Gdirect {
         );
         self.background(
             move || -> anyhow::Result<String> {
-                let api = Api::new(db_path, current, None, None, false)?;
-                api.login(reauth, client.as_deref(), None)
+                Api::new(db_path, current, None, None, false)?
+                    .cancellable(cancel)
+                    .login_with_client(&client)
             },
             |this, result, cx| {
                 this.signing_in = false;
+                this.login_cancel = None;
                 match result {
                     Ok(email) => {
                         this.say(
@@ -46,36 +59,97 @@ impl Gdirect {
                         this.reset_files();
                         this.connect(cx);
                     }
+                    Err(e) if e.is::<LoginCancelled>() => {
+                        this.say(t("已取消登录", "Sign-in cancelled"), cx)
+                    }
                     Err(e) => this.say(tf!("登录失败：{e:#}", "Sign-in failed: {e:#}"), cx),
                 }
+                cx.notify();
             },
+        );
+        cx.notify();
+    }
+
+    /// Stops waiting for the browser sign-in.
+    pub fn cancel_login(&mut self, cx: &mut Context<Self>) {
+        if let Some(cancel) = &self.login_cancel {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        cx.notify();
+    }
+
+    /// Acts on the client form: the welcome page's or the dialog's.
+    pub fn submit_client(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(client) = self.client_form.update(cx, |form, cx| form.submit(cx)) else {
+            return;
+        };
+        match self.dialog {
+            Some(Dialog::Client { sign_in: false }) => {
+                if let Err(e) = gdirect::auth::save_client(&self.db, &client) {
+                    self.say(format!("{e:#}"), cx);
+                    return;
+                }
+                self.reload_accounts();
+                self.say(t("已保存 OAuth 客户端", "OAuth client saved"), cx);
+            }
+            _ => self.login(client, cx),
+        }
+        if self.dialog.take().is_some() {
+            self.focus_page = true;
+            self.focus_now(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Signs in another account, through the client form.
+    pub fn add_account(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.signing_in {
+            self.open_dialog(Dialog::Client { sign_in: true }, window, cx);
+        }
+    }
+
+    /// Copies the saved client as JSON, which holds its secret.
+    pub fn copy_client(&mut self, cx: &mut Context<Self>) {
+        let Some(client) = &self.oauth_client else {
+            return;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(client.to_json()));
+        self.say(
+            t(
+                "已复制客户端 JSON。其中包含客户端密钥，请勿公开分享",
+                "Copied the client JSON. It contains the client secret; don’t share it publicly.",
+            ),
+            cx,
         );
     }
 
-    /// Asks for a Google Desktop OAuth client JSON and signs in with it.
-    pub fn choose_client(&mut self, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: Some(t("选择 OAuth 客户端 JSON", "Choose OAuth client JSON").into()),
-        });
+    /// Saves the client as a JSON file only its owner can read.
+    pub fn export_client(&mut self, cx: &mut Context<Self>) {
+        let Some(client) = self.oauth_client.clone() else {
+            return;
+        };
+        let dir = dirs::download_dir()
+            .or_else(dirs::home_dir)
+            .unwrap_or_default();
+        let rx = cx.prompt_for_new_path(&dir, Some("client_secret.json"));
         cx.spawn(async move |this, cx| {
-            if let Ok(Ok(Some(mut paths))) = rx.await
-                && let Some(path) = paths.pop()
-            {
-                let _ = this.update(cx, |this, cx| this.login(Some(path), cx));
-            }
+            let Ok(Ok(Some(path))) = rx.await else {
+                return;
+            };
+            let result = gdirect::auth::export_client(&client, &path);
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(()) => this.say(
+                    tf!(
+                        "已导出到 {}。其中包含客户端密钥，请妥善保管",
+                        "Exported to {}. It contains the client secret; keep it private.",
+                        path.display()
+                    ),
+                    cx,
+                ),
+                Err(e) => this.say(tf!("无法导出：{e:#}", "Couldn’t export: {e:#}"), cx),
+            });
         })
         .detach();
-    }
-
-    pub fn add_account(&mut self, cx: &mut Context<Self>) {
-        if self.oauth_client {
-            self.login(None, cx);
-        } else {
-            self.choose_client(cx);
-        }
     }
 
     fn reset_files(&mut self) {
@@ -220,11 +294,6 @@ impl Gdirect {
 
     /// Shown until the first account signs in.
     pub fn render_welcome(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let guide = if crate::i18n::chinese() {
-            "https://github.com/mizorewww/gdirect/blob/main/docs/configuration/README.zh-CN.md"
-        } else {
-            "https://github.com/mizorewww/gdirect/blob/main/docs/configuration/README.md"
-        };
         // A numbered step: what to do, then why or how.
         let step = |n: &'static str, title: &'static str, body: &'static str| {
             div()
@@ -259,6 +328,10 @@ impl Gdirect {
                         )),
                 )
         };
+        // Under a step's text, past its number.
+        let indented = || div().pl(rem(44.));
+        let valid = self.client_form.read(cx).valid(cx);
+        let [import, paste] = client_form::import_buttons(&self.client_form, ButtonVariant::Text);
         // The column keeps its own height, taller than a short window, and
         // the page scrolls to its buttons; a stretched one would be clipped.
         div()
@@ -305,33 +378,48 @@ impl Gdirect {
                             .p(rem(20.))
                             .rounded(rem(20.))
                             .bg(color(ColorRole::SURFACE_CONTAINER_LOW))
-                            .child(
-                                step(
-                                    "1",
-                                    t("创建你的客户端", "Create your client"),
-                                    t(
-                                        "在 Google Cloud 控制台新建项目，启用 Google Drive API，配置同意屏幕并把你的 Google 账号加为测试用户，然后创建“桌面应用”类型的 OAuth 客户端，下载它的 JSON 文件。配置指南里每一步都有截图。",
-                                        "In the Google Cloud console, create a project, enable the Google Drive API, set up the consent screen and add your Google account as a test user, then create an OAuth client of type “Desktop app” and download its JSON file. The setup guide shows every step with screenshots.",
-                                    ),
+                            .child(step(
+                                "1",
+                                t("创建你的客户端", "Create your client"),
+                                t(
+                                    "在 Google Cloud 控制台新建项目，启用 Google Drive API，配置同意屏幕并把你的 Google 账号加为测试用户，然后创建“桌面应用”类型的 OAuth 客户端。配置指南里每一步都有截图。",
+                                    "In the Google Cloud console, create a project, enable the Google Drive API, set up the consent screen and add your Google account as a test user, then create an OAuth client of type “Desktop app”. The setup guide shows every step with screenshots.",
                                 ),
-                            )
+                            ))
                             .child(
-                                div().pl(rem(44.)).child(
+                                indented().flex().flex_wrap().gap(rem(8.)).child(
                                     MaterialButton::new("open-guide")
                                         .variant(ButtonVariant::Tonal)
                                         .icon(Symbol::OPEN_IN_NEW)
-                                        .on_click(move |_, _, cx| cx.open_url(guide))
+                                        .on_click(|_, _, cx| cx.open_url(&client_form::guide(None)))
+                                        .accessibility_label(t("打开配置指南", "Open the setup guide"))
                                         .child(t("打开配置指南", "Open the setup guide")),
+                                )
+                                .child(
+                                    MaterialButton::new("open-console")
+                                        .variant(ButtonVariant::Outlined)
+                                        .icon(Symbol::OPEN_IN_NEW)
+                                        .on_click(|_, _, cx| cx.open_url(client_form::CONSOLE))
+                                        .accessibility_label(t("打开 Google Cloud 控制台", "Open Google Cloud console"))
+                                        .child(t("打开 Google Cloud 控制台", "Open Google Cloud console")),
                                 ),
                             )
                             .child(step(
                                 "2",
-                                t("选择下载的 JSON 文件", "Choose the downloaded JSON file"),
+                                t("填写 OAuth 客户端", "Enter your OAuth client"),
                                 t(
-                                    "点下面的按钮，选中刚下载的 client_secret_….json。gdirect 会保存它，以后不再需要这个文件。",
-                                    "Click the button below and pick the client_secret_….json you just downloaded. gdirect keeps a copy, so you won’t need the file again.",
+                                    "填写客户端 ID 和密钥，或者导入下载的 JSON 文件、从剪贴板粘贴。gdirect 会保存它，以后不必再填。",
+                                    "Enter the client ID and secret, or import the downloaded JSON file or paste from the clipboard. gdirect keeps a copy, so you only do this once.",
                                 ),
                             ))
+                            .child(
+                                indented()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(rem(8.))
+                                    .child(client_form::fields(&self.client_form, false, cx))
+                                    .child(div().flex().flex_wrap().gap(rem(4.)).child(import).child(paste)),
+                            )
                             .child(step(
                                 "3",
                                 t("在浏览器里登录", "Sign in with your browser"),
@@ -339,31 +427,38 @@ impl Gdirect {
                                     "浏览器会打开 Google 登录页。看到“Google 尚未验证此应用”时点“继续”——这是你自己创建的应用。授权后回到这里，文件就会出现。",
                                     "Your browser opens Google’s sign-in page. If it says “Google hasn’t verified this app”, choose Continue — it is the app you just created. After you allow access, come back here and your files appear.",
                                 ),
-                            )),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap(rem(8.))
+                            ))
                             .child(
-                                MaterialButton::new("choose-client")
-                                    .button_size(ButtonSize::Medium)
-                                    .icon(Symbol::KEY)
-                                    .loading(self.signing_in, t("正在等待浏览器登录", "Waiting for browser sign-in"))
-                                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.choose_client(cx)))
-                                    .child(t("选择客户端 JSON 并登录…", "Choose client JSON and sign in…")),
+                                indented()
+                                    .flex()
+                                    .flex_wrap()
+                                    .items_center()
+                                    .gap(rem(8.))
+                                    .child(
+                                        MaterialButton::new("sign-in")
+                                            .button_size(ButtonSize::Medium)
+                                            .icon(Symbol::LOGIN)
+                                            .disabled(!valid && !self.signing_in)
+                                            .loading(self.signing_in, t("正在等待浏览器登录", "Waiting for browser sign-in"))
+                                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.submit_client(window, cx)))
+                                            .accessibility_label(t("登录 Google", "Sign in with Google"))
+                                            .child(t("登录 Google", "Sign in with Google")),
+                                    )
+                                    .when(self.signing_in, |d| {
+                                        d.child(
+                                            material_button("cancel-sign-in", ButtonVariant::Text)
+                                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.cancel_login(cx)))
+                                                .accessibility_label(t("取消", "Cancel"))
+                                                .child(t("取消", "Cancel")),
+                                        )
+                                    }),
                             )
-                            .when(self.oauth_client, |d| {
-                                d.child(
-                                    MaterialButton::new("saved-client")
-                                        .button_size(ButtonSize::Medium)
-                                        .variant(ButtonVariant::Tonal)
-                                        .icon(Symbol::LOGIN)
-                                        .disabled(self.signing_in)
-                                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.login(None, cx)))
-                                        .child(t("用已保存的客户端登录", "Sign in with the saved client")),
-                                )
+                            .when(self.signing_in, |d| {
+                                d.child(indented().child(ui::text(
+                                    TypeRole::BodyMedium,
+                                    ColorRole::ON_SURFACE_VARIANT,
+                                    t("在浏览器中完成登录…", "Finish signing in in your browser…"),
+                                )))
                             }),
                     )
                     .child(notice_banner(
