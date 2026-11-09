@@ -28,11 +28,161 @@ pub struct Credentials {
     pub client_secret: String,
     pub refresh_token: String,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// A Google "Desktop app" OAuth client. Serialized flat, as the saved
+/// `oauth_client` setting; [`Client::to_json`] writes Google's download format.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Client {
     pub client_id: String,
     #[serde(default)]
     pub client_secret: String,
+}
+/// What every Google OAuth client ID ends with.
+pub const CLIENT_ID_SUFFIX: &str = ".apps.googleusercontent.com";
+const AUTH_URI: &str = "https://accounts.google.com/o/oauth2/auth";
+/// Why text could not be taken as a client; front ends word it themselves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClientError {
+    /// Neither a client JSON nor a client ID and secret.
+    Unrecognized,
+    /// A "Web application" client, which cannot sign in from a desktop.
+    WebClient,
+    /// The client ID does not end in [`CLIENT_ID_SUFFIX`].
+    ClientId,
+    MissingSecret,
+}
+impl std::fmt::Display for ClientError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Unrecognized => {
+                "not an OAuth client: expected the downloaded client JSON, or a client ID and secret"
+            }
+            Self::WebClient => {
+                "download a Desktop app OAuth client JSON (web clients are not supported)"
+            }
+            Self::ClientId => {
+                "invalid Google OAuth client ID: it ends in .apps.googleusercontent.com"
+            }
+            Self::MissingSecret => {
+                "the OAuth client secret is missing (Desktop app clients have one, usually GOCSPX-…)"
+            }
+        })
+    }
+}
+impl std::error::Error for ClientError {}
+// The secret stays out of logs and panics.
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.debug_struct("Client")
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"…")
+            .finish()
+    }
+}
+impl Client {
+    pub fn new(client_id: &str, client_secret: &str) -> Self {
+        Self {
+            client_id: client_id.trim().into(),
+            client_secret: client_secret.trim().into(),
+        }
+    }
+    /// A client JSON: Google's download (`{"installed": {…}}`) or a flat
+    /// `{"client_id", "client_secret"}`.
+    pub fn from_json(data: &[u8]) -> Result<Self, ClientError> {
+        let text = std::str::from_utf8(data).map_err(|_| ClientError::Unrecognized)?;
+        let value: Value =
+            serde_json::from_str(trimmed(text)).map_err(|_| ClientError::Unrecognized)?;
+        let fields = if value["installed"].is_object() {
+            &value["installed"]
+        } else if value["web"].is_object() {
+            return Err(ClientError::WebClient);
+        } else {
+            &value
+        };
+        let field = |name: &str| fields[name].as_str().unwrap_or_default();
+        if field("client_id").is_empty() {
+            return Err(ClientError::Unrecognized);
+        }
+        let client = Self::new(field("client_id"), field("client_secret"));
+        client.validate()?;
+        Ok(client)
+    }
+    /// Pasted text: a client JSON, or the client ID and secret in either
+    /// order, separated by spaces, new lines, a comma or a colon.
+    pub fn from_text(text: &str) -> Result<Self, ClientError> {
+        let text = trimmed(text);
+        if text.starts_with('{') {
+            return Self::from_json(text.as_bytes());
+        }
+        let tokens: Vec<&str> = text
+            .split(|c: char| c.is_whitespace() || c == ',' || c == ':')
+            .map(|t| t.trim_matches(|c| c == '"' || c == '\''))
+            .filter(|t| !t.is_empty())
+            .collect();
+        let ids: Vec<&str> = tokens
+            .iter()
+            .copied()
+            .filter(|t| t.ends_with(CLIENT_ID_SUFFIX))
+            .collect();
+        let others: Vec<&str> = tokens
+            .iter()
+            .copied()
+            .filter(|t| !t.ends_with(CLIENT_ID_SUFFIX))
+            .collect();
+        let secret = match others[..] {
+            [secret] => Some(secret),
+            // Labelled text, such as "Client secret: GOCSPX-…" copied from the console.
+            _ => match others
+                .iter()
+                .filter(|t| t.starts_with("GOCSPX-"))
+                .collect::<Vec<_>>()[..]
+            {
+                [secret] => Some(*secret),
+                _ => None,
+            },
+        };
+        match (&ids[..], secret) {
+            ([id], Some(secret)) => {
+                let client = Self::new(id, secret);
+                client.validate()?;
+                Ok(client)
+            }
+            ([], Some(secret)) if secret.starts_with("GOCSPX-") => Err(ClientError::ClientId),
+            _ => Err(ClientError::Unrecognized),
+        }
+    }
+    /// Whether this can be a Desktop app client: a Google client ID and a secret.
+    pub fn validate(&self) -> Result<(), ClientError> {
+        // The project number, a hyphen and a random part, then the suffix.
+        let prefix = self.client_id.strip_suffix(CLIENT_ID_SUFFIX);
+        if !prefix.is_some_and(|p| {
+            p.starts_with(|c: char| c.is_ascii_digit())
+                && p.contains('-')
+                && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        }) {
+            return Err(ClientError::ClientId);
+        }
+        if self.client_secret.is_empty() {
+            return Err(ClientError::MissingSecret);
+        }
+        Ok(())
+    }
+    /// Google's download format, which gdirect, rclone and Google's own
+    /// tools read back.
+    pub fn to_json(&self) -> String {
+        let value = serde_json::json!({
+            "installed": {
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+                "auth_uri": AUTH_URI,
+                "token_uri": TOKEN_URI,
+                "redirect_uris": ["http://localhost"],
+            }
+        });
+        serde_json::to_string_pretty(&value).expect("a JSON value serializes")
+    }
+}
+fn trimmed(text: &str) -> &str {
+    text.trim_start_matches('\u{feff}').trim()
 }
 impl Credentials {
     pub fn parse(data: &[u8]) -> Result<Self> {
@@ -131,34 +281,48 @@ pub fn refresh(credentials: &Credentials) -> Result<Token> {
     let (status, data) = post_token(TOKEN_URI, &credentials.refresh_form())?;
     refreshed(status, &data)
 }
+/// The client to sign in with: the saved one, or else the one the account
+/// (or the default account) signed in with.
+pub fn saved_client(db: &Store, account: Option<&str>) -> Result<Option<Client>> {
+    if let Some(raw) = db.setting("oauth_client")? {
+        return Ok(Some(serde_json::from_str(&raw)?));
+    }
+    let account = match account {
+        Some(account) => Some(account.to_owned()),
+        None => db.default_account()?,
+    };
+    Ok(
+        match account.map(|a| db.credentials(&a)).transpose()?.flatten() {
+            Some(raw) => Some(Credentials::parse(raw.as_bytes())?.client()),
+            None => None,
+        },
+    )
+}
+pub fn save_client(db: &Store, client: &Client) -> Result<()> {
+    client.validate()?;
+    db.set("oauth_client", &serde_json::to_string(client)?)
+}
+pub fn read_client(path: &Path) -> Result<Client> {
+    let data = fs::read(path).context("cannot read OAuth client JSON")?;
+    Ok(Client::from_json(&data)?)
+}
 pub fn prepare_login(
     db: &Store,
     account: Option<&str>,
-    client: Option<&Path>,
     import: Option<&Path>,
     reauth: bool,
 ) -> Result<Credentials> {
     if let Some(path) = import {
         return Credentials::parse(&fs::read(path).context("cannot read credentials JSON")?);
     }
-    if let Some(path) = client {
-        let data: Value =
-            serde_json::from_slice(&fs::read(path).context("cannot read OAuth client JSON")?)?;
-        ensure!(
-            data["installed"].is_object(),
-            "download a Desktop app OAuth client JSON (web clients are not supported)"
-        );
-        let client = serde_json::from_value(data["installed"].clone())
-            .context("OAuth client JSON is missing client_id")?;
-        return browser_login(&client);
-    }
     if reauth {
         // Any signed-in account's client works for adding another account.
-        let client = match db.setting("oauth_client")? {
-            Some(raw) => serde_json::from_str(&raw)?,
-            None => credentials(db, account.or(db.default_account()?.as_deref()))?.client(),
-        };
-        return browser_login(&client);
+        let client = saved_client(db, account)?.with_context(|| {
+            format!(
+                "no saved OAuth client: gdirect login --client-secret PATH\nSetup: {CONFIG_GUIDE}"
+            )
+        })?;
+        return browser_login(&client, &|| false);
     }
     credentials(db, account)
 }
@@ -190,12 +354,10 @@ fn callback(target: &str, state: &str) -> Result<Option<String>> {
             .clone(),
     ))
 }
-fn browser_login(client: &Client) -> Result<Credentials> {
+/// Signs in in the browser; `cancelled` is polled while waiting for it.
+pub fn browser_login(client: &Client, cancelled: &dyn Fn() -> bool) -> Result<Credentials> {
+    client.validate()?;
     let client_id = client.client_id.as_str();
-    ensure!(
-        client_id.ends_with(".apps.googleusercontent.com"),
-        "invalid Google OAuth client ID"
-    );
     let secret = client.client_secret.as_str();
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     listener.set_nonblocking(true)?;
@@ -238,6 +400,9 @@ fn browser_login(client: &Client) -> Result<Credentials> {
             Instant::now() < deadline,
             "browser login timed out; run the login command again"
         );
+        if cancelled() {
+            return Err(LoginCancelled.into());
+        }
         let (mut stream, _) = match listener.accept() {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -306,7 +471,17 @@ fn browser_login(client: &Client) -> Result<Credentials> {
         refresh_token: refresh_token.into(),
     })
 }
-pub fn export_credentials(credentials: &Credentials, path: &Path) -> Result<()> {
+/// The browser sign-in was cancelled before Google answered.
+#[derive(Debug)]
+pub struct LoginCancelled;
+impl std::fmt::Display for LoginCancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("sign-in cancelled")
+    }
+}
+impl std::error::Error for LoginCancelled {}
+/// Writes a file only its owner can read: it holds a secret.
+fn write_private(path: &Path, data: &[u8]) -> Result<()> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -320,8 +495,14 @@ pub fn export_credentials(credentials: &Credentials, path: &Path) -> Result<()> 
         use std::os::unix::fs::PermissionsExt;
         file.set_permissions(fs::Permissions::from_mode(0o600))?;
     }
-    file.write_all(serde_json::to_string(credentials)?.as_bytes())?;
+    file.write_all(data)?;
     Ok(())
+}
+pub fn export_credentials(credentials: &Credentials, path: &Path) -> Result<()> {
+    write_private(path, serde_json::to_string(credentials)?.as_bytes())
+}
+pub fn export_client(client: &Client, path: &Path) -> Result<()> {
+    write_private(path, format!("{}\n", client.to_json()).as_bytes())
 }
 #[cfg(test)]
 mod tests {
@@ -406,6 +587,120 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+    const ID: &str = "123-abc.apps.googleusercontent.com";
+    const SECRET: &str = "GOCSPX-test_Secret-1";
+    #[test]
+    fn client_json_formats() {
+        let installed = format!(
+            "\u{feff}\n {{\"installed\":{{\"client_id\":\" {ID} \",\"project_id\":\"p\",\"client_secret\":\"{SECRET}\",\"redirect_uris\":[\"http://localhost\"]}}}}\n"
+        );
+        let flat = format!("{{\"client_id\":\"{ID}\",\"client_secret\":\"{SECRET}\"}}");
+        for json in [installed, flat] {
+            let client = Client::from_json(json.as_bytes()).unwrap();
+            assert_eq!(client, Client::new(ID, SECRET));
+        }
+        let web = format!("{{\"web\":{{\"client_id\":\"{ID}\",\"client_secret\":\"{SECRET}\"}}}}");
+        assert_eq!(
+            Client::from_json(web.as_bytes()),
+            Err(ClientError::WebClient)
+        );
+        assert!(
+            ClientError::WebClient
+                .to_string()
+                .contains("Desktop app OAuth client")
+        );
+        let no_secret = format!("{{\"installed\":{{\"client_id\":\"{ID}\"}}}}");
+        assert_eq!(
+            Client::from_json(no_secret.as_bytes()),
+            Err(ClientError::MissingSecret)
+        );
+        assert_eq!(
+            Client::from_json(br#"{"client_id":"123","client_secret":"s"}"#),
+            Err(ClientError::ClientId)
+        );
+        for bad in [
+            &b"not json"[..],
+            b"{}",
+            b"[]",
+            b"{\"type\":\"service_account\"}",
+            b"\xff",
+        ] {
+            assert_eq!(Client::from_json(bad), Err(ClientError::Unrecognized));
+        }
+    }
+    #[test]
+    fn client_text_in_either_order() {
+        let expected = Client::new(ID, SECRET);
+        for text in [
+            format!("{ID} {SECRET}"),
+            format!("{SECRET}\n{ID}\n"),
+            format!("{ID},{SECRET}"),
+            format!("{SECRET}:{ID}"),
+            format!(" {ID}\r\n{SECRET} "),
+            format!("\"{ID}\", \"{SECRET}\""),
+            format!("Client ID\n{ID}\nClient secret\n{SECRET}"),
+            format!("{{\"client_id\":\"{ID}\",\"client_secret\":\"{SECRET}\"}}"),
+        ] {
+            assert_eq!(Client::from_text(&text), Ok(expected.clone()), "{text:?}");
+        }
+        // The secret need not look like Google's current format.
+        assert_eq!(
+            Client::from_text(&format!("{ID} legacy-secret"))
+                .unwrap()
+                .client_secret,
+            "legacy-secret"
+        );
+        assert_eq!(Client::from_text(ID), Err(ClientError::Unrecognized));
+        assert_eq!(Client::from_text(""), Err(ClientError::Unrecognized));
+        assert_eq!(
+            Client::from_text("hello world"),
+            Err(ClientError::Unrecognized)
+        );
+        assert_eq!(
+            Client::from_text(&format!("123 {SECRET}")),
+            Err(ClientError::ClientId)
+        );
+        assert_eq!(
+            Client::from_text(&format!("{ID} a b")),
+            Err(ClientError::Unrecognized)
+        );
+    }
+    #[test]
+    fn client_validation() {
+        assert!(Client::new(ID, SECRET).validate().is_ok());
+        assert_eq!(
+            Client::new(".apps.googleusercontent.com", SECRET).validate(),
+            Err(ClientError::ClientId)
+        );
+        assert_eq!(
+            Client::new("a b.apps.googleusercontent.com", SECRET).validate(),
+            Err(ClientError::ClientId)
+        );
+        // A secret pasted in front of the ID, its line break dropped.
+        assert_eq!(
+            Client::new(&format!("{SECRET}{ID}"), SECRET).validate(),
+            Err(ClientError::ClientId)
+        );
+        assert_eq!(
+            Client::new(ID, " ").validate(),
+            Err(ClientError::MissingSecret)
+        );
+        assert!(!format!("{:?}", Client::new(ID, SECRET)).contains(SECRET));
+    }
+    #[test]
+    fn client_json_round_trip() {
+        let client = Client::new(ID, SECRET);
+        let json = client.to_json();
+        let value: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["installed"]["redirect_uris"][0], "http://localhost");
+        assert_eq!(value["installed"]["token_uri"], TOKEN_URI);
+        assert_eq!(Client::from_json(json.as_bytes()), Ok(client.clone()));
+        assert_eq!(Client::from_text(&json), Ok(client.clone()));
+        // The saved setting stays flat.
+        let saved = serde_json::to_string(&client).unwrap();
+        assert_eq!(serde_json::from_str::<Client>(&saved).unwrap(), client);
+        assert_eq!(Client::from_json(saved.as_bytes()), Ok(client));
     }
     #[test]
     fn imported_credentials_cannot_redirect_tokens() {

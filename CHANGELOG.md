@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Desktop client: signing in starts from a form for the OAuth client ID and secret (the secret masked, with a show/hide toggle and inline checks), filled in by hand, from the downloaded JSON file, or from the clipboard; pasting the whole JSON, or the ID and secret together, into the Client ID field fills in both. Each field says where to find its value and links to the setup guide; a saved client is filled in already. Add account opens the same form in a dialog, and a sign-in waiting for the browser can be cancelled.
+- Desktop client: Settings › Account shows the saved OAuth client (secret masked) and can copy it as JSON, export it to a private file, or change it.
+- `gdirect login --client-id ID` signs in without the JSON file, reading the secret from `GDIRECT_CLIENT_SECRET` or asking for it with the input hidden; `gdirect login --export-client PATH|-` writes the saved client back out as a client JSON. Client JSON is read more tolerantly (a flat `client_id`/`client_secret` object, a byte-order mark), and a web client gets a clear error.
+- Setup guide: a section on copying the client ID and secret, and on adding a new secret when the original was not kept.
+
 ## 0.13.0
 
 ### Added

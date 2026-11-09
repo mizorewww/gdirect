@@ -54,6 +54,7 @@ Add `--with-mount` (PowerShell: `-WithMount`) to also install what `mount` needs
 
 ```sh
 gdirect login --client-secret ~/Downloads/client_secret.json
+# or, without the file: gdirect login --client-id ID   (asks for the secret)
 ```
 
 **4. Use it**

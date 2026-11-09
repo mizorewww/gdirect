@@ -54,6 +54,7 @@ paru -S gdirect-bin # 或 yay -S gdirect-bin（源码编译使用 gdirect-git）
 
 ```sh
 gdirect login --client-secret ~/Downloads/client_secret.json
+# 没有文件时：gdirect login --client-id ID   （会提示输入密钥）
 ```
 
 **4. 开始使用**

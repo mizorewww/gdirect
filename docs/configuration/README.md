@@ -10,7 +10,7 @@ Follow [Create a Google OAuth client](google-cloud.md). It walks through the Goo
 
 - a Google Cloud project with the Drive API enabled;
 - an OAuth app with the Drive scope, and your account allowed to sign in;
-- a downloaded **Desktop app** client JSON.
+- a **Desktop app** client: its client ID and secret, or its downloaded JSON.
 
 ## 2. Sign in
 
@@ -21,6 +21,14 @@ gdirect login --client-secret ~/Downloads/client_secret.json
 ```
 
 On Windows PowerShell, write the path as `"$HOME\Downloads\client_secret.json"`, again with your actual file name.
+
+Without the JSON, give the client ID and let gdirect ask for the secret (input is hidden), or set it in `GDIRECT_CLIENT_SECRET`. Either way it stays out of your shell history. [Where to find them](google-cloud.md#client-id-and-secret).
+
+```sh
+gdirect login --client-id 1234-abc.apps.googleusercontent.com
+```
+
+In the desktop client, enter the client ID and secret on the welcome page, or fill them in with **Import JSON file…** or **Paste from clipboard**, then click **Sign in with Google**.
 
 1. A browser opens on this computer. If it does not, copy the URL printed in the terminal into a browser **on the same computer**. Google sends the sign-in back to a temporary local port, so another device will not work.
 2. Choose the Google account you added as a test user.
@@ -36,7 +44,7 @@ On Windows PowerShell, write the path as `"$HOME\Downloads\client_secret.json"`,
 
 5. Return to the terminal and wait for `Logged in`.
 
-You can now delete the downloaded JSON. gdirect keeps a private copy of the client for `gdirect login --reauth`.
+You can now delete the downloaded JSON. gdirect keeps a private copy of the client for `gdirect login --reauth`; `gdirect login --export-client PATH` (or `-` for the terminal) writes it out again as a client JSON, and the desktop client can copy or export it from Settings › Account.
 
 Check that it works:
 

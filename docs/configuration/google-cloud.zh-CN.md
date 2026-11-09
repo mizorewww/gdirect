@@ -59,11 +59,20 @@ gdirect 需要这项完整的云端硬盘权限，才能浏览已有文件、下
 
    ![创建桌面应用客户端](images/09-desktop-client.png)
 
-2. 在弹出的窗口中，**关闭之前**点击 **Download JSON（下载 JSON）**。窗口关闭后就无法再下载这个文件；如果已经关掉了，重新创建一个客户端即可。
+2. 在弹出的窗口中，**关闭之前**复制 **Client ID（客户端 ID）** 和 **Client secret（客户端密钥）**，或者点击 **Download JSON（下载 JSON）**。密钥只在这个窗口里显示，关闭后就无法再查看或下载（找回方法见下文的“添加新密钥”）。
 
    ![下载客户端 JSON](images/10-client-created.png)
 
 只能使用 **Desktop app（桌面应用）** 客户端。网页客户端、API Key 和服务账号 JSON 都不能用。
+
+<a id="client-id-and-secret"></a>
+
+### 复制客户端 ID 和密钥
+
+gdirect 需要客户端的两个值。可以在 gdirect 的登录表单里逐项填写或粘贴；也可以把下载的整个 JSON（或者 ID 和密钥一起）粘贴到“客户端 ID”框里，两项会自动填好。桌面客户端的“从 JSON 文件导入…”可以直接读取下载的文件。
+
+- **客户端 ID** 以 `.apps.googleusercontent.com` 结尾。创建时的窗口里会显示；之后也可以随时复制：打开 [Google Auth Platform › 客户端](https://console.cloud.google.com/auth/clients)，点开你的桌面应用客户端即可。
+- **客户端密钥** 通常以 `GOCSPX-` 开头。创建时的窗口里会显示，下载的 JSON 中也有。如果关闭窗口时没有保存，可以在[客户端](https://console.cloud.google.com/auth/clients)列表中点开这个客户端，在 **Client secrets（客户端密钥）** 下点击 **Add secret（添加密钥）**，立即复制新密钥；之后可以停用或删除旧密钥。
 
 ## 5. 允许你的账号登录
 
@@ -79,4 +88,4 @@ gdirect 需要这项完整的云端硬盘权限，才能浏览已有文件、下
 
 ## 下一步
 
-客户端 JSON 已经准备好了，接下来[用 gdirect 登录](README.zh-CN.md#2-登录)。
+客户端 ID 和密钥（或 JSON）已经准备好了，接下来[用 gdirect 登录](README.zh-CN.md#2-登录)。

@@ -116,11 +116,15 @@ gdirect upload ./photos -r --parent FOLDER_ID --name "照片备份"
 
 ```sh
 gdirect login --add                # 在浏览器里选择另一个账号
+gdirect login --client-id ID       # 用客户端 ID 登录，密钥会提示输入（或用 GDIRECT_CLIENT_SECRET）
+gdirect login --export-client -    # 以 JSON 输出已保存的 OAuth 客户端（包含密钥）
 gdirect accounts                   # * 表示默认账号
 gdirect switch work                # 把 work@… 设为默认账号
 gdirect -a me@gmail.com browse     # 只在这一条命令里使用某个账号
 gdirect logout work                # 退出一个账号（--all 退出全部）
 ```
+
+`--client-id` 和密钥来自你在 Google Cloud 控制台 › Google Auth Platform › 客户端 中的桌面应用客户端：[在哪里找到](configuration/google-cloud.zh-CN.md#client-id-and-secret)。
 
 所有命令都接受 `-a`/`--account`，值可以是完整邮箱，也可以是不会混淆的前缀；在 shell 或脚本里可以用 `GDIRECT_ACCOUNT` 设置。最近一次登录的账号会成为默认账号，`browse` 的标题栏会显示当前账号。每个账号有各自的文件夹缓存和上传会话，也可以同时挂载（各用一个目录）。OAuth 应用处于测试状态时，每个账号都要加为测试用户（见[第 5 步](configuration/google-cloud.zh-CN.md#5-允许你的账号登录)）。
 

@@ -10,7 +10,7 @@ gdirect 使用你在自己的 Google Cloud 项目里创建的 OAuth 客户端登
 
 - 一个已启用 Drive API 的 Google Cloud 项目；
 - 一个已添加 Drive 权限范围、并允许你的账号登录的 OAuth 应用；
-- 一个已下载的 **Desktop app（桌面应用）** 客户端 JSON。
+- 一个 **Desktop app（桌面应用）** 客户端：它的客户端 ID 和密钥，或者下载的 JSON。
 
 ## 2. 登录
 
@@ -21,6 +21,14 @@ gdirect login --client-secret ~/Downloads/client_secret.json
 ```
 
 在 Windows PowerShell 中，路径写成 `"$HOME\Downloads\client_secret.json"`，同样换成你实际下载的文件名。
+
+没有 JSON 文件时，可以只给出客户端 ID，gdirect 会让你输入密钥（输入时不显示），也可以把密钥放在环境变量 `GDIRECT_CLIENT_SECRET` 里。这两种方式都不会把密钥留在命令历史中。[在哪里找到 ID 和密钥](google-cloud.zh-CN.md#client-id-and-secret)。
+
+```sh
+gdirect login --client-id 1234-abc.apps.googleusercontent.com
+```
+
+在桌面客户端中，可以在欢迎页直接填写客户端 ID 和密钥，或者用“从 JSON 文件导入…”“从剪贴板粘贴”填入，然后点击“登录 Google”。
 
 1. 程序会在这台电脑上打开浏览器。如果没有自动打开，请把终端里打印的链接复制到**同一台电脑**的浏览器中。授权完成后会回调到本机的临时端口，所以不能在手机或其他电脑上打开。
 2. 选择刚才添加为测试用户的 Google 账号。
@@ -36,7 +44,7 @@ gdirect login --client-secret ~/Downloads/client_secret.json
 
 5. 回到终端，等待显示 `Logged in`。
 
-登录完成后可以删除下载的 JSON 文件。gdirect 已保存了一份客户端信息，以后执行 `gdirect login --reauth` 时会用到。
+登录完成后可以删除下载的 JSON 文件。gdirect 已保存了一份客户端信息，以后执行 `gdirect login --reauth` 时会用到；`gdirect login --export-client 路径`（用 `-` 则输出到终端）可以把它重新导出为客户端 JSON，桌面客户端也可以在“设置 › 账号”里复制或导出。
 
 检查是否可用：
 

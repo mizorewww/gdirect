@@ -59,11 +59,20 @@ gdirect needs this full Drive scope to browse your existing files, download, upl
 
    ![Create a Desktop app client](images/09-desktop-client.png)
 
-2. In the dialog that appears, click **Download JSON** **before** you close it. Once the dialog is closed, the file cannot be downloaded again. If that happens, create another client.
+2. In the dialog that appears, copy the **Client ID** and **Client secret**, or click **Download JSON**, **before** you close it. Google shows the secret only in this dialog; afterwards it can no longer be viewed or downloaded (see below for adding a new one).
 
    ![Download the client JSON](images/10-client-created.png)
 
 Only a **Desktop app** client works. A web client, an API key or a service-account JSON will not.
+
+<a id="client-id-and-secret"></a>
+
+### Copy the client ID and secret
+
+gdirect needs two values from the client. You can type or paste them into gdirect's sign-in form one at a time, or paste the whole downloaded JSON (or the ID and secret together) into the Client ID field, and it fills in both. The desktop client's **Import JSON file…** reads the downloaded file.
+
+- **Client ID** ends in `.apps.googleusercontent.com`. It is shown in the creation dialog, and you can copy it at any time: open [Google Auth Platform › Clients](https://console.cloud.google.com/auth/clients) and click your Desktop app client.
+- **Client secret** usually starts with `GOCSPX-`. It is shown in the creation dialog and is inside the downloaded JSON. If you closed the dialog without keeping it, open the client in [Clients](https://console.cloud.google.com/auth/clients), click **Add secret** under **Client secrets**, and copy the new secret right away. You can then disable or delete the old one.
 
 ## 5. Allow your account to sign in
 
@@ -79,4 +88,4 @@ To avoid signing in every week, you can click **Publish app** at the top of the 
 
 ## Next
 
-You now have the client JSON. [Sign in with gdirect](README.md#2-sign-in).
+You now have the client ID and secret (or its JSON). [Sign in with gdirect](README.md#2-sign-in).

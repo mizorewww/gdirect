@@ -633,28 +633,45 @@ impl Api {
             .context("Drive API did not return an account")?
             .into())
     }
+    /// Signs in with a client JSON file, the saved client (`reauth`), or
+    /// imported credentials; without any, checks the saved login.
     pub fn login(
         &self,
         reauth: bool,
         client: Option<&Path>,
         import: Option<&Path>,
     ) -> Result<String> {
+        if let Some(path) = client {
+            return self.login_with_client(&crate::auth::read_client(path)?);
+        }
         let db = Store::open(&self.db)?;
-        let credentials =
-            crate::auth::prepare_login(&db, self.account.as_deref(), client, import, reauth)?;
-        let token = crate::auth::refresh(&credentials)?;
+        let credentials = crate::auth::prepare_login(&db, self.account.as_deref(), import, reauth)?;
+        self.finish_login(&db, &credentials)
+    }
+    /// Signs in in the browser with `client` and saves it for later sign-ins.
+    /// A [`cancellable`](Self::cancellable) client stops waiting once cancelled.
+    pub fn login_with_client(&self, client: &crate::auth::Client) -> Result<String> {
+        let credentials = crate::auth::browser_login(client, &|| self.cancelled())?;
+        let db = Store::open(&self.db)?;
+        let email = self.finish_login(&db, &credentials)?;
+        self.save_client(client)?;
+        Ok(email)
+    }
+    fn finish_login(&self, db: &Store, credentials: &crate::auth::Credentials) -> Result<String> {
+        let token = crate::auth::refresh(credentials)?;
         // Whichever account was chosen in the browser is added (or updated) and becomes the default.
         let email = self.account_for_token(&token.access_token)?;
-        db.save_account(&email, &serde_json::to_string(&credentials)?)?;
-        if client.is_some() {
-            db.set(
-                "oauth_client",
-                &serde_json::to_string(&credentials.client())?,
-            )?;
-        }
+        db.save_account(&email, &serde_json::to_string(credentials)?)?;
         db.save_token(&email, &token.access_token, token.expires_in)?;
         db.set_default_account(&email)?;
         Ok(email)
+    }
+    /// The client the next sign-in uses; see [`crate::auth::saved_client`].
+    pub fn saved_client(&self) -> Result<Option<crate::auth::Client>> {
+        crate::auth::saved_client(&Store::open(&self.db)?, self.account.as_deref())
+    }
+    pub fn save_client(&self, client: &crate::auth::Client) -> Result<()> {
+        crate::auth::save_client(&Store::open(&self.db)?, client)
     }
     fn get(&self, path: &str, query: &[(String, String)]) -> Result<serde_json::Value> {
         self.request(reqwest::Method::GET, path, query, None)

@@ -86,18 +86,31 @@ enum Commands {
         )]
         bypass_tun: Option<bool>,
     },
-    /// Sign in with a Google Desktop OAuth client JSON; signing in again adds another account
+    /// Sign in with a Google Desktop OAuth client; signing in again adds another account
     Login {
         /// Sign in in the browser using the saved OAuth client; the account you
         /// choose there is added (or renewed) and becomes the default
         #[arg(long, visible_alias = "add")]
         reauth: bool,
         /// Google Desktop OAuth client JSON (opens browser)
-        #[arg(long, conflicts_with = "credentials")]
+        #[arg(long, value_name = "PATH", conflicts_with_all = ["credentials", "client_id"])]
         client_secret: Option<PathBuf>,
+        /// Desktop OAuth client ID (opens browser); the secret is read from
+        /// GDIRECT_CLIENT_SECRET or asked for. Both are under Google Auth
+        /// Platform › Clients: https://github.com/mizorewww/gdirect/blob/main/docs/configuration/google-cloud.md#client-id-and-secret
+        #[arg(long, value_name = "ID", conflicts_with_all = ["credentials", "reauth"])]
+        client_id: Option<String>,
         /// Import existing authorized_user credentials JSON (e.g. on a headless server)
         #[arg(long, conflicts_with = "reauth")]
         credentials: Option<PathBuf>,
+        /// Write the saved OAuth client as JSON to PATH, or to standard output
+        /// with -, and exit; it contains the client secret
+        #[arg(
+            long,
+            value_name = "PATH",
+            conflicts_with_all = ["reauth", "client_secret", "client_id", "credentials"]
+        )]
+        export_client: Option<PathBuf>,
     },
     /// Remove an account's saved credentials (default: the default account); scanned IPs are kept
     Logout {
@@ -350,7 +363,9 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Login {
             reauth,
             client_secret,
+            client_id,
             credentials,
+            export_client,
         } => {
             // The very first login has no account to pick yet.
             let current = if db.accounts()?.is_empty() {
@@ -359,12 +374,34 @@ fn run(cli: Cli) -> Result<()> {
                 account()?
             };
             let api = api::Api::new(db_path, current, None, None, false)?;
-            let email = api.login(reauth, client_secret.as_deref(), credentials.as_deref())?;
+            if let Some(path) = export_client {
+                let client = api.saved_client()?.context(
+                    "no saved OAuth client; sign in first: gdirect login --client-secret PATH",
+                )?;
+                if path.as_os_str() == "-" {
+                    println!("{}", client.to_json());
+                } else {
+                    gdirect::auth::export_client(&client, &path)?;
+                    eprintln!(
+                        "Saved the OAuth client to {}. It contains the client secret: keep it private.",
+                        path.display()
+                    );
+                }
+                return Ok(());
+            }
+            let email = match &client_id {
+                Some(id) => {
+                    let client = gdirect::auth::Client::new(id, &client_secret_input()?);
+                    client.validate()?;
+                    api.login_with_client(&client)?
+                }
+                None => api.login(reauth, client_secret.as_deref(), credentials.as_deref())?,
+            };
             println!(
                 "Logged in: {email} (default account)\nSQLite: {}",
                 api.db.display()
             );
-            if !reauth && client_secret.is_none() && credentials.is_none() {
+            if !reauth && client_secret.is_none() && client_id.is_none() && credentials.is_none() {
                 println!("To add another account: gdirect login --add");
             }
         }
@@ -456,6 +493,48 @@ fn run(cli: Cli) -> Result<()> {
         }
     }
     Ok(())
+}
+/// The client secret for --client-id, from the environment or typed without
+/// echo, so it stays out of shell history.
+fn client_secret_input() -> Result<String> {
+    if let Ok(secret) = std::env::var("GDIRECT_CLIENT_SECRET")
+        && !secret.trim().is_empty()
+    {
+        return Ok(secret);
+    }
+    use std::io::IsTerminal;
+    let mut secret = String::new();
+    if !std::io::stdin().is_terminal() {
+        std::io::stdin().read_line(&mut secret)?;
+        return Ok(secret);
+    }
+    use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+    eprint!("Client secret (input hidden): ");
+    crossterm::terminal::enable_raw_mode()?;
+    let typed = (|| -> Result<bool> {
+        loop {
+            if let Event::Key(key) = event::read()?
+                && key.kind != KeyEventKind::Release
+            {
+                match key.code {
+                    KeyCode::Enter => return Ok(true),
+                    KeyCode::Esc => return Ok(false),
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        return Ok(false);
+                    }
+                    KeyCode::Backspace => {
+                        secret.pop();
+                    }
+                    KeyCode::Char(c) => secret.push(c),
+                    _ => {}
+                }
+            }
+        }
+    })();
+    crossterm::terminal::disable_raw_mode()?;
+    eprintln!();
+    ensure!(typed?, "sign-in cancelled");
+    Ok(secret)
 }
 fn logout(db: &store::Store, all: bool, name: Option<&str>) -> Result<()> {
     let accounts = if all {
@@ -681,6 +760,11 @@ mod tests {
         ));
         assert!(parse(&["logout", "a@example.com", "--all"]).is_err());
         assert!(parse(&["login", "--add"]).is_ok());
+        assert!(parse(&["login", "--client-id", "x.apps.googleusercontent.com"]).is_ok());
+        assert!(parse(&["login", "--client-id", "x", "--client-secret", "f.json"]).is_err());
+        assert!(parse(&["login", "--client-id", "x", "--add"]).is_err());
+        assert!(parse(&["login", "--export-client", "-"]).is_ok());
+        assert!(parse(&["login", "--export-client", "-", "--add"]).is_err());
         let cli = parse(&["ls", "-a", "work"]).unwrap();
         assert_eq!(cli.account.as_deref(), Some("work"));
         assert!(parse(&["switch"]).is_err());

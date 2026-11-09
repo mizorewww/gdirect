@@ -106,11 +106,15 @@ Sign in to more Google accounts with the same OAuth client:
 
 ```sh
 gdirect login --add                # choose another account in the browser
+gdirect login --client-id ID       # sign in with a client ID; the secret is asked for (or GDIRECT_CLIENT_SECRET)
+gdirect login --export-client -    # print the saved OAuth client as JSON (it contains the secret)
 gdirect accounts                   # * marks the default account
 gdirect switch work                # make work@… the default
 gdirect -a me@gmail.com browse     # use one account for a single command
 gdirect logout work                # sign out one account (--all for every one)
 ```
+
+`--client-id` and the secret come from your Desktop app client in Google Cloud console › Google Auth Platform › Clients: [where to find them](configuration/google-cloud.md#client-id-and-secret).
 
 Every command takes `-a`/`--account` with a full address or an unambiguous prefix; `GDIRECT_ACCOUNT` sets it for a shell or script. The account you last signed in with becomes the default, and `browse` shows the current account in its header. Each account has its own folder cache and upload sessions, and can be mounted at the same time as the others (pick a different directory). While your OAuth app is in Testing, every account must be added as a test user ([step 5](configuration/google-cloud.md#5-allow-your-account-to-sign-in)).
 
