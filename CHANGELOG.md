@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- An OAuth client ID that is the project number alone, without the hyphen and random part (`123456789012.apps.googleusercontent.com`, as older clients have), was rejected as not a client ID, in the desktop sign-in form, from the clipboard or a JSON file, and by `gdirect login --client-id`.
+
 ### Changed
 
 - Desktop client: gpui-kit-material and gpui-kit now come from crates.io (0.1 and 0.9.1), so building it no longer needs a gpui-kit-material checkout beside this repository or a `[patch]` table.

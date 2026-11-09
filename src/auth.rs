@@ -199,11 +199,11 @@ impl Client {
     }
     /// Whether this can be a Desktop app client: a Google client ID and a secret.
     pub fn validate(&self) -> Result<(), ClientError> {
-        // The project number, a hyphen and a random part, then the suffix.
+        // The project number, usually a hyphen and a random part (older
+        // clients have the number alone), then the suffix.
         let prefix = self.client_id.strip_suffix(CLIENT_ID_SUFFIX);
         if !prefix.is_some_and(|p| {
             p.starts_with(|c: char| c.is_ascii_digit())
-                && p.contains('-')
                 && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
         }) {
             return Err(ClientError::ClientId);
@@ -794,6 +794,12 @@ mod tests {
     #[test]
     fn client_validation() {
         assert!(Client::new(ID, SECRET).validate().is_ok());
+        // An older client: the project number alone.
+        assert!(
+            Client::new("32555940559.apps.googleusercontent.com", SECRET)
+                .validate()
+                .is_ok()
+        );
         assert_eq!(
             Client::new(".apps.googleusercontent.com", SECRET).validate(),
             Err(ClientError::ClientId)
