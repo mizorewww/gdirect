@@ -1,7 +1,7 @@
 # Maintainer: mizorewww <mizorewww@users.noreply.github.com>
 
 pkgname=gdirect-desktop-bin
-pkgver=0.13.1
+pkgver=0.13.2
 pkgrel=1
 pkgdesc="Desktop client for gdirect: browse, transfer and mount Google Drive"
 arch=('x86_64')
@@ -25,7 +25,7 @@ optdepends=(
 provides=('gdirect-desktop')
 conflicts=('gdirect-desktop')
 source_x86_64=("${pkgname}-${pkgver}.tar.gz::https://github.com/mizorewww/gdirect/releases/download/v${pkgver}/gdirect-desktop-linux-x64.tar.gz")
-sha256sums_x86_64=('d5901b8901121e71f878377641c12dcc99a693db47121e2ba893eb0b0785e12f')
+sha256sums_x86_64=('bba9608baf8a71582439263ce1a32542b672fcf6d1b0791e0304068c639d9934')
 
 package() {
   cd "${srcdir}/gdirect-desktop"

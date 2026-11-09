@@ -1,7 +1,7 @@
 # Maintainer: mizorewww <mizorewww@users.noreply.github.com>
 
 pkgname=gdirect-bin
-pkgver=0.13.1
+pkgver=0.13.2
 pkgrel=1
 pkgdesc="Browse, download, upload and mount Google Drive"
 arch=('x86_64')
@@ -18,7 +18,7 @@ optdepends=(
 provides=('gdirect')
 conflicts=('gdirect')
 source_x86_64=("${pkgname}-${pkgver}.tar.gz::https://github.com/mizorewww/gdirect/releases/download/v${pkgver}/gdirect-${pkgver}-${CARCH}-unknown-linux-gnu.tar.gz")
-sha256sums_x86_64=('5c216e957ad1c2e32c860d064cd645281a041f92834b094f71552d8a21d34f6d')
+sha256sums_x86_64=('2b272e727a50ae3567b709964106260c59608e2c52e0be79bb7d9a0b4ea48511')
 
 package() {
   cd "${srcdir}/gdirect-${pkgver}-${CARCH}-unknown-linux-gnu"
