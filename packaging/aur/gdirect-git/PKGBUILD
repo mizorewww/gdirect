@@ -1,7 +1,7 @@
 # Maintainer: mizorewww <mizorewww@users.noreply.github.com>
 
 pkgname=gdirect-git
-pkgver=0.13.0.r0.g5a048b2
+pkgver=0.13.1.r0.g7410b2b
 pkgrel=1
 pkgdesc="Browse, download, upload and mount Google Drive"
 arch=('x86_64')
