@@ -1,6 +1,6 @@
 [package]
 name = "gdirect"
-version = "0.13.1"
+version = "0.13.2"
 edition = "2024"
 description = "Browse, transfer and mount Google Drive with native Google authentication"
 license = "GPL-2.0-or-later"

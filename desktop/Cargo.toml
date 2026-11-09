@@ -2,7 +2,7 @@
 # release pipeline never resolve the GUI stack.
 [package]
 name = "gdirect-desktop"
-version = "0.13.1"
+version = "0.13.2"
 edition = "2024"
 description = "Desktop client for gdirect: browse, transfer and mount Google Drive"
 license = "GPL-2.0-or-later"
