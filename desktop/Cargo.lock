@@ -2088,7 +2088,7 @@ dependencies = [
 
 [[package]]
 name = "gdirect"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2114,7 +2114,7 @@ dependencies = [
 
 [[package]]
 name = "gdirect-desktop"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "chrono",
