@@ -427,28 +427,15 @@ impl Gdirect {
                                 MaterialButton::new("add-account")
                                     .variant(ButtonVariant::Tonal)
                                     .icon(Symbol::PERSON_ADD)
-                                    .loading(
-                                        self.signing_in,
-                                        t(
-                                            "正在等待浏览器登录",
-                                            "Waiting for sign-in in the browser",
-                                        ),
-                                    )
+                                    // While a sign-in waits, it starts a fresh one.
                                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                         this.add_account(window, cx)
                                     }))
                                     .accessibility_label(t("添加账号", "Add account"))
                                     .child(t("添加账号", "Add account")),
                             )
-                            .when(self.signing_in, |d| {
-                                d.child(
-                                    material_button("cancel-sign-in", ButtonVariant::Text)
-                                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                            this.cancel_login(cx)
-                                        }))
-                                        .accessibility_label(t("取消登录", "Cancel sign-in"))
-                                        .child(t("取消登录", "Cancel sign-in")),
-                                )
+                            .when(self.signing_in && self.dialog.is_none(), |d| {
+                                d.child(self.render_waiting(true, cx))
                             }),
                     ),
             )

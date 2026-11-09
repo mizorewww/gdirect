@@ -21,33 +21,50 @@ use std::sync::{
 
 impl Gdirect {
     /// Signs in in the browser with `client`, which is saved once it works.
+    /// A sign-in still waiting is dropped for this one.
     pub fn login(&mut self, client: Client, cx: &mut Context<Self>) {
-        if self.signing_in {
-            return;
-        }
+        self.abandon_login();
+        self.login_serial += 1;
+        let serial = self.login_serial;
         self.signing_in = true;
+        self.login_error = None;
         let cancel = Arc::new(AtomicBool::new(false));
         self.login_cancel = Some(cancel.clone());
         let db_path = self.db_path.clone();
         let current = self.account.clone();
-        self.say(
-            t(
-                "已在浏览器中打开 Google 登录页…",
-                "Opened Google sign-in in your browser…",
-            ),
-            cx,
-        );
+        let tx = self.sender();
         self.background(
             move || -> anyhow::Result<String> {
+                // The page opens now; its address is kept to open it again.
+                let open = move |url: &str| {
+                    gdirect::auth::open_in_browser(url);
+                    let url = url.to_owned();
+                    let _ = tx.send(Box::new(move |this: &mut Gdirect, cx| {
+                        if this.login_serial == serial {
+                            this.login_url = Some(url);
+                            cx.notify();
+                        }
+                    }));
+                };
                 Api::new(db_path, current, None, None, false)?
                     .cancellable(cancel)
-                    .login_with_client(&client)
+                    .login_with_client_opening(&client, &open)
             },
-            |this, result, cx| {
+            move |this, result, cx| {
+                // A sign-in dropped for a later one, or cancelled, no longer
+                // applies; cancelled, it saved nothing.
+                if this.login_serial != serial {
+                    return;
+                }
                 this.signing_in = false;
                 this.login_cancel = None;
+                this.login_url = None;
                 match result {
                     Ok(email) => {
+                        if let Some(Dialog::Client { .. }) = this.dialog {
+                            this.dialog = None;
+                            this.focus_page = true;
+                        }
                         this.say(
                             tf!(
                                 "已登录 {email}（默认账号）",
@@ -59,10 +76,18 @@ impl Gdirect {
                         this.reset_files();
                         this.connect(cx);
                     }
-                    Err(e) if e.is::<LoginCancelled>() => {
-                        this.say(t("已取消登录", "Sign-in cancelled"), cx)
+                    Err(e) if e.is::<LoginCancelled>() => {}
+                    Err(e) => {
+                        let message: SharedString =
+                            tf!("登录失败：{e:#}", "Sign-in failed: {e:#}").into();
+                        // The welcome page and the dialog show it by the
+                        // button that retries.
+                        if this.dialog.is_some() || this.welcome() {
+                            this.login_error = Some(message);
+                        } else {
+                            this.say(message, cx);
+                        }
                     }
-                    Err(e) => this.say(tf!("登录失败：{e:#}", "Sign-in failed: {e:#}"), cx),
                 }
                 cx.notify();
             },
@@ -70,42 +95,140 @@ impl Gdirect {
         cx.notify();
     }
 
-    /// Stops waiting for the browser sign-in.
-    pub fn cancel_login(&mut self, cx: &mut Context<Self>) {
-        if let Some(cancel) = &self.login_cancel {
+    /// Whether the welcome page is on screen.
+    pub fn welcome(&self) -> bool {
+        self.accounts.is_empty() && self.page != crate::app::Page::Settings
+    }
+
+    /// Stops the sign-in waiting, if any, and drops what it comes to.
+    fn abandon_login(&mut self) -> bool {
+        if let Some(cancel) = self.login_cancel.take() {
             cancel.store(true, Ordering::Relaxed);
         }
+        let waiting = std::mem::take(&mut self.signing_in);
+        self.login_serial += 1;
+        self.login_url = None;
+        waiting
+    }
+
+    /// Stops waiting for the browser sign-in.
+    pub fn cancel_login(&mut self, cx: &mut Context<Self>) {
+        if self.abandon_login() && !self.welcome() && self.dialog.is_none() {
+            self.say(t("已取消登录", "Sign-in cancelled"), cx);
+        }
         cx.notify();
+    }
+
+    /// Opens the waiting sign-in's page again, for a tab closed too soon.
+    pub fn reopen_login(&mut self) {
+        if let Some(url) = &self.login_url {
+            gdirect::auth::open_in_browser(url);
+        }
     }
 
     /// Acts on the client form: the welcome page's or the dialog's.
     pub fn submit_client(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(client) = self.client_form.update(cx, |form, cx| form.submit(cx)) else {
+        let in_dialog = matches!(self.dialog, Some(Dialog::Client { .. }));
+        let client = if in_dialog && self.client_summary {
+            self.oauth_client.clone()
+        } else if in_dialog {
+            self.dialog_form.update(cx, |form, cx| form.submit(cx))
+        } else {
+            self.client_form.update(cx, |form, cx| form.submit(cx))
+        };
+        let Some(client) = client else {
             return;
         };
-        match self.dialog {
-            Some(Dialog::Client { sign_in: false }) => {
-                if let Err(e) = gdirect::auth::save_client(&self.db, &client) {
-                    self.say(format!("{e:#}"), cx);
-                    return;
-                }
-                self.reload_accounts();
-                self.say(t("已保存 OAuth 客户端", "OAuth client saved"), cx);
+        if let Some(Dialog::Client { sign_in: false }) = self.dialog {
+            if let Err(e) = gdirect::auth::save_client(&self.db, &client) {
+                self.say(format!("{e:#}"), cx);
+                return;
             }
-            _ => self.login(client, cx),
-        }
-        if self.dialog.take().is_some() {
+            self.reload_accounts();
+            self.say(t("已保存 OAuth 客户端", "OAuth client saved"), cx);
+            self.dialog = None;
             self.focus_page = true;
             self.focus_now(window, cx);
+        } else {
+            // The dialog stays up, showing the wait, until the sign-in ends.
+            self.login(client, cx);
         }
         cx.notify();
     }
 
-    /// Signs in another account, through the client form.
+    /// Signs in another account, through the client form. A sign-in still
+    /// waiting (its tab closed, say) is dropped for a fresh one.
     pub fn add_account(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.signing_in {
-            self.open_dialog(Dialog::Client { sign_in: true }, window, cx);
-        }
+        self.abandon_login();
+        self.open_dialog(Dialog::Client { sign_in: true }, window, cx);
+    }
+
+    /// The wait for the browser: a spinner and what to do, Cancel beside
+    /// it where asked, and the page to open again.
+    pub fn render_waiting(&self, cancel: bool, cx: &mut Context<Self>) -> Div {
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_x(rem(8.))
+            .gap_y(rem(4.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(rem(12.))
+                    .pr(rem(4.))
+                    .child(
+                        CircularProgress::new(
+                            "sign-in-progress",
+                            t("正在等待浏览器登录", "Waiting for sign-in in the browser"),
+                        )
+                        .size(20.),
+                    )
+                    .child(ui::text(
+                        TypeRole::BodyMedium,
+                        ColorRole::ON_SURFACE,
+                        t("请在浏览器中继续…", "Continue in your browser…"),
+                    )),
+            )
+            .when(cancel, |d| {
+                d.child(
+                    material_button("cancel-sign-in", ButtonVariant::Text)
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.cancel_login(cx)))
+                        .accessibility_label(t("取消", "Cancel"))
+                        .child(t("取消", "Cancel")),
+                )
+            })
+            .when(self.login_url.is_some(), |d| {
+                d.child(
+                    material_button("reopen-sign-in", ButtonVariant::Text)
+                        .icon(Symbol::OPEN_IN_NEW)
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, _| this.reopen_login()))
+                        .accessibility_label(t("重新打开登录页面", "Open the sign-in page again"))
+                        .child(t("重新打开登录页面", "Open the sign-in page again")),
+                )
+            })
+    }
+
+    /// Why the last sign-in failed, in the error colour.
+    pub fn render_login_error(&self) -> Option<Div> {
+        let message = self.login_error.clone()?;
+        Some(
+            div()
+                .flex()
+                .items_start()
+                .gap(rem(8.))
+                .child(div().flex_none().mt(rem(1.)).child(ui::icon(
+                    "error",
+                    18.,
+                    ColorRole::ERROR,
+                )))
+                .child(
+                    ui::latin(ui::text(TypeRole::BodyMedium, ColorRole::ERROR, message))
+                        .flex_1()
+                        .min_w_0(),
+                ),
+        )
     }
 
     /// Copies the saved client as JSON, which holds its secret.
@@ -331,7 +454,10 @@ impl Gdirect {
         // Under a step's text, past its number.
         let indented = || div().pl(rem(44.));
         let valid = self.client_form.read(cx).valid(cx);
-        let [import, paste] = client_form::import_buttons(&self.client_form, ButtonVariant::Text);
+        let waiting = self.signing_in;
+        let [import, paste] =
+            client_form::import_buttons(&self.client_form, ButtonVariant::Text, waiting);
+        let notice = client_form::notice(&self.client_form, cx);
         // The column keeps its own height, taller than a short window, and
         // the page scrolls to its buttons; a stretched one would be clipped.
         div()
@@ -417,8 +543,9 @@ impl Gdirect {
                                     .flex()
                                     .flex_col()
                                     .gap(rem(8.))
-                                    .child(client_form::fields(&self.client_form, false, cx))
-                                    .child(div().flex().flex_wrap().gap(rem(4.)).child(import).child(paste)),
+                                    .child(client_form::fields(&self.client_form, false, waiting, cx))
+                                    .child(div().flex().flex_wrap().gap(rem(4.)).child(import).child(paste))
+                                    .children(notice.map(|n| n.pl(rem(12.)))),
                             )
                             .child(step(
                                 "3",
@@ -428,38 +555,22 @@ impl Gdirect {
                                     "Your browser opens Google’s sign-in page. If it says “Google hasn’t verified this app”, choose Continue — it is the app you just created. After you allow access, come back here and your files appear.",
                                 ),
                             ))
-                            .child(
-                                indented()
-                                    .flex()
-                                    .flex_wrap()
-                                    .items_center()
-                                    .gap(rem(8.))
-                                    .child(
-                                        MaterialButton::new("sign-in")
-                                            .button_size(ButtonSize::Medium)
-                                            .icon(Symbol::LOGIN)
-                                            .disabled(!valid && !self.signing_in)
-                                            .loading(self.signing_in, t("正在等待浏览器登录", "Waiting for browser sign-in"))
-                                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.submit_client(window, cx)))
-                                            .accessibility_label(t("登录 Google", "Sign in with Google"))
-                                            .child(t("登录 Google", "Sign in with Google")),
-                                    )
-                                    .when(self.signing_in, |d| {
-                                        d.child(
-                                            material_button("cancel-sign-in", ButtonVariant::Text)
-                                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.cancel_login(cx)))
-                                                .accessibility_label(t("取消", "Cancel"))
-                                                .child(t("取消", "Cancel")),
-                                        )
-                                    }),
-                            )
-                            .when(self.signing_in, |d| {
-                                d.child(indented().child(ui::text(
-                                    TypeRole::BodyMedium,
-                                    ColorRole::ON_SURFACE_VARIANT,
-                                    t("在浏览器中完成登录…", "Finish signing in in your browser…"),
-                                )))
-                            }),
+                            // Waiting, the button gives way to the wait itself, in
+                            // its place: on a short window it stays in view.
+                            .child(indented().child(if waiting {
+                                self.render_waiting(true, cx)
+                            } else {
+                                div().flex().child(
+                                    MaterialButton::new("sign-in")
+                                        .button_size(ButtonSize::Medium)
+                                        .icon(Symbol::LOGIN)
+                                        .disabled(!valid)
+                                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.submit_client(window, cx)))
+                                        .accessibility_label(t("使用 Google 账号登录", "Sign in with Google"))
+                                        .child(t("使用 Google 账号登录", "Sign in with Google")),
+                                )
+                            }))
+                            .children(self.render_login_error().map(|e| indented().child(e))),
                     )
                     .child(notice_banner(
                         "welcome-network",

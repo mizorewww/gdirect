@@ -33,9 +33,28 @@ pub enum ClientFormEvent {
     Say(SharedString),
 }
 
+/// What filling in the form from a file or the clipboard came to, shown
+/// under an inline form until either field changes.
+struct Notice {
+    text: SharedString,
+    ok: bool,
+    /// The fields as the notice found them.
+    values: (String, String),
+}
+
+/// Where a client was read from, for the wording of what was wrong with it.
+enum Source<'a> {
+    Clipboard,
+    File(&'a str),
+}
+
 pub struct ClientForm {
     pub id: Entity<InputState>,
     pub secret: Entity<InputState>,
+    /// Reports under the form rather than in the snackbar, which would cover
+    /// the welcome page's sign-in button.
+    inline: bool,
+    notice: Option<Notice>,
     show_secret: bool,
     /// Left once, so a malformed value shows its error; an empty one waits
     /// for a submit.
@@ -48,7 +67,7 @@ pub struct ClientForm {
 impl EventEmitter<ClientFormEvent> for ClientForm {}
 
 impl ClientForm {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(inline: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let id = cx.new(|cx| InputState::new(window, cx));
         let secret = cx.new(|cx| InputState::new(window, cx));
         let subs = [&id, &secret]
@@ -62,6 +81,10 @@ impl ClientForm {
                         InputEvent::Change => {
                             let value = state.read(cx).value().to_string();
                             this.recognise(&value, window, cx);
+                            let values = this.values(cx);
+                            if this.notice.as_ref().is_some_and(|n| n.values != values) {
+                                this.notice = None;
+                            }
                             cx.notify();
                         }
                         InputEvent::Blur => {
@@ -81,6 +104,8 @@ impl ClientForm {
         Self {
             id,
             secret,
+            inline,
+            notice: None,
             show_secret: false,
             id_left: false,
             secret_left: false,
@@ -102,7 +127,30 @@ impl ClientForm {
         self.id_left = false;
         self.secret_left = false;
         self.submitted = false;
+        self.notice = None;
         cx.notify();
+    }
+
+    fn values(&self, cx: &App) -> (String, String) {
+        (
+            self.id.read(cx).value().to_string(),
+            self.secret.read(cx).value().to_string(),
+        )
+    }
+
+    /// Reports how filling in the form went: under the form when it is
+    /// inline, otherwise in the snackbar.
+    fn announce(&mut self, text: String, ok: bool, cx: &mut Context<Self>) {
+        if self.inline {
+            self.notice = Some(Notice {
+                text: text.into(),
+                ok,
+                values: self.values(cx),
+            });
+            cx.notify();
+        } else {
+            cx.emit(ClientFormEvent::Say(text.into()));
+        }
     }
 
     /// A whole client pasted into either field fills in both. A single-line
@@ -122,13 +170,7 @@ impl ClientForm {
         });
         if let Some(client) = client {
             self.fill(Some(&client), window, cx);
-            cx.emit(ClientFormEvent::Say(
-                t(
-                    "已填入客户端 ID 和密钥",
-                    "Filled in the client ID and secret",
-                )
-                .into(),
-            ));
+            self.announce(filled_from_clipboard().to_owned(), true, cx);
         }
     }
 
@@ -158,8 +200,8 @@ impl ClientForm {
         let shown = self.submitted || self.id_left;
         (shown && Client::new(&id, "x").validate() == Err(ClientError::ClientId)).then(|| {
             t(
-                "这不是桌面应用的客户端 ID，应以 .apps.googleusercontent.com 结尾",
-                "This doesn’t look like a client ID; it ends in .apps.googleusercontent.com",
+                "这看起来不是客户端 ID，它应以 .apps.googleusercontent.com 结尾",
+                "This doesn’t look like a client ID; it should end in .apps.googleusercontent.com",
             )
         })
     }
@@ -201,17 +243,23 @@ impl ClientForm {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                let message = match read {
-                    Err(e) => tf!("无法读取 {name}：{e}", "Couldn’t read {name}: {e}"),
+                let (message, ok) = match read {
+                    Err(e) => (
+                        tf!("无法读取 {name}：{e}", "Couldn’t read {name}: {e}"),
+                        false,
+                    ),
                     Ok(data) => match Client::from_json(&data) {
                         Ok(client) => {
                             this.fill(Some(&client), window, cx);
-                            tf!("已从 {name} 填入客户端", "Client filled in from {name}")
+                            (
+                                tf!("已从 {name} 填入客户端", "Client filled in from {name}"),
+                                true,
+                            )
                         }
-                        Err(e) => tf!("{name} {}", "{name}: {}", problem(e)),
+                        Err(e) => (problem(e, Source::File(&name)), false),
                     },
                 };
-                cx.emit(ClientFormEvent::Say(message.into()));
+                this.announce(message, ok, cx);
             });
         })
         .detach();
@@ -222,18 +270,21 @@ impl ClientForm {
             .read_from_clipboard()
             .and_then(|item| item.text())
             .unwrap_or_default();
-        let message = if text.trim().is_empty() {
-            t("剪贴板是空的", "The clipboard is empty").to_owned()
+        let (message, ok) = if text.trim().is_empty() {
+            (
+                t("剪贴板是空的", "The clipboard is empty").to_owned(),
+                false,
+            )
         } else {
             match Client::from_text(&text) {
                 Ok(client) => {
                     self.fill(Some(&client), window, cx);
-                    t("已从剪贴板填入客户端", "Client filled in from clipboard").to_owned()
+                    (filled_from_clipboard().to_owned(), true)
                 }
-                Err(e) => tf!("剪贴板里{}", "The clipboard: {}", problem(e)),
+                Err(e) => (problem(e, Source::Clipboard), false),
             }
         };
-        cx.emit(ClientFormEvent::Say(message.into()));
+        self.announce(message, ok, cx);
     }
 }
 
@@ -243,27 +294,58 @@ fn valid_part(value: &str) -> bool {
         && (Client::new(value, "x").validate().is_ok() || !value.contains(CLIENT_ID_SUFFIX))
 }
 
-/// Why text is not a client, worded to follow the file or the clipboard.
-fn problem(e: ClientError) -> &'static str {
-    match e {
-        ClientError::Unrecognized => t(
-            "没有 OAuth 客户端（应为下载的客户端 JSON，或客户端 ID 和密钥）",
-            "doesn’t contain an OAuth client (the downloaded client JSON, or a client ID and secret)",
+fn filled_from_clipboard() -> &'static str {
+    t(
+        "已从剪贴板填入客户端",
+        "Client filled in from the clipboard",
+    )
+}
+
+/// Why what was read from `source` is not a client, as a sentence.
+fn problem(e: ClientError, source: Source) -> String {
+    match (source, e) {
+        (Source::Clipboard, ClientError::Unrecognized) => t(
+            "剪贴板里没有 OAuth 客户端信息。请复制下载的客户端 JSON，或者客户端 ID 和密钥。",
+            "Nothing in the clipboard looks like an OAuth client. Copy the downloaded client JSON, or the client ID and secret.",
+        )
+        .into(),
+        (Source::File(name), ClientError::Unrecognized) => tf!(
+            "{name} 不是桌面应用的 OAuth 客户端。请选择从 Google Cloud 下载的客户端 JSON 文件。",
+            "{name} isn’t a Desktop app OAuth client. Choose the client JSON file you downloaded from Google Cloud."
         ),
-        ClientError::WebClient => t(
-            "是“Web 应用”客户端，请创建“桌面应用”类型的客户端",
-            "is a web application client; create a Desktop app client instead",
+        (Source::Clipboard, ClientError::WebClient) => t(
+            "剪贴板里是“Web 应用”客户端。请改为创建“桌面应用”类型的客户端。",
+            "The clipboard holds a web application client. Create a Desktop app client instead.",
+        )
+        .into(),
+        (Source::File(name), ClientError::WebClient) => tf!(
+            "{name} 是“Web 应用”客户端。请改为创建“桌面应用”类型的客户端。",
+            "{name} is a web application client. Create a Desktop app client instead."
         ),
-        ClientError::ClientId => t(
-            "的客户端 ID 不对，应以 .apps.googleusercontent.com 结尾",
-            "has no valid client ID; it ends in .apps.googleusercontent.com",
+        (Source::Clipboard, ClientError::ClientId) => t(
+            "剪贴板里的客户端 ID 不对，它应以 .apps.googleusercontent.com 结尾。",
+            "The client ID in the clipboard isn’t valid; it should end in .apps.googleusercontent.com.",
+        )
+        .into(),
+        (Source::File(name), ClientError::ClientId) => tf!(
+            "{name} 里的客户端 ID 不对，它应以 .apps.googleusercontent.com 结尾。",
+            "The client ID in {name} isn’t valid; it should end in .apps.googleusercontent.com."
         ),
-        ClientError::MissingSecret => t("缺少客户端密钥", "is missing the client secret"),
+        (Source::Clipboard, ClientError::MissingSecret) => t(
+            "剪贴板里有客户端 ID，但缺少客户端密钥。",
+            "The clipboard has a client ID but no client secret.",
+        )
+        .into(),
+        (Source::File(name), ClientError::MissingSecret) => tf!(
+            "{name} 里缺少客户端密钥。",
+            "{name} has no client secret."
+        ),
     }
 }
 
-/// The form's two fields and their guidance; `compact` for a dialog.
-pub fn fields(form: &Entity<ClientForm>, compact: bool, cx: &App) -> Div {
+/// The form's two fields and their guidance; `compact` for a dialog, and
+/// `disabled` while a sign-in waits.
+pub fn fields(form: &Entity<ClientForm>, compact: bool, disabled: bool, cx: &App) -> Div {
     let this = form.read(cx);
     let help = |id: &'static str| {
         material_button(id, ButtonVariant::Text)
@@ -279,6 +361,7 @@ pub fn fields(form: &Entity<ClientForm>, compact: bool, cx: &App) -> Div {
         let input = input
             .variant(TextFieldVariant::Outlined)
             .error(error.is_some())
+            .disabled(disabled)
             .w_full();
         // A dialog keeps the hint and its link on one line where they fit.
         if compact {
@@ -303,21 +386,27 @@ pub fn fields(form: &Entity<ClientForm>, compact: bool, cx: &App) -> Div {
                         .child(help(help_id)),
                 );
         }
+        // An error comes first; the hint stays under it.
         div()
             .flex()
             .flex_col()
-            .child(input.supporting_text(error.unwrap_or(hint)))
+            .child(input.when_some(error, |input, e| input.supporting_text(e)))
+            .child(
+                crate::ui::text(TypeRole::BodySmall, ColorRole::ON_SURFACE_VARIANT, hint)
+                    .px(rem(16.))
+                    .pt(rem(4.)),
+            )
             .child(div().flex().child(help(help_id)))
     };
     let (id_hint, secret_hint) = if compact {
         (
             t(
                 "Google Cloud 控制台 › Google Auth Platform › 客户端",
-                "Google Cloud console › Google Auth Platform › Clients",
+                "Google Auth Platform › Clients",
             ),
             t(
                 "创建客户端时显示，也在下载的 JSON 中",
-                "Shown when you create the client, and in its JSON",
+                "Shown on creation, and in its JSON",
             ),
         )
     } else {
@@ -348,6 +437,7 @@ pub fn fields(form: &Entity<ClientForm>, compact: bool, cx: &App) -> Div {
                 t("显示密钥", "Show secret")
             },
         )
+        .disabled(disabled)
         .on_click(move |_, _, cx| {
             form.update(cx, |form, cx| {
                 form.show_secret = !form.show_secret;
@@ -386,23 +476,64 @@ pub fn fields(form: &Entity<ClientForm>, compact: bool, cx: &App) -> Div {
 }
 
 /// Import JSON file… and Paste from clipboard.
-pub fn import_buttons(form: &Entity<ClientForm>, variant: ButtonVariant) -> [AnyElement; 2] {
+pub fn import_buttons(
+    form: &Entity<ClientForm>,
+    variant: ButtonVariant,
+    disabled: bool,
+) -> [AnyElement; 2] {
     let file = form.clone();
     let clipboard = form.clone();
     [
         material_button("client-import", variant)
+            .disabled(disabled)
             .icon(Symbol::UPLOAD_FILE)
             .on_click(move |_, window, cx| file.update(cx, |form, cx| form.import_file(window, cx)))
             .accessibility_label(t("从 JSON 文件导入…", "Import JSON file…"))
             .child(t("从 JSON 文件导入…", "Import JSON file…"))
             .into_any_element(),
         material_button("client-paste", variant)
+            .disabled(disabled)
             .icon(Symbol::CONTENT_PASTE)
             .on_click(move |_, window, cx| clipboard.update(cx, |form, cx| form.paste(window, cx)))
             .accessibility_label(t("从剪贴板粘贴", "Paste from clipboard"))
             .child(t("从剪贴板粘贴", "Paste from clipboard"))
             .into_any_element(),
     ]
+}
+
+/// The inline form's last report on filling it in, until it is edited.
+pub fn notice(form: &Entity<ClientForm>, cx: &App) -> Option<Div> {
+    let notice = form.read(cx).notice.as_ref()?;
+    let (icon, ink) = if notice.ok {
+        ("check_circle", ColorRole::PRIMARY)
+    } else {
+        ("error", ColorRole::ERROR)
+    };
+    Some(
+        div()
+            .flex()
+            .items_start()
+            .gap(rem(8.))
+            .child(
+                div()
+                    .flex_none()
+                    .mt(rem(1.))
+                    .child(crate::ui::icon(icon, 18., ink)),
+            )
+            .child(
+                crate::ui::latin(crate::ui::text(
+                    TypeRole::BodyMedium,
+                    if notice.ok {
+                        ColorRole::ON_SURFACE_VARIANT
+                    } else {
+                        ColorRole::ERROR
+                    },
+                    notice.text.clone(),
+                ))
+                .flex_1()
+                .min_w_0(),
+            ),
+    )
 }
 
 /// The client ID with its middle elided, keeping where it starts and its

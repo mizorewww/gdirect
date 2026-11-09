@@ -131,9 +131,25 @@ pub struct Gdirect {
     pub account: Option<String>,
     /// The client the next sign-in uses.
     pub oauth_client: Option<gdirect::auth::Client>,
+    /// The welcome page's client form.
     pub client_form: Entity<ClientForm>,
+    /// The account dialog's, apart from the welcome page's.
+    pub dialog_form: Entity<ClientForm>,
+    /// The account dialog shows the saved client it signs in with, not the
+    /// form, until Change… opens the form.
+    pub client_summary: bool,
     /// Set to stop waiting for the browser sign-in in flight.
     pub login_cancel: Option<Arc<AtomicBool>>,
+    /// Bumped by each sign-in, and when one is cancelled or dropped; what an
+    /// older one comes to is dropped.
+    pub login_serial: u64,
+    /// The waiting sign-in's page, to open again.
+    pub login_url: Option<String>,
+    /// Why the last sign-in failed, shown on the welcome page or in the dialog.
+    pub login_error: Option<SharedString>,
+    /// The dialog's scrolling body; its dividers show when it scrolls.
+    dialog_scroll: ScrollHandle,
+    dialog_overflow: bool,
     /// The Drive client on the chosen route; None until connected.
     pub api: Option<Api>,
     pub connecting: bool,
@@ -300,7 +316,8 @@ impl Gdirect {
         let search_input = cx
             .new(|cx| InputState::new(window, cx).placeholder(crate::files::search_placeholder()));
         let name_input = cx.new(|cx| InputState::new(window, cx));
-        let client_form = cx.new(|cx| ClientForm::new(window, cx));
+        let client_form = cx.new(|cx| ClientForm::new(true, window, cx));
+        let dialog_form = cx.new(|cx| ClientForm::new(false, window, cx));
         let connections = cx.new(|_| {
             SliderState::new()
                 .min(1.)
@@ -371,8 +388,20 @@ impl Gdirect {
                 },
             ),
             cx.observe(&client_form, |_, _, cx| cx.notify()),
+            cx.observe(&dialog_form, |_, _, cx| cx.notify()),
             cx.subscribe_in(
                 &client_form,
+                window,
+                |this, _, event: &ClientFormEvent, window, cx| match event {
+                    ClientFormEvent::Submit if this.dialog.is_none() => {
+                        this.submit_client(window, cx)
+                    }
+                    ClientFormEvent::Submit => {}
+                    ClientFormEvent::Say(message) => this.say(message.clone(), cx),
+                },
+            ),
+            cx.subscribe_in(
+                &dialog_form,
                 window,
                 |this, _, event: &ClientFormEvent, window, cx| match event {
                     ClientFormEvent::Submit => this.submit_client(window, cx),
@@ -415,7 +444,14 @@ impl Gdirect {
             account: None,
             oauth_client: None,
             client_form,
+            dialog_form,
+            client_summary: false,
             login_cancel: None,
+            login_serial: 0,
+            login_url: None,
+            login_error: None,
+            dialog_scroll: ScrollHandle::new(),
+            dialog_overflow: false,
             api: None,
             connecting: false,
             connect_error: None,
@@ -778,10 +814,14 @@ impl Gdirect {
             });
             self.focus_name = Some(stem);
         }
-        if let Dialog::Client { .. } = dialog {
+        if let Dialog::Client { sign_in } = dialog {
             let saved = self.oauth_client.clone();
-            self.client_form
+            self.dialog_form
                 .update(cx, |form, cx| form.fill(saved.as_ref(), window, cx));
+            self.client_summary = sign_in && saved.is_some();
+            self.login_error = None;
+            self.dialog_overflow = false;
+            self.dialog_scroll.set_offset(point(px(0.), px(0.)));
         }
         self.focus_cancel = matches!(dialog, Dialog::DeleteForever(_) | Dialog::EmptyTrash);
         self.dialog = Some(dialog);
@@ -789,7 +829,12 @@ impl Gdirect {
     }
 
     pub fn close_dialog(&mut self, cx: &mut Context<Self>) {
-        self.dialog = None;
+        // The account dialog shows its sign-in's wait; closed, it stops it.
+        if let Some(Dialog::Client { .. }) = self.dialog.take()
+            && self.signing_in
+        {
+            self.cancel_login(cx);
+        }
         self.focus_page = true;
         cx.notify();
     }
@@ -924,7 +969,7 @@ impl Gdirect {
             Some(Dialog::Client { sign_in: true }) => (
                 t("添加 Google 账号", "Add a Google account").into(),
                 None,
-                t("登录 Google", "Sign in with Google"),
+                t("使用 Google 账号登录", "Sign in with Google"),
                 false,
                 false,
             ),
@@ -944,7 +989,24 @@ impl Gdirect {
             None => (SharedString::default(), None, "", false, false),
         };
         let client = matches!(self.dialog, Some(Dialog::Client { .. }));
-        let client_valid = self.client_form.read(cx).valid(cx);
+        let sign_in = matches!(self.dialog, Some(Dialog::Client { sign_in: true }));
+        let summary = sign_in && self.client_summary && self.oauth_client.is_some();
+        let waiting = sign_in && self.signing_in;
+        let client_valid = summary || self.dialog_form.read(cx).valid(cx);
+        // Dividers mark a body that scrolls, once a frame has shown it does.
+        if client {
+            let handle = self.dialog_scroll.clone();
+            let view = cx.weak_entity();
+            window.on_next_frame(move |_, cx| {
+                let overflow = handle.max_offset().y > px(0.5);
+                let _ = view.update(cx, |this, cx| {
+                    if this.dialog_overflow != overflow {
+                        this.dialog_overflow = overflow;
+                        cx.notify();
+                    }
+                });
+            });
+        }
         let view = cx.weak_entity();
         MaterialDialog::new("dialog")
             .modal(self.dialog.is_some())
@@ -959,6 +1021,10 @@ impl Gdirect {
                 440.
             })
             .headline(headline)
+            .when(client, |d| {
+                d.track_body_scroll(&self.dialog_scroll)
+                    .dividers(self.dialog_overflow)
+            })
             .when_some(supporting, |d, s| d.supporting_text(s))
             .when(input, |d| {
                 d.content(
@@ -975,24 +1041,48 @@ impl Gdirect {
                 )
             })
             .when(client, |d| {
-                let [file, paste] =
-                    crate::client_form::import_buttons(&self.client_form, ButtonVariant::Text);
-                d.content(
+                let body = if summary {
+                    div().child(self.render_client_summary(waiting, cx))
+                } else {
+                    let [file, paste] = crate::client_form::import_buttons(
+                        &self.dialog_form,
+                        ButtonVariant::Text,
+                        waiting,
+                    );
                     div()
-                        .px(rem(24.))
-                        .pt(rem(8.))
                         .flex()
                         .flex_col()
                         .gap(rem(8.))
-                        .child(crate::client_form::fields(&self.client_form, true, cx))
-                        .child(
+                        .child(crate::client_form::fields(
+                            &self.dialog_form,
+                            true,
+                            waiting,
+                            cx,
+                        ))
+                        // Waiting, the wait takes the place of the buttons.
+                        .child(if waiting {
+                            self.render_waiting(false, cx)
+                        } else {
                             div()
                                 .flex()
                                 .flex_wrap()
                                 .gap(rem(4.))
                                 .child(file)
-                                .child(paste),
-                        ),
+                                .child(paste)
+                        })
+                };
+                d.content(
+                    div()
+                        .px(rem(24.))
+                        .when(!summary, |d| d.pt(rem(8.)))
+                        .flex()
+                        .flex_col()
+                        .gap(rem(12.))
+                        .child(body)
+                        .when(waiting && summary, |d| {
+                            d.child(self.render_waiting(false, cx))
+                        })
+                        .children(self.render_login_error()),
                 )
             })
             .action(
@@ -1021,6 +1111,10 @@ impl Gdirect {
                         .text_color(color(ColorRole::ON_ERROR))
                 })
                 .disabled(client && !client_valid)
+                .loading(
+                    waiting,
+                    t("正在等待浏览器登录", "Waiting for sign-in in the browser"),
+                )
                 .accessibility_label(confirm.to_owned())
                 .child(confirm.to_owned())
                 .on_click(
@@ -1033,6 +1127,60 @@ impl Gdirect {
                     this.focus_now(window, cx);
                 });
             })
+    }
+
+    /// The saved client the account dialog signs in with, and Change… to
+    /// sign in with another.
+    fn render_client_summary(&self, waiting: bool, cx: &mut Context<Self>) -> Div {
+        let id = self
+            .oauth_client
+            .as_ref()
+            .map(|c| crate::client_form::short_id(&c.client_id))
+            .unwrap_or_default();
+        // Change… beside the label leaves the ID a line of its own.
+        div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(rem(8.))
+                    .child(
+                        ui::text(
+                            TypeRole::BodyMedium,
+                            ColorRole::ON_SURFACE_VARIANT,
+                            t("将使用此客户端登录：", "Signs in with this client:"),
+                        )
+                        .flex_1()
+                        .min_w_0(),
+                    )
+                    .child(
+                        material_button("client-summary-change", ButtonVariant::Text)
+                            .disabled(waiting)
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.client_summary = false;
+                                cx.notify();
+                            }))
+                            .accessibility_label(t("更换客户端", "Change client"))
+                            .child(t("更换…", "Change…")),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(rem(8.))
+                    .child(div().flex_none().child(ui::icon(
+                        "key",
+                        20.,
+                        ColorRole::ON_SURFACE_VARIANT,
+                    )))
+                    .child(
+                        ui::latin(ui::line(TypeRole::BodyLarge, ColorRole::ON_SURFACE, id))
+                            .flex_1(),
+                    ),
+            )
     }
 
     // Transfers
@@ -1222,9 +1370,12 @@ impl Gdirect {
         // The handles this frame does not draw: the Files page's off it, and
         // the name field and Cancel with their dialog gone. (Popups draw outside this
         // view, so its tree cannot tell their focus from a stale one.)
+        let dialog_form = self.dialog_form.read(cx);
         let mut stale = vec![
             self.name_input.read(cx).focus_handle(cx),
             self.cancel_focus.clone(),
+            dialog_form.id.read(cx).focus_handle(cx),
+            dialog_form.secret.read(cx).focus_handle(cx),
         ];
         if !files {
             stale.push(self.files_focus.clone());
