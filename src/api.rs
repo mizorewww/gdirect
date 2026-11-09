@@ -651,7 +651,16 @@ impl Api {
     /// Signs in in the browser with `client` and saves it for later sign-ins.
     /// A [`cancellable`](Self::cancellable) client stops waiting once cancelled.
     pub fn login_with_client(&self, client: &crate::auth::Client) -> Result<String> {
-        let credentials = crate::auth::browser_login(client, &|| self.cancelled())?;
+        self.login_with_client_opening(client, &crate::auth::open_in_browser)
+    }
+    /// [`login_with_client`](Self::login_with_client), with `open` given the
+    /// sign-in page's address to open.
+    pub fn login_with_client_opening(
+        &self,
+        client: &crate::auth::Client,
+        open: &dyn Fn(&str),
+    ) -> Result<String> {
+        let credentials = crate::auth::browser_login_with(client, &|| self.cancelled(), open)?;
         let db = Store::open(&self.db)?;
         let email = self.finish_login(&db, &credentials)?;
         self.save_client(client)?;
@@ -661,6 +670,10 @@ impl Api {
         let token = crate::auth::refresh(credentials)?;
         // Whichever account was chosen in the browser is added (or updated) and becomes the default.
         let email = self.account_for_token(&token.access_token)?;
+        // A sign-in cancelled once Google had answered saves nothing.
+        if self.cancelled() {
+            return Err(crate::auth::LoginCancelled.into());
+        }
         db.save_account(&email, &serde_json::to_string(credentials)?)?;
         db.save_token(&email, &token.access_token, token.expires_in)?;
         db.set_default_account(&email)?;

@@ -354,8 +354,34 @@ fn callback(target: &str, state: &str) -> Result<Option<String>> {
             .clone(),
     ))
 }
+/// Opens `url` in the default browser.
+pub fn open_in_browser(url: &str) {
+    let mut browser = if cfg!(target_os = "macos") {
+        Command::new("open")
+    } else if cfg!(windows) {
+        let mut c = Command::new("rundll32");
+        c.arg("url.dll,FileProtocolHandler");
+        c
+    } else {
+        Command::new("xdg-open")
+    };
+    let _ = browser
+        .arg(url)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
 /// Signs in in the browser; `cancelled` is polled while waiting for it.
 pub fn browser_login(client: &Client, cancelled: &dyn Fn() -> bool) -> Result<Credentials> {
+    browser_login_with(client, cancelled, &open_in_browser)
+}
+/// [`browser_login`], with `open` given the sign-in page's address to open
+/// (it may open it again later, while the sign-in waits).
+pub fn browser_login_with(
+    client: &Client,
+    cancelled: &dyn Fn() -> bool,
+    open: &dyn Fn(&str),
+) -> Result<Credentials> {
     client.validate()?;
     let client_id = client.client_id.as_str();
     let secret = client.client_secret.as_str();
@@ -380,20 +406,7 @@ pub fn browser_login(client: &Client, cancelled: &dyn Fn() -> bool) -> Result<Cr
         ("code_challenge_method", "S256"),
     ]);
     eprintln!("Open this URL in a browser on this computer:\n{url}");
-    let mut browser = if cfg!(target_os = "macos") {
-        Command::new("open")
-    } else if cfg!(windows) {
-        let mut c = Command::new("rundll32");
-        c.arg("url.dll,FileProtocolHandler");
-        c
-    } else {
-        Command::new("xdg-open")
-    };
-    let _ = browser
-        .arg(url.as_str())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+    open(url.as_str());
     let deadline = Instant::now() + Duration::from_secs(300);
     let code = loop {
         ensure!(
@@ -589,6 +602,23 @@ mod tests {
         );
     }
     const ID: &str = "123-abc.apps.googleusercontent.com";
+    #[test]
+    fn browser_login_hands_over_its_page_and_stops_when_cancelled() {
+        let client = Client::new(ID, SECRET);
+        let opened = std::cell::RefCell::new(Vec::<String>::new());
+        let result = browser_login_with(&client, &|| !opened.borrow().is_empty(), &|url| {
+            opened.borrow_mut().push(url.to_owned())
+        });
+        assert!(result.unwrap_err().is::<LoginCancelled>());
+        let opened = opened.into_inner();
+        assert_eq!(opened.len(), 1);
+        let url = url::Url::parse(&opened[0]).unwrap();
+        let query: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(url.host_str(), Some("accounts.google.com"));
+        assert_eq!(query["client_id"], ID);
+        assert!(query["redirect_uri"].starts_with("http://127.0.0.1:"));
+        assert!(!opened[0].contains(SECRET));
+    }
     const SECRET: &str = "GOCSPX-test_Secret-1";
     #[test]
     fn client_json_formats() {
