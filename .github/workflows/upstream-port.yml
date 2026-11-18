@@ -5,6 +5,8 @@ name: Upstream port
 # branch following .github/upstream-port.md and commits locally; it cannot push. The next step pushes as the maintainer, so CI
 # runs on the result, and labels the PR port-ready when Claude reports the port
 # complete. upstream-land.yml then merges it once CI passes.
+# When CI fails on the port's commit, Claude reads the failure and fixes it (three
+# tries); a failure that is not the port's gets its failed jobs rerun instead.
 
 on:
   pull_request:
@@ -14,10 +16,17 @@ on:
       branch:
         description: Renovate branch
         default: renovate/gpui-kit-material
+  # CI failed on a port commit: Claude reads the failure and fixes it.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: ["renovate/gpui-*"]
 
 permissions:
   contents: read
   pull-requests: read
+  issues: read
+  actions: read
 
 jobs:
   # Our own port commit comes back as a synchronize event; only Renovate's start a
@@ -26,46 +35,62 @@ jobs:
   gate:
     if: >-
       github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'failure' &&
+       github.event.workflow_run.event == 'pull_request' &&
+       github.event.workflow_run.head_repository.full_name == github.repository) ||
       (startsWith(github.event.pull_request.head.ref, 'renovate/gpui-') &&
        github.event.pull_request.head.repo.full_name == github.repository &&
        github.event.pull_request.user.login == github.repository_owner)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      BRANCH: ${{ github.head_ref || inputs.branch }}
+      BRANCH: ${{ github.head_ref || inputs.branch || github.event.workflow_run.head_branch }}
       GH_TOKEN: ${{ github.token }}
       CARGO_BUILD_JOBS: 4
     outputs:
       run: ${{ steps.gate.outputs.run }}
       start: ${{ steps.gate.outputs.start }}
+      mode: ${{ steps.gate.outputs.mode }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.BRANCH }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Check the head is Renovate's
+      - name: Check the head is Renovate's, or a failed port to fix
         id: gate
         env:
           EVENT: ${{ github.event_name }}
+          FAILED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          if [ "$EVENT" != workflow_dispatch ] && git log -1 --format=%B | grep -q '^Co-Authored-By: Claude'; then
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=true" >> "$GITHUB_OUTPUT"
-            echo "start=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          ours() { git log -1 --format=%B | grep -q '^Co-Authored-By: Claude'; }
+          run=true mode=port
+          if [ "$EVENT" = workflow_run ]; then
+            # Only CI on the port's own commit, while it is still the head, three tries at most.
+            mode=fix
+            pr=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number')
+            tries=0
+            [ -z "$pr" ] || tries=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$pr/comments" --jq '.[].body' | grep -c 'Automated CI fix' || true)
+            if [ -z "$pr" ] || [ "$(git rev-parse HEAD)" != "$FAILED_SHA" ] || ! ours || [ "$tries" -ge 3 ]; then
+              run=false
+            fi
+          elif [ "$EVENT" != workflow_dispatch ] && ours; then
+            run=false
           fi
+          { echo "run=$run"; echo "mode=$mode"; echo "start=$(git rev-parse HEAD)"; } >> "$GITHUB_OUTPUT"
 
   port:
     needs: gate
     if: needs.gate.outputs.run == 'true'
     concurrency:
-      group: upstream-port-${{ github.head_ref || inputs.branch }}
-      cancel-in-progress: true
+      group: upstream-port-${{ github.head_ref || inputs.branch || github.event.workflow_run.head_branch }}
+      # A fix waits rather than cancel another; it is skipped if the branch moved meanwhile.
+      cancel-in-progress: ${{ github.event_name != 'workflow_run' }}
     runs-on: ubuntu-latest
     timeout-minutes: 300
     env:
-      BRANCH: ${{ github.head_ref || inputs.branch }}
+      BRANCH: ${{ github.head_ref || inputs.branch || github.event.workflow_run.head_branch }}
       GH_TOKEN: ${{ github.token }}
       CARGO_BUILD_JOBS: 4
     steps:
@@ -74,7 +99,14 @@ jobs:
           ref: ${{ env.BRANCH }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Check the branch has not moved
+        id: fresh
+        run: |
+          if [ "$(git rev-parse HEAD)" = "${{ needs.gate.outputs.start }}" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Install Rust, Linux libraries and libaria2
+        if: steps.fresh.outputs.ok
         run: |
           rustup update stable
           rustup component add clippy rustfmt
@@ -84,10 +116,12 @@ jobs:
             libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev
           ./scripts/build-libaria2.sh
       - uses: Swatinem/rust-cache@v2
+        if: steps.fresh.outputs.ok
         with:
           key: desktop-port
           workspaces: desktop -> target
       - uses: anthropics/claude-code-action@v1
+        if: steps.fresh.outputs.ok
         id: claude
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -101,9 +135,17 @@ jobs:
             --allowedTools Bash,Read,Edit,Write,Glob,Grep,TodoWrite
             --json-schema '{"type":"object","required":["ready","summary"],"properties":{"ready":{"type":"boolean"},"summary":{"type":"string"}}}'
           prompt: |
-            Port the dependency update on branch ${{ env.BRANCH }} of ${{ github.repository }}.
+            ${{ needs.gate.outputs.mode == 'fix' && 'CI failed on the port commit at the head of' || 'Port the dependency update on' }} branch ${{ env.BRANCH }} of ${{ github.repository }}.
             The repository is checked out in the working directory on that branch.
             Follow .github/upstream-port.md exactly.
+            ${{ needs.gate.outputs.mode == 'fix' && format('
+            Fix that failure. `gh run list --commit $(git rev-parse HEAD)` lists the CI runs and
+            `gh run view <id> --log-failed` shows what failed (run {0} is one). Find the cause,
+            fix it as the instructions allow (never by weakening a check or a test), and run the
+            checks again. If the failure is not this branch''s (a runner, network or flaky
+            failure), change nothing and say so; the workflow then reruns the failed jobs.
+            ', github.event.workflow_run.id) || '' }}
+            Run every command in the foreground and wait for it to finish; the job ends when you answer.
 
             Commit with exactly:
               git -c user.name='claude[bot]' -c user.email='41898282+claude[bot]@users.noreply.github.com' \
@@ -117,21 +159,27 @@ jobs:
             anything left for a human. Write plainly and do not sign it.
       - name: Push and report as the maintainer
         # Not after a cancel: a newer Renovate push superseded this port.
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.fresh.outputs.ok }}
         env:
           GH_TOKEN: ${{ secrets.MAINTAINER_TOKEN }}
           OUTPUT: ${{ steps.claude.outputs.structured_output }}
           START: ${{ needs.gate.outputs.start }}
+          MODE: ${{ needs.gate.outputs.mode }}
+          FAILED_RUN: ${{ github.event.workflow_run.id }}
         run: |
           pr=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number')
           if [ "$(git rev-parse HEAD)" != "$START" ]; then
             # Bypass the read-only credentials the Claude action configured for this checkout.
             git -c credential.helper= -c http.https://github.com/.extraheader= \
               push -q "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" "HEAD:refs/heads/$BRANCH"
+          elif [ "$MODE" = fix ]; then
+            # Nothing to change: the failure was not the port's, so try the failed jobs again.
+            gh run rerun "$FAILED_RUN" --failed
           fi
+          [ "$MODE" = fix ] && kind="CI fix" || kind="port"
           summary=$(jq -r '.summary // empty' <<<"$OUTPUT")
-          printf '%s\n\n<sub>Automated port by Claude Code ([run](%s)).</sub>\n' \
-            "${summary:-The port did not finish; see the run log.}" \
+          printf '%s\n\n<sub>Automated %s by Claude Code ([run](%s)).</sub>\n' \
+            "${summary:-The $kind did not finish; see the run log.}" "$kind" \
             "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/summary.md"
           [ -z "$pr" ] || gh pr comment "$pr" --body-file "$RUNNER_TEMP/summary.md"
           # REST, not `gh pr edit`: its GraphQL query needs read:org, which the token lacks.
