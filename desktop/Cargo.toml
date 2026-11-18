@@ -24,7 +24,7 @@ serde_json = "1"
 sys-locale = "0.3"
 # The Material 3 library and the Kit release it is built on, from crates.io.
 gpui-kit = "0.9.1"
-gpui-kit-material = "0.1"
+gpui-kit-material = "0.2"
 gpui-material-symbols = { version = "0.1", default-features = false, features = ["gpui-kit"] }
 
 [workspace]
