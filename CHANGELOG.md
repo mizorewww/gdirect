@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Desktop client: gpui-kit-material 0.1.4 (with gpui-kit-material-color 0.1.1, still on gpui-kit 0.9.1): a tooltip hides when its button is pressed, a snackbar shows above an open dialog instead of under it, and the warning and success status colors meet 4.5:1 contrast.
+
 ## 0.13.2
 
 ### Fixed
