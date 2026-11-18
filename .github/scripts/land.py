@@ -48,7 +48,10 @@ def api(method, path, body=None):
 
 
 def git(*args):
-    return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
+    result = subprocess.run(["git", *args], capture_output=True, text=True)
+    if result.returncode:
+        sys.exit(f"::error::git {args[0]} failed: {result.stderr.strip()}")
+    return result.stdout
 
 
 def ci_failure():
@@ -130,7 +133,8 @@ def main():
     git("fetch", "-q", "origin")
     for tag in tags:
         git("tag", tag, merged["sha"])
-        git("push", "-q", url, f"refs/tags/{tag}")
+        # Without checkout's GITHUB_TOKEN header, which would override the URL's token.
+        git("-c", "http.https://github.com/.extraheader=", "push", "-q", url, f"refs/tags/{tag}")
         print(f"Tagged {tag}.")
 
 
