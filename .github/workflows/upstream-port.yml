@@ -19,17 +19,49 @@ permissions:
   contents: read
   pull-requests: read
 
-concurrency:
-  group: upstream-port-${{ github.head_ref || inputs.branch }}
-  cancel-in-progress: true
-
 jobs:
-  port:
+  # Our own port commit comes back as a synchronize event; only Renovate's start a
+  # port, or a dispatch. Outside the port's concurrency group, so that check cannot
+  # cancel the port that pushed the commit.
+  gate:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (startsWith(github.event.pull_request.head.ref, 'renovate/gpui-') &&
        github.event.pull_request.head.repo.full_name == github.repository &&
        github.event.pull_request.user.login == github.repository_owner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      BRANCH: ${{ github.head_ref || inputs.branch }}
+      GH_TOKEN: ${{ github.token }}
+      CARGO_BUILD_JOBS: 4
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+      start: ${{ steps.gate.outputs.start }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BRANCH }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check the head is Renovate's
+        id: gate
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" != workflow_dispatch ] && git log -1 --format=%B | grep -q '^Co-Authored-By: Claude'; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "start=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+  port:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    concurrency:
+      group: upstream-port-${{ github.head_ref || inputs.branch }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 300
     env:
@@ -42,21 +74,7 @@ jobs:
           ref: ${{ env.BRANCH }}
           fetch-depth: 0
           persist-credentials: false
-      # Our own port commit comes back as a synchronize event; only Renovate's start a
-      # port, or a dispatch.
-      - name: Check the head is Renovate's
-        id: gate
-        env:
-          EVENT: ${{ github.event_name }}
-        run: |
-          if [ "$EVENT" != workflow_dispatch ] && git log -1 --format=%B | grep -q '^Co-Authored-By: Claude'; then
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=true" >> "$GITHUB_OUTPUT"
-            echo "start=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          fi
       - name: Install Rust, Linux libraries and libaria2
-        if: steps.gate.outputs.run == 'true'
         run: |
           rustup update stable
           rustup component add clippy rustfmt
@@ -66,13 +84,11 @@ jobs:
             libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev
           ./scripts/build-libaria2.sh
       - uses: Swatinem/rust-cache@v2
-        if: steps.gate.outputs.run == 'true'
         with:
           key: desktop-port
           workspaces: desktop -> target
       - uses: anthropics/claude-code-action@v1
         id: claude
-        if: steps.gate.outputs.run == 'true'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # The port works on public code only; keep its transcript in the log.
@@ -101,11 +117,11 @@ jobs:
             anything left for a human. Write plainly and do not sign it.
       - name: Push and report as the maintainer
         # Not after a cancel: a newer Renovate push superseded this port.
-        if: steps.gate.outputs.run == 'true' && !cancelled()
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ secrets.MAINTAINER_TOKEN }}
           OUTPUT: ${{ steps.claude.outputs.structured_output }}
-          START: ${{ steps.gate.outputs.start }}
+          START: ${{ needs.gate.outputs.start }}
         run: |
           pr=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number')
           if [ "$(git rev-parse HEAD)" != "$START" ]; then
