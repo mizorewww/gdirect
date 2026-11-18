@@ -41,7 +41,6 @@ jobs:
         with:
           ref: ${{ env.BRANCH }}
           fetch-depth: 0
-          path: gdirect
           persist-credentials: false
       # Our own port commit comes back as a synchronize event; only Renovate's start a
       # port, or a dispatch.
@@ -49,7 +48,6 @@ jobs:
         id: gate
         env:
           EVENT: ${{ github.event_name }}
-        working-directory: gdirect
         run: |
           if [ "$EVENT" != workflow_dispatch ] && git log -1 --format=%B | grep -q '^Co-Authored-By: Claude'; then
             echo "run=false" >> "$GITHUB_OUTPUT"
@@ -59,7 +57,6 @@ jobs:
           fi
       - name: Install Rust, Linux libraries and libaria2
         if: steps.gate.outputs.run == 'true'
-        working-directory: gdirect
         run: |
           rustup update stable
           rustup component add clippy rustfmt
@@ -72,7 +69,7 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         with:
           key: desktop-port
-          workspaces: gdirect/desktop -> target
+          workspaces: desktop -> target
       - uses: anthropics/claude-code-action@v1
         id: claude
         if: steps.gate.outputs.run == 'true'
@@ -87,8 +84,8 @@ jobs:
             --json-schema '{"type":"object","required":["ready","summary"],"properties":{"ready":{"type":"boolean"},"summary":{"type":"string"}}}'
           prompt: |
             Port the dependency update on branch ${{ env.BRANCH }} of ${{ github.repository }}.
-            The repository is checked out at gdirect/ on that branch; work there.
-            Follow gdirect/.github/upstream-port.md exactly.
+            The repository is checked out in the working directory on that branch.
+            Follow .github/upstream-port.md exactly.
 
             Commit with exactly:
               git -c user.name='claude[bot]' -c user.email='41898282+claude[bot]@users.noreply.github.com' \
@@ -103,7 +100,6 @@ jobs:
       - name: Push and report as the maintainer
         # Not after a cancel: a newer Renovate push superseded this port.
         if: steps.gate.outputs.run == 'true' && !cancelled()
-        working-directory: gdirect
         env:
           GH_TOKEN: ${{ secrets.MAINTAINER_TOKEN }}
           OUTPUT: ${{ steps.claude.outputs.structured_output }}
@@ -111,7 +107,9 @@ jobs:
         run: |
           pr=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number')
           if [ "$(git rev-parse HEAD)" != "$START" ]; then
-            git push -q "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" "HEAD:refs/heads/$BRANCH"
+            # Bypass the read-only credentials the Claude action configured for this checkout.
+            git -c credential.helper= -c http.https://github.com/.extraheader= \
+              push -q "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" "HEAD:refs/heads/$BRANCH"
           fi
           summary=$(jq -r '.summary // empty' <<<"$OUTPUT")
           printf '%s\n\n<sub>Automated port by Claude Code ([run](%s)).</sub>\n' \
