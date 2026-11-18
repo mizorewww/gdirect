@@ -118,8 +118,10 @@ jobs:
             "${summary:-The port did not finish; see the run log.}" \
             "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/summary.md"
           [ -z "$pr" ] || gh pr comment "$pr" --body-file "$RUNNER_TEMP/summary.md"
+          # REST, not `gh pr edit`: its GraphQL query needs read:org, which the token lacks.
+          labels="repos/$GITHUB_REPOSITORY/issues/$pr/labels"
           if [ -n "$pr" ] && [ "$(jq -r '.ready // false' <<<"$OUTPUT")" = true ]; then
-            gh pr edit "$pr" --add-label port-ready
+            gh api "$labels" -f 'labels[]=port-ready' --silent
           elif [ -n "$pr" ]; then
-            gh pr edit "$pr" --remove-label port-ready 2>/dev/null || true
+            gh api -X DELETE "$labels/port-ready" --silent 2>/dev/null || true
           fi
