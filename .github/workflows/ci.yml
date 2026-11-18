@@ -14,3 +14,27 @@ jobs:
       - run: cargo test --locked
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: python3 tests/native_integration.py
+  # The desktop client is its own workspace; the release builds it (desktop.yml),
+  # and this checks every push and pull request on Linux.
+  desktop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
+            libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-ci
+          workspaces: desktop -> target
+      - uses: actions/cache@v4
+        with:
+          path: target/libaria2
+          key: aria2-v2-ci-${{ hashFiles('scripts/build-libaria2.sh', 'vendor/**') }}
+      - run: test -f target/libaria2/lib/libaria2.a || ./scripts/build-libaria2.sh
+      - working-directory: desktop
+        run: cargo test --locked

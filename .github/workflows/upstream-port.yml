@@ -1,0 +1,125 @@
+name: Upstream port
+
+# Renovate (renovate.yml) opens renovate/gpui-kit-material when a new
+# gpui-kit-material is released. Claude Code moves the desktop client to it on that
+# branch following .github/upstream-port.md and commits locally; it cannot push. The next step pushes as the maintainer, so CI
+# runs on the result, and labels the PR port-ready when Claude reports the port
+# complete. upstream-land.yml then merges it once CI passes.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Renovate branch
+        default: renovate/gpui-kit-material
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: upstream-port-${{ github.head_ref || inputs.branch }}
+  cancel-in-progress: true
+
+jobs:
+  port:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (startsWith(github.event.pull_request.head.ref, 'renovate/gpui-') &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       github.event.pull_request.user.login == github.repository_owner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      BRANCH: ${{ github.head_ref || inputs.branch }}
+      GH_TOKEN: ${{ github.token }}
+      CARGO_BUILD_JOBS: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BRANCH }}
+          fetch-depth: 0
+          path: gdirect
+          persist-credentials: false
+      # Our own port commit comes back as a synchronize event; only Renovate's start a
+      # port, or a dispatch.
+      - name: Check the head is Renovate's
+        id: gate
+        env:
+          EVENT: ${{ github.event_name }}
+        working-directory: gdirect
+        run: |
+          if [ "$EVENT" != workflow_dispatch ] && git log -1 --format=%B | grep -q '^Co-Authored-By: Claude'; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "start=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install Rust, Linux libraries and libaria2
+        if: steps.gate.outputs.run == 'true'
+        working-directory: gdirect
+        run: |
+          rustup update stable
+          rustup component add clippy rustfmt
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
+            libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev
+          ./scripts/build-libaria2.sh
+      - uses: Swatinem/rust-cache@v2
+        if: steps.gate.outputs.run == 'true'
+        with:
+          key: desktop-port
+          workspaces: gdirect/desktop -> target
+      - uses: anthropics/claude-code-action@v1
+        id: claude
+        if: steps.gate.outputs.run == 'true'
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          restrict_untrusted_prs: "false"
+          claude_args: |
+            --model claude-opus-5-5
+            --max-turns 400
+            --allowedTools Bash,Read,Edit,Write,Glob,Grep,TodoWrite
+            --json-schema '{"type":"object","required":["ready","summary"],"properties":{"ready":{"type":"boolean"},"summary":{"type":"string"}}}'
+          prompt: |
+            Port the dependency update on branch ${{ env.BRANCH }} of ${{ github.repository }}.
+            The repository is checked out at gdirect/ on that branch; work there.
+            Follow gdirect/.github/upstream-port.md exactly.
+
+            Commit with exactly:
+              git -c user.name='claude[bot]' -c user.email='41898282+claude[bot]@users.noreply.github.com' \
+                commit --author 'mizorewww <aac6fef@icloud.com>' \
+                --trailer 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>'
+            Do not push; the workflow pushes your commits.
+
+            Return `ready`: true only when the port is complete and every check in the
+            instructions passed. `summary` is posted on the pull request as the maintainer:
+            what changed upstream, what you changed, what you ran and the results, and
+            anything left for a human. Write plainly and do not sign it.
+      - name: Push and report as the maintainer
+        # Not after a cancel: a newer Renovate push superseded this port.
+        if: steps.gate.outputs.run == 'true' && !cancelled()
+        working-directory: gdirect
+        env:
+          GH_TOKEN: ${{ secrets.MAINTAINER_TOKEN }}
+          OUTPUT: ${{ steps.claude.outputs.structured_output }}
+          START: ${{ steps.gate.outputs.start }}
+        run: |
+          pr=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number')
+          if [ "$(git rev-parse HEAD)" != "$START" ]; then
+            git push -q "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" "HEAD:refs/heads/$BRANCH"
+          fi
+          summary=$(jq -r '.summary // empty' <<<"$OUTPUT")
+          printf '%s\n\n<sub>Automated port by Claude Code ([run](%s)).</sub>\n' \
+            "${summary:-The port did not finish; see the run log.}" \
+            "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/summary.md"
+          [ -z "$pr" ] || gh pr comment "$pr" --body-file "$RUNNER_TEMP/summary.md"
+          if [ -n "$pr" ] && [ "$(jq -r '.ready // false' <<<"$OUTPUT")" = true ]; then
+            gh pr edit "$pr" --add-label port-ready
+          elif [ -n "$pr" ]; then
+            gh pr edit "$pr" --remove-label port-ready 2>/dev/null || true
+          fi

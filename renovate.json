@@ -1,0 +1,54 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard"
+  ],
+  "timezone": "Asia/Shanghai",
+  "rebaseWhen": "conflicted",
+  "commitBody": "Co-Authored-By: Renovate Bot <bot@renovateapp.com>",
+  "packageRules": [
+    {
+      "description": "Everything except the desktop's Material stack: detect and list on the Dependency Dashboard, open a PR only when ticked there",
+      "matchDepNames": [
+        "!gpui-kit-material"
+      ],
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Moved by the Material port (.github/upstream-port.md) to what gpui-kit-material requires",
+      "matchDepNames": [
+        "gpui-kit",
+        "gpui-base",
+        "gpui-kit-material-color",
+        "gpui-material-symbols",
+        "gpui-fast",
+        "gpui-fast-*",
+        "gpui-pre",
+        "gpui-pre-*"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "gpui-kit-material releases: one PR on a fixed branch, which upstream-port.yml hands to Claude Code",
+      "matchDepNames": [
+        "gpui-kit-material"
+      ],
+      "branchTopic": "gpui-kit-material",
+      "additionalBranchPrefix": "",
+      "commitMessageTopic": "gpui-kit-material",
+      "labels": [
+        "upstream-sync"
+      ],
+      "automerge": false,
+      "separateMajorMinor": false,
+      "separateMinorPatch": false,
+      "schedule": [
+        "at any time"
+      ],
+      "prBodyNotes": [
+        "The **Upstream port** workflow moves the desktop client to this release with Claude Code and pushes the result here. When every check passes it labels the PR `port-ready`; **Upstream land** then merges it once CI is green."
+      ]
+    }
+  ]
+}

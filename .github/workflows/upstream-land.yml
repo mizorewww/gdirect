@@ -1,0 +1,35 @@
+name: Upstream land
+
+# Merges a finished port once CI passes on it (.github/scripts/land.py).
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: ["renovate/gpui-*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-land
+  cancel-in-progress: false
+
+jobs:
+  land:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: python3 .github/scripts/land.py
+        env:
+          MAINTAINER_TOKEN: ${{ secrets.MAINTAINER_TOKEN }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          CI_WORKFLOWS: CI
+          MERGE_METHOD: squash
