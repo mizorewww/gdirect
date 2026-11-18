@@ -2745,9 +2745,9 @@ dependencies = [
 
 [[package]]
 name = "gpui-kit-material"
-version = "0.1.0"
+version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f78530627071542d1e5a9ca7bc66b8fab8ad29bf164f899201484a540244150f"
+checksum = "c6938855e1399bc102be0a1f461be52200e940faf2b15f3df4cf381bf0b01f43"
 dependencies = [
  "chrono",
  "gpui-base",
@@ -2760,9 +2760,9 @@ dependencies = [
 
 [[package]]
 name = "gpui-kit-material-color"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "347afde74708c3ca2bdd000473ce1507fb06349f5fa6ca87460c99a5b845106f"
+checksum = "94c4246166376753d28ba209629c4176839820bb8ca4c946dd9c0c2eee565cfc"
 dependencies = [
  "serde",
 ]
