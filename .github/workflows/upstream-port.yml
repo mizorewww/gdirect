@@ -75,6 +75,8 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The port works on public code only; keep its transcript in the log.
+          show_full_output: true
           github_token: ${{ secrets.GITHUB_TOKEN }}
           restrict_untrusted_prs: "false"
           claude_args: |
