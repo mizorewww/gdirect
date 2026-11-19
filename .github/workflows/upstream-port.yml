@@ -5,8 +5,8 @@ name: Upstream port
 # branch following .github/upstream-port.md and commits locally; it cannot push. The next step pushes as the maintainer, so CI
 # runs on the result, and labels the PR port-ready when Claude reports the port
 # complete. upstream-land.yml then merges it once CI passes.
-# When CI fails on the port's commit, Claude reads the failure and fixes it (three
-# tries); a failure that is not the port's gets its failed jobs rerun instead.
+# When CI fails on the branch, ci-heal.yml starts this again with fix_run: Claude
+# fixes the failure (five tries), or the failed jobs are rerun when it is not the port's.
 
 on:
   pull_request:
@@ -16,11 +16,9 @@ on:
       branch:
         description: Renovate branch
         default: renovate/gpui-kit-material
-  # CI failed on a port commit: Claude reads the failure and fixes it.
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-    branches: ["renovate/gpui-*"]
+      fix_run:
+        description: Failed CI run to fix (set by ci-heal.yml)
+        default: ""
 
 permissions:
   contents: read
@@ -35,17 +33,13 @@ jobs:
   gate:
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'workflow_run' &&
-       github.event.workflow_run.conclusion == 'failure' &&
-       github.event.workflow_run.event == 'pull_request' &&
-       github.event.workflow_run.head_repository.full_name == github.repository) ||
       (startsWith(github.event.pull_request.head.ref, 'renovate/gpui-') &&
        github.event.pull_request.head.repo.full_name == github.repository &&
        github.event.pull_request.user.login == github.repository_owner)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      BRANCH: ${{ github.head_ref || inputs.branch || github.event.workflow_run.head_branch }}
+      BRANCH: ${{ github.head_ref || inputs.branch }}
       GH_TOKEN: ${{ github.token }}
       CARGO_BUILD_JOBS: 4
     outputs:
@@ -62,20 +56,18 @@ jobs:
         id: gate
         env:
           EVENT: ${{ github.event_name }}
-          FAILED_SHA: ${{ github.event.workflow_run.head_sha }}
+          FIX_RUN: ${{ inputs.fix_run }}
         run: |
           ours() { git log -1 --format=%B | grep -q '^Co-Authored-By: Claude'; }
           run=true mode=port
-          if [ "$EVENT" = workflow_run ]; then
-            # Only CI on the port's own commit, while it is still the head, three tries at most.
+          if [ -n "$FIX_RUN" ] && ours; then
+            # Fix CI on the port's commit, five tries at most; on Renovate's commit, port it.
             mode=fix
             pr=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number')
             tries=0
             [ -z "$pr" ] || tries=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$pr/comments" --jq '.[].body' | grep -c 'Automated CI fix' || true)
-            if [ -z "$pr" ] || [ "$(git rev-parse HEAD)" != "$FAILED_SHA" ] || ! ours || [ "$tries" -ge 3 ]; then
-              run=false
-            fi
-          elif [ "$EVENT" != workflow_dispatch ] && ours; then
+            [ "$tries" -lt 5 ] || run=false
+          elif [ "$EVENT" = pull_request ] && ours; then
             run=false
           fi
           { echo "run=$run"; echo "mode=$mode"; echo "start=$(git rev-parse HEAD)"; } >> "$GITHUB_OUTPUT"
@@ -84,13 +76,13 @@ jobs:
     needs: gate
     if: needs.gate.outputs.run == 'true'
     concurrency:
-      group: upstream-port-${{ github.head_ref || inputs.branch || github.event.workflow_run.head_branch }}
-      # A fix waits rather than cancel another; it is skipped if the branch moved meanwhile.
-      cancel-in-progress: ${{ github.event_name != 'workflow_run' }}
+      group: upstream-port-${{ github.head_ref || inputs.branch }}
+      # Only a newer Renovate push cancels; a dispatch waits, and is skipped if the branch moved.
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 300
     env:
-      BRANCH: ${{ github.head_ref || inputs.branch || github.event.workflow_run.head_branch }}
+      BRANCH: ${{ github.head_ref || inputs.branch }}
       GH_TOKEN: ${{ github.token }}
       CARGO_BUILD_JOBS: 4
     steps:
@@ -144,7 +136,7 @@ jobs:
             fix it as the instructions allow (never by weakening a check or a test), and run the
             checks again. If the failure is not this branch''s (a runner, network or flaky
             failure), change nothing and say so; the workflow then reruns the failed jobs.
-            ', github.event.workflow_run.id) || '' }}
+            ', inputs.fix_run) || '' }}
             Run every command in the foreground and wait for it to finish; the job ends when you answer.
 
             Commit with exactly:
@@ -165,7 +157,7 @@ jobs:
           OUTPUT: ${{ steps.claude.outputs.structured_output }}
           START: ${{ needs.gate.outputs.start }}
           MODE: ${{ needs.gate.outputs.mode }}
-          FAILED_RUN: ${{ github.event.workflow_run.id }}
+          FAILED_RUN: ${{ inputs.fix_run }}
         run: |
           pr=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number')
           if [ "$(git rev-parse HEAD)" != "$START" ]; then
