@@ -67,7 +67,13 @@ jobs:
             tries=0
             [ -z "$pr" ] || tries=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$pr/comments" --jq '.[].body' | grep -c 'Automated CI fix' || true)
             [ "$tries" -lt 5 ] || run=false
-          elif [ "$EVENT" = pull_request ] && ours; then
+          elif ours; then
+            # The port is already on the branch; only a CI failure (fix_run) runs it again.
+            run=false
+          fi
+          # Several CI runs can ask for a fix of one commit; a later request finds the
+          # first one's commit and has nothing to do.
+          if [ -n "$FIX_RUN" ] && [ "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$FIX_RUN" --jq .head_sha)" != "$(git rev-parse HEAD)" ]; then
             run=false
           fi
           { echo "run=$run"; echo "mode=$mode"; echo "start=$(git rev-parse HEAD)"; } >> "$GITHUB_OUTPUT"
