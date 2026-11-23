@@ -185,7 +185,7 @@ def main():
         if tries >= MAX_FIX_COMMITS:
             done(f"#{adopted['number']} had {tries} fixes; leaving it to the maintainer.")
         output(action="fix", branch=branch, head_repo=adopted["head"]["repo"]["full_name"],
-               pr=adopted["number"])
+               pr=adopted["number"], sha=sha)
         done(f"Claude fixes #{adopted['number']}.")
     if branch.startswith("renovate/"):
         if PORT_WORKFLOW:
