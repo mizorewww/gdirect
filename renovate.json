@@ -12,11 +12,14 @@
   ],
   "packageRules": [
     {
-      "description": "Everything except the desktop's Material stack: detect and list on the Dependency Dashboard, open a PR only when ticked there",
+      "description": "Everything except the desktop's Material stack: detect and list on the Dependency Dashboard, open a PR only when ticked there, and merge it once CI passes",
       "matchDepNames": [
         "!gpui-kit-material"
       ],
-      "dependencyDashboardApproval": true
+      "dependencyDashboardApproval": true,
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": false
     },
     {
       "description": "Moved by the Material port (.github/upstream-port.md) to what gpui-kit-material requires",
